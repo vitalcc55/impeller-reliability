@@ -24,6 +24,8 @@ def test_worker_jsonl_lifecycle(tmp_path: Path) -> None:
     )
     assert process.returncode == 0
     assert '"requestId":"ping"' in stdout
+    assert '"revision":0' in stdout
     assert '"pong":true' in stdout
     assert '"requestId":"shutdown"' in stdout
+    assert '"revision":1' in stdout
     assert stderr == ""

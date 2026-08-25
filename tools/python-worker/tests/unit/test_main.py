@@ -34,9 +34,12 @@ def test_worker_handles_success_contract_error_and_shutdown(tmp_path: Path, monk
     )
     responses = _run(messages, tmp_path, monkeypatch)
     assert '"requestId":"ping"' in responses[0]
+    assert '"revision":0' in responses[0]
     assert '"result":{"pong":true}' in responses[0]
     assert '"code":"contract_error"' in responses[1]
+    assert '"revision":1' in responses[1]
     assert '"result":{"accepted":true}' in responses[2]
+    assert '"revision":2' in responses[2]
 
 
 def test_worker_rejects_oversized_non_finite_and_invalid_utf8(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

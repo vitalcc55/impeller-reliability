@@ -62,6 +62,13 @@ button:focus-visible {
   border-radius: var(--ir-radius-surface);
   box-shadow: var(--ir-shadow-surface);
 }
+.status-copy {
+  min-width: 0;
+  max-width: 70ch;
+}
+.status-message {
+  overflow-wrap: anywhere;
+}
 .status-badge {
   color: var(--ir-color-text-muted);
   background-color: var(--ir-color-border);
@@ -101,6 +108,9 @@ button:focus-visible {
   margin: 0;
   font-weight: 650;
   overflow-wrap: anywhere;
+}
+.status-actions {
+  align-items: stretch;
 }
 
 @media (max-width: 720px) {

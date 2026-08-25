@@ -12,18 +12,18 @@ RunPackage: "*.r130run (future M04)"
 
 Desktop: "apps/desktop" {
   Renderer: "React Renderer: формы, таблицы, графики, browser preview"
-  Preload: "Sandboxed Preload: narrow window.impeller API"
-  Main: "Electron Main: windows, dialogs, paths, worker lifecycle, PDF"
+  Preload: "Sandboxed Preload: narrow commands + status event"
+  Main: "Electron Main: windows, lifecycle/restart, app protocol, CSP/fuses, PDF"
 }
 
 TypeScript: "TypeScript packages" {
-  Contracts: "packages/contracts: Zod + IPC types"
-  Application: "packages/application: orchestration, revisions, read models"
+  Contracts: "packages/contracts: operation map + Zod"
+  Application: "packages/application: orchestration + revision gate"
   Reporting: "packages/reporting: report renderer boundary"
 }
 
 Worker: "tools/python-worker" {
-  Protocol: "Pydantic JSONL envelopes"
+  Protocol: "operation-specific Pydantic JSONL envelopes"
   Domain: "Future domain rules and calculations"
   Persistence: "sqlite3, migrations, repositories"
   Integration: "Future R130SH import/export"
@@ -55,4 +55,4 @@ R130SH -> RunPackage
 RunPackage -> Desktop.Main
 ```
 
-M01 реализует Renderer/Preload/Main, typed contracts, worker protocol и SQLite health. Предметные модули, project storage и R130SH packages остаются будущими границами, а не заглушками с фиктивным результатом.
+M01.1 реализует Renderer/Preload/Main, operation-specific contracts, response revision, worker lifecycle/restart, WAL health, production CSP и packaged fuses. Предметные модули, project storage и R130SH packages остаются будущими границами, а не заглушками с фиктивным результатом.

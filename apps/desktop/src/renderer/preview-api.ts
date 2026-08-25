@@ -26,12 +26,25 @@ const previewStatuses: Readonly<Record<PreviewMode, RuntimeStatus>> = {
 };
 
 export function createPreviewApi(mode: PreviewMode): ImpellerApi {
-  const status = previewStatuses[mode];
+  let status = previewStatuses[mode];
+  const listeners = new Set<(nextStatus: RuntimeStatus) => void>();
   return {
     system: {
       getStatus: () => Promise.resolve(status),
-      ping: () => Promise.resolve(status),
+      ping: () =>
+        status.workerStatus === 'ready'
+          ? Promise.resolve(status)
+          : Promise.reject(new Error('preview_worker_unavailable')),
+      restart: () => {
+        status = previewStatuses.ready;
+        for (const listener of listeners) listener(status);
+        return Promise.resolve(status);
+      },
       openLog: () => Promise.resolve(),
+      subscribeStatus: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
     },
   };
 }

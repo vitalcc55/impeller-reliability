@@ -1,0 +1,53 @@
+name: Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-quality:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: 0.11.32
+          enable-cache: true
+          cache-dependency-glob: tools/python-worker/uv.lock
+
+      - name: Install locked dependencies
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile
+          uv sync --project tools/python-worker --frozen
+
+      - name: Static checks and unit tests
+        run: pnpm check
+
+      - name: Build Electron application
+        run: pnpm build
+
+      - name: Electron E2E
+        run: pnpm test:e2e

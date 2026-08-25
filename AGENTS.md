@@ -84,7 +84,9 @@ M00–M01 реализуют walking skeleton. РБД, РПТ, ПМН, FMEA, с�
 - IPC/R130SH contracts: `docs/integration/`.
 - Security/testing/packaging/observability: соответствующие профильные каталоги.
 - Unresolved product/methodology choices: `docs/backlog/OPEN_QUESTIONS.md`.
-- `README.md` содержит только исходное уведомление репозитория и не является инструкцией.
+- Current milestone plans and deferred roadmap: `docs/plans/`.
+- Reasons for approved cross-cutting decisions: `docs/decisions/`.
+- `README.md` — краткая публичная поверхность без дублирования рабочих команд и внутренних правил.
 
 ## Quick start and stable checks
 

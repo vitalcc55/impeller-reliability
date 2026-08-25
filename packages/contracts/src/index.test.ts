@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { runtimeStatusSchema, workerRequestSchema } from './index';
+import { parseWorkerResponse, runtimeStatusSchema, workerRequestSchema } from './index';
 
 describe('worker contracts', () => {
   it('rejects generic operations', () => {
@@ -30,5 +30,26 @@ describe('worker contracts', () => {
         message: 'Готово',
       }).workerStatus,
     ).toBe('ready');
+  });
+
+  it('validates operation-specific results and response revision', () => {
+    const response = parseWorkerResponse('system.ping', {
+      protocolVersion: 1,
+      requestId: 'request-1',
+      revision: 12,
+      kind: 'response',
+      ok: true,
+      result: { pong: true },
+      evidence: {},
+      warnings: [],
+    });
+    expect(response.revision).toBe(12);
+    expect(response.ok && response.result.pong).toBe(true);
+    expect(() =>
+      parseWorkerResponse('system.ping', {
+        ...response,
+        result: { workerVersion: 'wrong-operation-result' },
+      }),
+    ).toThrow();
   });
 });

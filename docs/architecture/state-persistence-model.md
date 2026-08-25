@@ -20,7 +20,9 @@ WorkerRuntime: "Python worker runtime" {
 }
 
 MainRuntime: "Electron Main runtime" {
-  WorkerProcess: "one worker process + pending requests/deadlines"
+  WorkerProcess: "one worker process + controlled restart"
+  Lifecycle: "starting/ready/unavailable/stopping/stopped"
+  Pending: "requestId + operation + revision + deadline"
   Paths: "approved file/project paths"
   Status: "handshake and health read model"
 }
@@ -44,10 +46,12 @@ Persisted.Assets -> WorkerRuntime.Canonical
 WorkerRuntime.Canonical -> Persisted.Sqlite
 WorkerRuntime.Canonical -> MainRuntime.Status
 MainRuntime.Status -> RendererRuntime.QueryCache
+MainRuntime.Lifecycle -> MainRuntime.Status
+MainRuntime.Pending -> MainRuntime.Status: "validated operation-specific response"
 RendererRuntime.Drafts -> WorkerRuntime.Canonical: "validate/command; never direct persistence"
 Persisted.Sqlite -> Derived.Exports: "through immutable report snapshot"
 Persisted.Assets -> Derived.Exports
 RendererRuntime.Preview -> RendererRuntime.QueryCache: "synthetic DEV state only"
 ```
 
-M01 persistent state ограничен инфраструктурной `schema_info` в health database. Browser preview ничего не сохраняет и не является evidence предметного расчёта.
+M01 persistent state ограничен инфраструктурной `schema_info` в health database; положительный verdict требует foreign keys, `quick_check`, ожидаемую schema version и WAL. Lifecycle/revision являются runtime state и не сохраняются. Browser preview ничего не сохраняет и не является evidence предметного расчёта.
