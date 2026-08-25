@@ -14,9 +14,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Electron E2E failed." }
     if ($IncludePackaging) {
         & pnpm package:win-unpacked
+        if ($LASTEXITCODE -ne 0) { throw "win-unpacked packaging failed." }
         & pnpm smoke:win-unpacked
+        if ($LASTEXITCODE -ne 0) { throw "win-unpacked smoke failed." }
         & pnpm package:portable
+        if ($LASTEXITCODE -ne 0) { throw "Portable packaging failed." }
         & pnpm smoke:portable
+        if ($LASTEXITCODE -ne 0) { throw "Portable smoke failed." }
     }
 }
 finally { Pop-Location }

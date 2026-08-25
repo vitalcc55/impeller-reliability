@@ -1,3 +1,7 @@
 # Electron Security
 
-Required window flags: nodeIntegration false, contextIsolation true, sandbox true, webSecurity true, insecure content false. CSP разрешает same-origin resources и локальный Vite WebSocket только на `127.0.0.1:5173` для renderer preview; production code не инициирует network connections. External navigation/window.open and permissions are denied. Preload exposes only typed methods. Production keeps ASAR integrity and disables signing only as an explicitly recorded M01 limitation.
+Required window flags: `nodeIntegration=false`, `contextIsolation=true`, `sandbox=true`, `webSecurity=true`, `allowRunningInsecureContent=false`. External navigation, `window.open` и permissions запрещены. Preload exposes only typed system methods/events.
+
+Development HTML разрешает Vite WebSocket только на `127.0.0.1:5173`. Packaged renderer обслуживается только из `app.asar` через ограниченный `impeller://app/` handler; path traversal и другой host отклоняются. Production build проверяет отдельную CSP с `connect-src 'none'` и без network origin, а renderer не получает расширенных привилегий `file://`.
+
+После упаковки `@electron/fuses` явно отключает `RunAsNode`, `NODE_OPTIONS`, CLI inspect, browser-specific snapshot и extra file privileges; включает cookie encryption, embedded ASAR integrity, `OnlyLoadAppFromAsar` и WASM trap handlers. Конфигурация требует явного значения каждого fuse и перечитывается из packaged executable. Worker SHA-256/self-test проверяются отдельно. Подпись EXE остаётся явно отложенным production-решением.

@@ -3,6 +3,8 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { applyProductionFuses } from './fuse-policy.mjs';
+
 function runSelfTest(executablePath) {
   return new Promise((resolve, reject) => {
     const child = spawn(executablePath, ['--self-test'], {
@@ -35,6 +37,8 @@ function runSelfTest(executablePath) {
 
 export default async function afterPackWorkerIntegrity(context) {
   if (context.electronPlatformName !== 'win32') return;
+  const applicationExecutable = join(context.appOutDir, 'ImpellerReliabilityCalc.exe');
+  await applyProductionFuses(applicationExecutable);
   const workerDirectory = join(context.appOutDir, 'resources', 'python-worker');
   const executablePath = join(workerDirectory, 'impeller-reliability-worker.exe');
   const manifest = JSON.parse(

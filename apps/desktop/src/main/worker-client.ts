@@ -1,9 +1,20 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
+import { createInterface } from 'node:readline';
 
-import { IPC_PROTOCOL_VERSION, workerResponseSchema } from '@impeller-reliability/contracts';
-import type { WorkerRequest, WorkerResponse } from '@impeller-reliability/contracts';
+import { createRevisionGate } from '@impeller-reliability/application';
+import {
+  IPC_PROTOCOL_VERSION,
+  parseWorkerResponse,
+  workerRequestSchema,
+  workerResponseIdentitySchema,
+} from '@impeller-reliability/contracts';
+import type {
+  WorkerLifecycleState,
+  WorkerOperation,
+  WorkerResponse,
+  WorkerResponseFor,
+} from '@impeller-reliability/contracts';
 
 import type { JsonlLogger } from './logging';
 import { assertWorkerIntegrity } from './worker-integrity';
@@ -11,26 +22,150 @@ import { createWorkerEnvironment } from './worker-location';
 import type { WorkerLocation } from './worker-location';
 
 interface PendingRequest {
+  readonly operation: WorkerOperation;
+  readonly revision: number;
   readonly resolve: (response: WorkerResponse) => void;
   readonly reject: (error: Error) => void;
   readonly timeout: NodeJS.Timeout;
+}
+
+export interface WorkerLifecycleEvent {
+  readonly state: WorkerLifecycleState;
+  readonly reason: string | null;
 }
 
 const MAX_MESSAGE_BYTES = 1_048_576;
 
 export class WorkerClient {
   readonly #pending = new Map<string, PendingRequest>();
+  readonly #expectedStops = new WeakSet<ChildProcessWithoutNullStreams>();
   #process: ChildProcessWithoutNullStreams | null = null;
   #revision = 0;
+  #state: WorkerLifecycleState = 'stopped';
+  #startPromise: Promise<void> | null = null;
+  #restartPromise: Promise<void> | null = null;
 
   public constructor(
     private readonly location: WorkerLocation,
     private readonly stateDirectory: string,
     private readonly logger: JsonlLogger,
+    private readonly onLifecycleChange: (event: WorkerLifecycleEvent) => void,
   ) {}
 
-  public async start(): Promise<void> {
-    if (this.#process !== null) return;
+  public get processId(): number | null {
+    return this.#process?.pid ?? null;
+  }
+
+  public start(): Promise<void> {
+    if (this.#process !== null) return Promise.resolve();
+    if (this.#startPromise !== null) return this.#startPromise;
+    const startPromise = this.#startInternal()
+      .catch((error: unknown) => {
+        this.#emitLifecycle('unavailable', String(error));
+        throw error;
+      })
+      .finally(() => {
+        if (this.#startPromise === startPromise) this.#startPromise = null;
+      });
+    this.#startPromise = startPromise;
+    return startPromise;
+  }
+
+  public markReady(): void {
+    if (this.#process !== null) this.#emitLifecycle('ready', null);
+  }
+
+  public request(
+    operation: 'system.handshake',
+    deadlineMs?: number,
+  ): Promise<WorkerResponseFor<'system.handshake'>>;
+  public request(
+    operation: 'system.ping',
+    deadlineMs?: number,
+  ): Promise<WorkerResponseFor<'system.ping'>>;
+  public request(
+    operation: 'system.shutdown',
+    deadlineMs?: number,
+  ): Promise<WorkerResponseFor<'system.shutdown'>>;
+  public request(
+    operation: 'storage.health',
+    deadlineMs?: number,
+  ): Promise<WorkerResponseFor<'storage.health'>>;
+  public request(operation: WorkerOperation, deadlineMs = 5_000): Promise<WorkerResponse> {
+    const child = this.#process;
+    if (child === null) return Promise.reject(new Error('worker_unavailable'));
+    const requestId = randomUUID();
+    const revision = this.#revision++;
+    const request = workerRequestSchema.parse({
+      protocolVersion: IPC_PROTOCOL_VERSION,
+      requestId,
+      kind: 'request',
+      operation,
+      revision,
+      deadlineMs,
+      payload: {},
+    });
+    return new Promise<WorkerResponse>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.#pending.delete(requestId);
+        reject(new Error('worker_timeout'));
+      }, deadlineMs);
+      this.#pending.set(requestId, { operation, revision, resolve, reject, timeout });
+      child.stdin.write(`${JSON.stringify(request)}\n`, 'utf8', (error) => {
+        if (error === null || error === undefined) return;
+        const pending = this.#pending.get(requestId);
+        if (pending === undefined) return;
+        clearTimeout(pending.timeout);
+        this.#pending.delete(requestId);
+        pending.reject(error);
+      });
+    });
+  }
+
+  public restart(): Promise<void> {
+    if (this.#restartPromise !== null) return this.#restartPromise;
+    const restartPromise = this.#restartInternal().finally(() => {
+      if (this.#restartPromise === restartPromise) this.#restartPromise = null;
+    });
+    this.#restartPromise = restartPromise;
+    return restartPromise;
+  }
+
+  public async shutdown(timeoutMs = 3_000): Promise<void> {
+    const child = this.#process;
+    if (child === null) {
+      this.#emitLifecycle('stopped', null);
+      return;
+    }
+    this.#expectedStops.add(child);
+    this.#emitLifecycle('stopping', null);
+    const closePromise = new Promise<void>((resolve) => child.once('close', () => resolve()));
+    try {
+      await this.request('system.shutdown', timeoutMs);
+    } catch (error) {
+      await this.logger.write({
+        severity: 'warning',
+        component: 'worker',
+        event: 'shutdown_failed',
+        details: { error: String(error) },
+      });
+    }
+    await Promise.race([
+      closePromise,
+      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
+    if (this.#process === child) {
+      child.kill('SIGKILL');
+      await Promise.race([
+        closePromise,
+        new Promise<void>((resolve) => setTimeout(resolve, 1_000)),
+      ]);
+    }
+    if (this.#process === child) throw new Error('worker_shutdown_timeout');
+  }
+
+  async #startInternal(): Promise<void> {
+    this.#emitLifecycle('starting', null);
     if (this.location.executablePath !== null) {
       await assertWorkerIntegrity(this.location.executablePath);
     }
@@ -53,81 +188,78 @@ export class WorkerClient {
         details: { line },
       });
     });
-    child.once('error', (error) => this.#failAll(error));
+    child.once('error', (error) => this.#handleTermination(child, error));
     child.once('close', (code, signal) => {
-      this.#process = null;
-      this.#failAll(new Error(`worker_closed:${String(code)}:${String(signal)}`));
+      this.#handleTermination(child, new Error(`worker_closed:${String(code)}:${String(signal)}`));
+    });
+    await new Promise<void>((resolve, reject) => {
+      const onSpawn = (): void => {
+        child.off('error', onError);
+        resolve();
+      };
+      const onError = (error: Error): void => {
+        child.off('spawn', onSpawn);
+        reject(error);
+      };
+      child.once('spawn', onSpawn);
+      child.once('error', onError);
     });
   }
 
-  public async request(
-    operation: WorkerRequest['operation'],
-    deadlineMs = 5_000,
-  ): Promise<WorkerResponse> {
-    const child = this.#process;
-    if (child === null) throw new Error('worker_unavailable');
-    const requestId = randomUUID();
-    const request = {
-      protocolVersion: IPC_PROTOCOL_VERSION,
-      requestId,
-      kind: 'request',
-      operation,
-      revision: this.#revision++,
-      deadlineMs,
-      payload: {},
-    } satisfies WorkerRequest;
-    return new Promise<WorkerResponse>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.#pending.delete(requestId);
-        reject(new Error('worker_timeout'));
-      }, deadlineMs);
-      this.#pending.set(requestId, { resolve, reject, timeout });
-      child.stdin.write(`${JSON.stringify(request)}\n`, 'utf8');
-    });
-  }
-
-  public async shutdown(timeoutMs = 3_000): Promise<void> {
-    const child = this.#process;
-    if (child === null) return;
-    try {
-      await this.request('system.shutdown', timeoutMs);
-    } catch (error) {
-      await this.logger.write({
-        severity: 'warning',
-        component: 'worker',
-        event: 'shutdown_failed',
-        details: { error: String(error) },
-      });
-    }
-    await Promise.race([
-      new Promise<void>((resolve) => child.once('close', () => resolve())),
-      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-    ]);
-    if (this.#process !== null) child.kill('SIGKILL');
+  async #restartInternal(): Promise<void> {
+    await this.shutdown();
+    await this.start();
   }
 
   #handleLine(line: string): void {
     if (Buffer.byteLength(line, 'utf8') > MAX_MESSAGE_BYTES) {
-      this.#failAll(new Error('worker_message_too_large'));
+      this.#failProtocol(new Error('worker_message_too_large'));
       return;
     }
     let rawResponse: unknown;
     try {
       rawResponse = JSON.parse(line);
     } catch {
-      this.#failAll(new Error('worker_invalid_json'));
+      this.#failProtocol(new Error('worker_invalid_json'));
       return;
     }
-    const parsed = workerResponseSchema.safeParse(rawResponse);
-    if (!parsed.success) {
-      this.#failAll(new Error('worker_contract_error'));
+    const identity = workerResponseIdentitySchema.safeParse(rawResponse);
+    if (!identity.success) {
+      this.#failProtocol(new Error('worker_contract_error'));
       return;
     }
-    const pending = this.#pending.get(parsed.data.requestId);
+    const pending = this.#pending.get(identity.data.requestId);
     if (pending === undefined) return;
+    let response: WorkerResponse;
+    try {
+      response = parseWorkerResponse(pending.operation, rawResponse);
+    } catch {
+      this.#failProtocol(new Error('worker_contract_error'));
+      return;
+    }
+    if (!createRevisionGate(pending.revision).accepts(response.revision)) {
+      clearTimeout(pending.timeout);
+      this.#pending.delete(identity.data.requestId);
+      pending.reject(new Error('worker_stale_revision'));
+      return;
+    }
     clearTimeout(pending.timeout);
-    this.#pending.delete(parsed.data.requestId);
-    pending.resolve(parsed.data);
+    this.#pending.delete(identity.data.requestId);
+    pending.resolve(response);
+  }
+
+  #failProtocol(error: Error): void {
+    this.#failAll(error);
+    const child = this.#process;
+    if (child !== null) child.kill('SIGKILL');
+    this.#emitLifecycle('unavailable', error.message);
+  }
+
+  #handleTermination(child: ChildProcessWithoutNullStreams, error: Error): void {
+    const expected = this.#expectedStops.has(child);
+    if (this.#process === child) this.#process = null;
+    this.#failAll(error);
+    this.#emitLifecycle(expected ? 'stopped' : 'unavailable', expected ? null : error.message);
   }
 
   #failAll(error: Error): void {
@@ -136,5 +268,11 @@ export class WorkerClient {
       pending.reject(error);
     }
     this.#pending.clear();
+  }
+
+  #emitLifecycle(state: WorkerLifecycleState, reason: string | null): void {
+    if (this.#state === state && reason === null) return;
+    this.#state = state;
+    this.onLifecycleChange({ state, reason });
   }
 }

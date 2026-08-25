@@ -19,6 +19,13 @@ Worker -> Main: "version/capabilities/SQLite health"
 Main -> Renderer: "typed runtime status"
 Renderer -> User: "готовность или actionable error"
 
+Worker -> Main: "unexpected close/error"
+Main -> Renderer: "unavailable status event"
+User -> Renderer: "Перезапустить ядро"
+Renderer -> Main: "controlled restart"
+Main -> Worker: "bounded stop, then one new process"
+Worker -> Renderer: "new handshake/health status"
+
 User -> Renderer: "Создать/открыть проект (M02)"
 Renderer -> Main: "approved dialog/path"
 Main -> Worker: "project command"
@@ -44,4 +51,4 @@ Project -> Main: "canonical report data"
 Main -> User: "preview/exported document + SHA-256"
 ```
 
-Browser preview воспроизводит только renderer-состояния через `?preview=ready` и `?preview=unavailable`. Он не запускает worker, не открывает файлы и не доказывает packaged behavior; для этого остаются Electron E2E и portable smoke.
+Browser preview воспроизводит renderer-состояния и restart через `?preview=ready` и `?preview=unavailable`. Он не запускает worker, не открывает файлы и не доказывает packaged behavior; crash/restart boundary подтверждает Electron E2E, fuses/integrity/network/process cleanup — packaged smoke.

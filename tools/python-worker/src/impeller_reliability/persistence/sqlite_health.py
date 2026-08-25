@@ -5,6 +5,10 @@ import sqlite3
 SCHEMA_VERSION = 1
 
 
+def storage_is_healthy(*, quick_check: str, foreign_keys: int, journal_mode: str, version: int) -> bool:
+    return quick_check == "ok" and foreign_keys == 1 and journal_mode == "wal" and version == SCHEMA_VERSION
+
+
 def _configure(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA journal_mode=WAL")
@@ -35,7 +39,16 @@ def check_storage(database_path: Path) -> dict[str, object]:
         foreign_keys = int(connection.execute("PRAGMA foreign_keys").fetchone()[0])
         journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
         version = int(connection.execute("SELECT version FROM schema_info WHERE singleton = 1").fetchone()[0])
-    status = "ok" if quick_check == "ok" and foreign_keys == 1 and version == SCHEMA_VERSION else "error"
+    status = (
+        "ok"
+        if storage_is_healthy(
+            quick_check=quick_check,
+            foreign_keys=foreign_keys,
+            journal_mode=journal_mode,
+            version=version,
+        )
+        else "error"
+    )
     return {
         "status": status,
         "databaseSchemaVersion": version,

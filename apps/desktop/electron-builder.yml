@@ -1,6 +1,6 @@
-appId: ru.rvz.impellerreliability
+appId: com.vitalyvlasov.impellerreliability
 productName: Impeller Reliability
-copyright: Copyright © 2026 ООО «РВЗ»
+copyright: Copyright © 2026 Власов Виталий Андреевич
 artifactName: ImpellerReliabilityCalc-${version}-portable-${arch}.${ext}
 directories:
   output: dist

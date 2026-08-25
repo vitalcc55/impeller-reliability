@@ -7,6 +7,8 @@
   },
   "include": [
     "electron.vite.config.ts",
+    "vite.preview.config.ts",
+    "build/**/*.ts",
     "scripts/**/*.ts",
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
