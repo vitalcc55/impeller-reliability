@@ -4,11 +4,18 @@ from pathlib import Path
 import shutil
 from uuid import UUID, uuid4
 
-from impeller_reliability.persistence.project_database import ProjectMigrator, open_project_database, utc_now, validate_project_database
+from impeller_reliability.persistence.project_database import (
+    ProjectMetadataSeed,
+    ProjectMigrator,
+    open_project_database,
+    utc_now,
+    validate_project_database,
+)
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_lock import ProjectLock, current_lock_owner
 from impeller_reliability.persistence.project_manifest import PROJECT_DATABASE_FILE, ProjectManifest, read_manifest, write_manifest
 from impeller_reliability.persistence.project_session import ProjectOverview, ProjectSession
+from impeller_reliability.worker.deadline import RequestDeadline
 
 
 class ProjectService:
@@ -30,7 +37,9 @@ class ProjectService:
         project_number: str,
         description: str,
         status: str,
+        deadline: RequestDeadline | None = None,
     ) -> ProjectOverview:
+        _check_deadline(deadline, "project_create_start")
         self._require_no_session()
         final_path = self._validate_container_path(path)
         if final_path.exists():
@@ -45,35 +54,54 @@ class ProjectService:
             createdWithApplicationVersion=application_version,
         )
         staging = final_path.with_name(f"{final_path.name}.creating-{uuid4()}")
+        final_created = False
         try:
+            _check_deadline(deadline, "project_create_staging")
             (staging / "assets" / "documents").mkdir(parents=True)
             (staging / "backups").mkdir()
             write_manifest(staging / "project-manifest.json", manifest)
             connection = open_project_database(staging / PROJECT_DATABASE_FILE)
             try:
-                self._migrator.initialize(connection, manifest)
-                connection.execute(
-                    """
-                    UPDATE project_metadata
-                    SET name = ?, project_number = ?, description = ?, status = ?
-                    WHERE project_id = ?
-                    """,
-                    (name.strip(), project_number.strip(), description.strip(), status, project_id),
+                self._migrator.initialize(
+                    connection,
+                    manifest,
+                    ProjectMetadataSeed(
+                        name=name.strip(),
+                        project_number=project_number.strip(),
+                        description=description.strip(),
+                        status=status,
+                    ),
+                    deadline=deadline,
                 )
-                connection.commit()
                 validate_project_database(connection, manifest)
             finally:
                 connection.close()
+            _check_deadline(deadline, "project_create_publish")
             staging.rename(final_path)
+            final_created = True
+            return self.open(
+                path=str(final_path),
+                application_instance_id=application_instance_id,
+                deadline=deadline,
+            )
         except Exception as error:
+            self.close()
             if staging.exists():
                 shutil.rmtree(staging)
+            if final_created and final_path.exists():
+                shutil.rmtree(final_path)
             if isinstance(error, ProjectOperationError):
                 raise
             raise ProjectOperationError("storage_error", "Не удалось атомарно создать проект.") from error
-        return self.open(path=str(final_path), application_instance_id=application_instance_id)
 
-    def open(self, *, path: str, application_instance_id: str) -> ProjectOverview:
+    def open(
+        self,
+        *,
+        path: str,
+        application_instance_id: str,
+        deadline: RequestDeadline | None = None,
+    ) -> ProjectOverview:
+        _check_deadline(deadline, "project_open_start")
         self._require_no_session()
         project_path = self._validate_container_path(path)
         if not project_path.is_dir():
@@ -90,14 +118,17 @@ class ProjectService:
         )
         connection = None
         try:
+            _check_deadline(deadline, "project_open_database")
             connection = open_project_database(project_path / manifest.databaseFile)
             self._migrator.migrate_existing(
                 connection,
                 project_path / manifest.databaseFile,
                 project_path / "backups",
                 manifest,
+                deadline=deadline,
             )
             validate_project_database(connection, manifest)
+            _check_deadline(deadline, "project_open_session")
             session = ProjectSession(project_path, manifest, connection, project_lock)
             self._session = session
             return session.overview()
@@ -109,7 +140,8 @@ class ProjectService:
                 raise
             raise ProjectOperationError("storage_error", "Не удалось открыть или мигрировать проект.") from error
 
-    def get_overview(self) -> ProjectOverview:
+    def get_overview(self, *, deadline: RequestDeadline | None = None) -> ProjectOverview:
+        _check_deadline(deadline, "project_overview")
         return self._require_session().overview()
 
     def update_metadata(
@@ -120,6 +152,7 @@ class ProjectService:
         project_number: str,
         description: str,
         status: str,
+        deadline: RequestDeadline | None = None,
     ) -> ProjectOverview:
         return self._require_session().update_metadata(
             expected_revision=expected_revision,
@@ -127,12 +160,18 @@ class ProjectService:
             project_number=project_number,
             description=description,
             status=status,
+            deadline=deadline,
         )
 
-    def create_backup(self) -> tuple[Path, str, str]:
-        return self._require_session().create_backup()
+    def create_backup(
+        self,
+        *,
+        deadline: RequestDeadline | None = None,
+    ) -> tuple[Path, str, str]:
+        return self._require_session().create_backup(deadline=deadline)
 
-    def close(self) -> bool:
+    def close(self, *, deadline: RequestDeadline | None = None) -> bool:
+        _check_deadline(deadline, "project_close")
         session = self._session
         if session is None:
             return False
@@ -155,3 +194,8 @@ class ProjectService:
         if not path.is_absolute() or path.suffix.lower() != ".irproj":
             raise ProjectOperationError("storage_error", "Путь проекта должен быть абсолютным каталогом *.irproj.")
         return path.resolve()
+
+
+def _check_deadline(deadline: RequestDeadline | None, stage: str) -> None:
+    if deadline is not None:
+        deadline.check(stage)

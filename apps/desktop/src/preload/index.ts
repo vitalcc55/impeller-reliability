@@ -23,12 +23,20 @@ const api: ImpellerApi = {
     openLog: async () => {
       await ipcRenderer.invoke(IPC_CHANNELS.openLog);
     },
+    confirmClose: async () => {
+      await ipcRenderer.invoke(IPC_CHANNELS.confirmClose);
+    },
     subscribeStatus: (listener) => {
       const handleStatus = (_event: IpcRendererEvent, value: unknown): void => {
         listener(runtimeStatusSchema.parse(value));
       };
       ipcRenderer.on(IPC_CHANNELS.statusChanged, handleStatus);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.statusChanged, handleStatus);
+    },
+    subscribeCloseRequested: (listener) => {
+      const handleCloseRequested = (): void => listener();
+      ipcRenderer.on(IPC_CHANNELS.closeRequested, handleCloseRequested);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.closeRequested, handleCloseRequested);
     },
   },
   project: {

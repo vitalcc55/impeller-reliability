@@ -1,14 +1,18 @@
-import { Button, Text } from '@mantine/core';
-import { useCallback, useEffect, useState } from 'react';
+import { Button, Group, Modal, Text } from '@mantine/core';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { ImpellerApi, RuntimeStatus } from '@impeller-reliability/contracts';
 
 import logoUrl from '../assets/logo-lic-vvu.svg';
 import { DiagnosticsPanel } from '../features/diagnostics/DiagnosticsPanel';
-import { ProjectWorkspace } from '../features/projects/ProjectWorkspace';
+import {
+  ProjectWorkspace,
+  type ProjectWorkspaceHandle,
+} from '../features/projects/ProjectWorkspace';
 
 export type UiPhase = 'loading' | 'ready' | 'unavailable' | 'reconnecting' | 'error' | 'stopped';
 type AppView = 'projects' | 'diagnostics';
+type ManagedAction = 'restart' | 'close-application';
 
 const browserPreviewRequiredStatus: RuntimeStatus = {
   applicationVersion: '0.1.0',
@@ -34,12 +38,14 @@ export interface AppProps {
 }
 
 export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element {
+  const projectWorkspace = useRef<ProjectWorkspaceHandle>(null);
   const [view, setView] = useState<AppView>('projects');
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [phase, setPhase] = useState<UiPhase>('loading');
   const [checking, setChecking] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [managedAction, setManagedAction] = useState<ManagedAction | null>(null);
 
   const applyRuntime = useCallback((nextRuntime: RuntimeStatus): void => {
     setRuntime(nextRuntime);
@@ -59,6 +65,13 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
     const unsubscribe = desktopApi.system.subscribeStatus((nextRuntime) => {
       if (active) applyRuntime(nextRuntime);
     });
+    const unsubscribeCloseRequested = desktopApi.system.subscribeCloseRequested(() => {
+      if (projectWorkspace.current?.hasDirtyDraft() === true) {
+        setManagedAction('close-application');
+        return;
+      }
+      void desktopApi.system.confirmClose();
+    });
     void desktopApi.system
       .getStatus()
       .then((nextRuntime) => {
@@ -70,6 +83,7 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
     return () => {
       active = false;
       unsubscribe();
+      unsubscribeCloseRequested();
     };
   }, [applyRuntime, desktopApi, showConnectionError]);
 
@@ -97,16 +111,62 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
     setPhase('reconnecting');
     setErrorMessage(null);
     try {
-      applyRuntime(await desktopApi.system.restart());
+      const nextRuntime = await desktopApi.system.restart();
+      applyRuntime(nextRuntime);
+      if (nextRuntime.workerStatus === 'ready') {
+        await projectWorkspace.current?.reattachAfterWorkerRestart();
+      }
     } catch {
       showConnectionError();
     } finally {
       setRestarting(false);
     }
   };
+  const requestRestart = (): void => {
+    if (projectWorkspace.current?.hasDirtyDraft() === true) {
+      setManagedAction('restart');
+      return;
+    }
+    void restartWorker();
+  };
+  const confirmManagedAction = async (): Promise<void> => {
+    const action = managedAction;
+    setManagedAction(null);
+    if (desktopApi === null || action === null) return;
+    if (action === 'close-application') {
+      await desktopApi.system.confirmClose();
+      return;
+    }
+    await restartWorker();
+  };
 
   return (
     <div className="desktop-shell">
+      <Modal
+        opened={managedAction !== null}
+        onClose={() => setManagedAction(null)}
+        title="Есть несохранённые изменения"
+        centered
+      >
+        <Text>
+          {managedAction === 'restart'
+            ? 'Ядро будет перезапущено. Черновик останется в форме, а проект подключится повторно только после сверки идентификатора и редакции.'
+            : 'Закрыть приложение без сохранения изменений в проекте? Это действие удалит только локальный черновик формы.'}
+        </Text>
+        <Group mt="lg" justify="flex-end">
+          <Button variant="default" onClick={() => setManagedAction(null)}>
+            Продолжить редактирование
+          </Button>
+          <Button
+            color={managedAction === 'close-application' ? 'red' : 'navy'}
+            onClick={() => void confirmManagedAction()}
+          >
+            {managedAction === 'restart'
+              ? 'Перезапустить и сохранить черновик'
+              : 'Закрыть без сохранения'}
+          </Button>
+        </Group>
+      </Modal>
       <header className="shell-header">
         <div className="brand-lockup">
           <span className="brand-logo-frame">
@@ -155,7 +215,7 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
       <main className="shell-content">
         <section hidden={view !== 'projects'} aria-label="Работа с проектами">
           <ProjectWorkspace
-            key={workerReady ? 'worker-ready' : 'worker-unavailable'}
+            ref={projectWorkspace}
             desktopApi={desktopApi}
             workerReady={workerReady}
           />
@@ -170,7 +230,7 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
             checking={checking}
             restarting={restarting}
             onCheck={() => void checkConnection()}
-            onRestart={() => void restartWorker()}
+            onRestart={requestRestart}
           />
         </section>
       </main>

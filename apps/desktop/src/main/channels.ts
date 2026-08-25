@@ -4,6 +4,8 @@ export const IPC_CHANNELS = {
   restart: 'impeller:system:restart',
   openLog: 'impeller:system:open-log',
   statusChanged: 'impeller:system:status-changed',
+  closeRequested: 'impeller:system:close-requested',
+  confirmClose: 'impeller:system:confirm-close',
   projectCreate: 'impeller:project:create',
   projectOpen: 'impeller:project:open',
   projectOpenRecent: 'impeller:project:open-recent',

@@ -163,7 +163,7 @@ project.createBackup  {}
 - тёмно-синий `#102133/#13202d`, сигнальный янтарный `#e49a2f`, холодный акцент `#5fb3c6`;
 - светлый инженерный canvas `#eef3f3` с тонкой координатной сеткой;
 - белые рабочие поверхности, выраженные заголовки, тонкие границы и функциональные радиусы;
-- локальные Etelka Light/Medium web-font assets и официальный SVG загружаются только из bundled renderer; внешних CDN и runtime network нет.
+- локальный Golos Text под SIL OFL 1.1 и официальный SVG загружаются только из bundled renderer; внешних CDN и runtime network нет.
 
 Desktop shell содержит start page с Create/Open/Recent/Diagnostics и открытый project overview с полями name, project number, description, status, path, revision и явным состоянием сохранения. M01.1 health переносится в Diagnostics. Пункты будущих модулей отсутствуют. На ширине 640 px навигация и форма остаются клавиатурно доступными без горизонтального overflow.
 
@@ -187,6 +187,20 @@ Desktop shell содержит start page с Create/Open/Recent/Diagnostics и �
 - `pnpm check`, `pnpm build`, `pnpm test:e2e`, worker build/smoke, `win-unpacked` build/smoke, portable build/smoke, `git diff --check`.
 
 GitHub quality workflow намеренно ограничен `check`, production build и E2E. PyInstaller и Electron packaging остаются обязательным локальным gate; отдельный manual/release workflow добавляется ближе к производственной поставке.
+
+## Post-review findings
+
+Review closure устраняет пять рисков до M02.2 без расширения предметной области:
+
+1. Dispatcher обрабатывает `project.createBackup` только явной веткой и завершается статически проверяемой exhaustive-защитой.
+2. Каждая worker operation получает отдельные domain deadline и больший transport timeout. Stateful timeout до commit не оставляет ProjectSession; transport timeout завершает worker, поэтому скрытая активная сессия и удерживаемый lock невозможны. SQLite backup проверяет deadline через progress callback и удаляет незавершённый файл.
+3. Ошибка конфигурации SQLite закрывает уже созданное соединение при любом исключении.
+4. `project.created` атомарно сохраняет фактические нормализованные metadata. `project.metadata_updated` перечисляет только реально изменённые поля с `before`/`after`; no-op не создаёт ревизию или audit event.
+5. Несохранённый draft защищён при закрытии проекта, приложения и controlled restart. Неожиданная потеря worker переводит проект в detached-состояние без размонтирования формы; повторное присоединение допустимо только при совпадении `projectId` и `recordRevision`.
+
+Права на официальный SVG подтверждены владельцем проекта 2026-08-26; внутреннее подтверждение хранится вне публичного репозитория. Права на Etelka не подтверждены, поэтому файлы удаляются текущим review-fix commit без переписывания опубликованной Git-истории. Заголовочный шрифт заменяется официальным Golos Text из Google Fonts под SIL Open Font License 1.1; лицензия поставляется рядом с приложением и описана в `THIRD_PARTY_ASSETS.md`.
+
+Review closure считается завершённым после Python timeout/audit/connection tests, Electron E2E для dirty restart и window close, Browser QA desktop/640 px, Impeccable detector, полного локального packaging gate, review-fix commit, PR и зелёного Quality workflow. PR не сливается без отдельного решения владельца.
 
 ## Stop condition
 

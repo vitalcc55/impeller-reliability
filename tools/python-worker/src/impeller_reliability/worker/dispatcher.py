@@ -14,6 +14,7 @@ from impeller_reliability.protocol.envelopes import (
     ProjectBackupResult,
     ProjectCloseRequest,
     ProjectCloseResult,
+    ProjectCreateBackupRequest,
     ProjectCreateRequest,
     ProjectGetOverviewRequest,
     ProjectOpenRequest,
@@ -27,6 +28,7 @@ from impeller_reliability.protocol.envelopes import (
     SuccessResponse,
     SuccessResponseType,
 )
+from impeller_reliability.worker.deadline import RequestDeadline
 
 CAPABILITIES: list[Operation] = [
     "system.handshake",
@@ -48,7 +50,13 @@ class Dispatcher:
         self._projects = ProjectService()
         self.shutdown_requested = False
 
-    def dispatch(self, request: RequestEnvelope) -> SuccessResponseType:
+    def dispatch(
+        self,
+        request: RequestEnvelope,
+        deadline: RequestDeadline | None = None,
+    ) -> SuccessResponseType:
+        active_deadline = deadline or RequestDeadline.start(request.deadlineMs)
+        active_deadline.check("dispatch")
         if isinstance(request, HandshakeRequest):
             return SuccessResponse[HandshakeResult](
                 requestId=request.requestId,
@@ -73,7 +81,7 @@ class Dispatcher:
                 result=PingResult(),
             )
         if isinstance(request, ShutdownRequest):
-            self._projects.close()
+            self._projects.close(deadline=active_deadline)
             self.shutdown_requested = True
             return SuccessResponse[ShutdownResult](
                 requestId=request.requestId,
@@ -95,38 +103,47 @@ class Dispatcher:
                 project_number=request.payload.draft.projectNumber,
                 description=request.payload.draft.description,
                 status=request.payload.draft.status,
+                deadline=active_deadline,
             )
             return self._overview_response(request.requestId, request.revision, overview)
         if isinstance(request, ProjectOpenRequest):
             overview = self._projects.open(
                 path=request.payload.path,
                 application_instance_id=request.payload.applicationInstanceId,
+                deadline=active_deadline,
             )
             return self._overview_response(request.requestId, request.revision, overview)
         if isinstance(request, ProjectCloseRequest):
             return SuccessResponse[ProjectCloseResult](
                 requestId=request.requestId,
                 revision=request.revision,
-                result=ProjectCloseResult(closed=self._projects.close()),
+                result=ProjectCloseResult(closed=self._projects.close(deadline=active_deadline)),
             )
         if isinstance(request, ProjectGetOverviewRequest):
-            return self._overview_response(request.requestId, request.revision, self._projects.get_overview())
-        if isinstance(request, ProjectUpdateMetadataRequest):
-            metadata = request.payload.metadata
-            overview = self._projects.update_metadata(
-                expected_revision=request.payload.expectedRevision,
-                name=metadata.name,
-                project_number=metadata.projectNumber,
-                description=metadata.description,
-                status=metadata.status,
+            return self._overview_response(
+                request.requestId,
+                request.revision,
+                self._projects.get_overview(deadline=active_deadline),
             )
-            return self._overview_response(request.requestId, request.revision, overview)
-        backup_path, sha256, created_at = self._projects.create_backup()
-        return SuccessResponse[ProjectBackupResult](
-            requestId=request.requestId,
-            revision=request.revision,
-            result=ProjectBackupResult(fileName=backup_path.name, sha256=sha256, createdAtUtc=created_at),
-        )
+        match request:
+            case ProjectUpdateMetadataRequest():
+                metadata = request.payload.metadata
+                overview = self._projects.update_metadata(
+                    expected_revision=request.payload.expectedRevision,
+                    name=metadata.name,
+                    project_number=metadata.projectNumber,
+                    description=metadata.description,
+                    status=metadata.status,
+                    deadline=active_deadline,
+                )
+                return self._overview_response(request.requestId, request.revision, overview)
+            case ProjectCreateBackupRequest():
+                backup_path, sha256, created_at = self._projects.create_backup(deadline=active_deadline)
+                return SuccessResponse[ProjectBackupResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=ProjectBackupResult(fileName=backup_path.name, sha256=sha256, createdAtUtc=created_at),
+                )
 
     def close(self) -> None:
         self._projects.close()

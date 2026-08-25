@@ -21,6 +21,9 @@
 | Single writer OS lock | `msvcrt` lock + one active session | two-process contention/crash test |
 | Optimistic project revision | `record_revision` command contract | pytest + Electron E2E |
 | Append-only audit | transaction + UPDATE/DELETE triggers | pytest integration |
+| Audit evidence and rollback | changed-fields before/after + atomic transaction | pytest integration |
+| Bounded stateful operations | domain checkpoints + larger transport timeout + worker termination | Vitest + pytest injected deadlines |
+| Unsaved draft lifecycle | renderer draft guard + detached/revision-checked reattach | Electron E2E |
 | Migration backup/rollback | SQLite Backup API + forward migrator | pytest integration |
 | Main-owned project paths | dialogs + recent allowlist | contracts + E2E + preload review |
 | Project persistence packaged | create/update/close/reopen smoke | win-unpacked + portable smoke |

@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_manifest import ProjectManifest
+from impeller_reliability.worker.deadline import RequestDeadline
 
 PROJECT_APPLICATION_ID: Final = 0x49525043
 PROJECT_SCHEMA_VERSION: Final = 1
@@ -30,7 +31,23 @@ def configure_project_connection(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA busy_timeout = 5000")
 
 
-def _migration_0001(connection: sqlite3.Connection, manifest: ProjectManifest) -> None:
+@dataclass(frozen=True, slots=True)
+class ProjectMetadataSeed:
+    name: str
+    project_number: str
+    description: str
+    status: str
+
+
+def _default_metadata_seed() -> ProjectMetadataSeed:
+    return ProjectMetadataSeed(name="Новый проект", project_number="", description="", status="draft")
+
+
+def _migration_0001(
+    connection: sqlite3.Connection,
+    manifest: ProjectManifest,
+    initial_metadata: ProjectMetadataSeed | None,
+) -> None:
     connection.execute("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, applied_at_utc TEXT NOT NULL)")
     connection.execute(
         """
@@ -62,22 +79,43 @@ def _migration_0001(connection: sqlite3.Connection, manifest: ProjectManifest) -
     connection.execute("CREATE TRIGGER project_audit_events_no_update BEFORE UPDATE ON project_audit_events BEGIN SELECT RAISE(ABORT, 'project_audit_append_only'); END")
     connection.execute("CREATE TRIGGER project_audit_events_no_delete BEFORE DELETE ON project_audit_events BEGIN SELECT RAISE(ABORT, 'project_audit_append_only'); END")
     now = manifest.createdAtUtc
-    default_name = "Новый проект"
+    metadata = initial_metadata or _default_metadata_seed()
     connection.execute(
         """
         INSERT INTO project_metadata (
             project_id, name, project_number, description, status, record_revision,
             created_at_utc, updated_at_utc, created_with_application_version
-        ) VALUES (?, ?, '', '', 'draft', 1, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
         """,
-        (manifest.projectId, default_name, now, now, manifest.createdWithApplicationVersion),
+        (
+            manifest.projectId,
+            metadata.name,
+            metadata.project_number,
+            metadata.description,
+            metadata.status,
+            now,
+            now,
+            manifest.createdWithApplicationVersion,
+        ),
     )
     insert_audit(
         connection,
         event_type="project.created",
         actor_kind="application",
         occurred_at_utc=now,
-        payload={"projectId": manifest.projectId, "schemaVersion": PROJECT_SCHEMA_VERSION},
+        payload={
+            "entityType": "project",
+            "entityId": manifest.projectId,
+            "toRevision": 1,
+            "changedFields": ["name", "projectNumber", "description", "status"],
+            "after": {
+                "name": metadata.name,
+                "projectNumber": metadata.project_number,
+                "description": metadata.description,
+                "status": metadata.status,
+            },
+            "schemaVersion": PROJECT_SCHEMA_VERSION,
+        },
     )
 
 
@@ -85,7 +123,7 @@ def _migration_0001(connection: sqlite3.Connection, manifest: ProjectManifest) -
 class Migration:
     version: int
     name: str
-    apply: Callable[[sqlite3.Connection, ProjectManifest], None]
+    apply: Callable[[sqlite3.Connection, ProjectManifest, ProjectMetadataSeed | None], None]
 
 
 MIGRATIONS: tuple[Migration, ...] = (Migration(1, "create_project_container", _migration_0001),)
@@ -96,11 +134,32 @@ class ProjectMigrator:
         self._migrations = tuple(migrations)
         self.latest_version = max((migration.version for migration in self._migrations), default=0)
 
-    def initialize(self, connection: sqlite3.Connection, manifest: ProjectManifest) -> None:
+    def initialize(
+        self,
+        connection: sqlite3.Connection,
+        manifest: ProjectManifest,
+        initial_metadata: ProjectMetadataSeed,
+        deadline: RequestDeadline | None = None,
+    ) -> None:
+        _check_deadline(deadline, "project_initialize")
         connection.execute(f"PRAGMA application_id = {PROJECT_APPLICATION_ID}")
-        self._apply_pending(connection, manifest, current_version=0)
+        self._apply_pending(
+            connection,
+            manifest,
+            current_version=0,
+            initial_metadata=initial_metadata,
+            deadline=deadline,
+        )
 
-    def migrate_existing(self, connection: sqlite3.Connection, database_path: Path, backups_path: Path, manifest: ProjectManifest) -> Path | None:
+    def migrate_existing(
+        self,
+        connection: sqlite3.Connection,
+        database_path: Path,
+        backups_path: Path,
+        manifest: ProjectManifest,
+        deadline: RequestDeadline | None = None,
+    ) -> Path | None:
+        _check_deadline(deadline, "project_schema_read")
         application_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
         if application_id != PROJECT_APPLICATION_ID:
             raise ProjectOperationError("corrupt_project", "project.sqlite имеет неверный application_id.")
@@ -113,22 +172,44 @@ class ProjectMigrator:
             )
         if current_version == self.latest_version:
             return None
-        backup_path = create_verified_backup(connection, database_path, backups_path, current_version)
-        self._apply_pending(connection, manifest, current_version=current_version)
+        backup_path = create_verified_backup(
+            connection,
+            database_path,
+            backups_path,
+            current_version,
+            deadline=deadline,
+        )
+        self._apply_pending(
+            connection,
+            manifest,
+            current_version=current_version,
+            initial_metadata=None,
+            deadline=deadline,
+        )
         return backup_path
 
-    def _apply_pending(self, connection: sqlite3.Connection, manifest: ProjectManifest, *, current_version: int) -> None:
+    def _apply_pending(
+        self,
+        connection: sqlite3.Connection,
+        manifest: ProjectManifest,
+        *,
+        current_version: int,
+        initial_metadata: ProjectMetadataSeed | None,
+        deadline: RequestDeadline | None,
+    ) -> None:
         for migration in self._migrations:
             if migration.version <= current_version:
                 continue
             try:
+                _check_deadline(deadline, f"migration_{migration.version}_begin")
                 connection.execute("BEGIN IMMEDIATE")
-                migration.apply(connection, manifest)
+                migration.apply(connection, manifest, initial_metadata)
                 connection.execute(
                     "INSERT INTO schema_migrations (version, name, applied_at_utc) VALUES (?, ?, ?)",
                     (migration.version, migration.name, utc_now()),
                 )
                 connection.execute(f"PRAGMA user_version = {migration.version}")
+                _check_deadline(deadline, f"migration_{migration.version}_commit")
                 connection.commit()
             except Exception:
                 connection.rollback()
@@ -140,16 +221,28 @@ def create_verified_backup(
     database_path: Path,
     backups_path: Path,
     schema_version: int,
+    *,
+    deadline: RequestDeadline | None = None,
 ) -> Path:
+    _check_deadline(deadline, "backup_prepare")
     backups_path.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     backup_path = backups_path / f"project-v{schema_version}-{stamp}.sqlite"
     try:
         target = sqlite3.connect(backup_path)
         try:
-            source.backup(target)
+            source.backup(
+                target,
+                pages=128,
+                progress=lambda _status, _remaining, _total: _check_deadline(
+                    deadline,
+                    "backup_copy",
+                ),
+                sleep=0.01,
+            )
         finally:
             target.close()
+        _check_deadline(deadline, "backup_verify")
         check = sqlite3.connect(f"file:{backup_path.as_posix()}?mode=ro", uri=True)
         try:
             quick_check = str(check.execute("PRAGMA quick_check").fetchone()[0])
@@ -157,22 +250,31 @@ def create_verified_backup(
             check.close()
         if quick_check != "ok":
             raise ProjectOperationError("storage_error", "Проверка backup project.sqlite завершилась ошибкой.")
+        _check_deadline(deadline, "backup_complete")
         return backup_path
     except Exception:
         backup_path.unlink(missing_ok=True)
         raise
 
 
-def open_project_database(database_path: Path) -> sqlite3.Connection:
+def open_project_database(
+    database_path: Path,
+    *,
+    connection_factory: Callable[[Path], sqlite3.Connection] = sqlite3.connect,
+) -> sqlite3.Connection:
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(database_path)
+        connection = connection_factory(database_path)
         connection.row_factory = sqlite3.Row
         configure_project_connection(connection)
         return connection
-    except (OSError, sqlite3.DatabaseError) as error:
+    except Exception as error:
         if connection is not None:
             connection.close()
+        if isinstance(error, ProjectOperationError):
+            raise
+        if not isinstance(error, (OSError, sqlite3.DatabaseError)):
+            raise
         raise ProjectOperationError("corrupt_project", "project.sqlite повреждён или недоступен.") from error
 
 
@@ -213,9 +315,15 @@ def insert_audit(
     )
 
 
-def sha256_file(path: Path) -> str:
+def sha256_file(path: Path, deadline: RequestDeadline | None = None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            _check_deadline(deadline, "backup_hash")
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _check_deadline(deadline: RequestDeadline | None, stage: str) -> None:
+    if deadline is not None:
+        deadline.check(stage)

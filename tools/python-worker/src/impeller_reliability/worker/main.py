@@ -20,6 +20,7 @@ from impeller_reliability.protocol.envelopes import (
     StorageHealthRequest,
     StorageHealthResult,
 )
+from impeller_reliability.worker.deadline import RequestDeadline
 from impeller_reliability.worker.dispatcher import Dispatcher
 
 MAX_MESSAGE_BYTES = 1_048_576
@@ -85,7 +86,10 @@ def run_worker(state_directory: Path) -> int:
                 raw_request: object = json.loads(decoded, parse_constant=_reject_non_finite)
                 request_id, revision = _request_identity(raw_request)
                 request = REQUEST_ENVELOPE_ADAPTER.validate_python(raw_request)
-                response: ProtocolResponse = dispatcher.dispatch(request)
+                response: ProtocolResponse = dispatcher.dispatch(
+                    request,
+                    RequestDeadline.start(request.deadlineMs),
+                )
             except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, ValueError) as error:
                 response = _contract_error(request_id, revision, f"Некорректный запрос: {error}")
             except ProjectOperationError as error:

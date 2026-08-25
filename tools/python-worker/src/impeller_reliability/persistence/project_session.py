@@ -9,6 +9,7 @@ from impeller_reliability.persistence.project_database import create_verified_ba
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_lock import ProjectLock
 from impeller_reliability.persistence.project_manifest import ProjectManifest
+from impeller_reliability.worker.deadline import RequestDeadline
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +67,9 @@ class ProjectSession:
         project_number: str,
         description: str,
         status: str,
+        deadline: RequestDeadline | None = None,
     ) -> ProjectOverview:
+        _check_deadline(deadline, "metadata_read")
         current = self.overview()
         if current.record_revision != expected_revision:
             raise ProjectOperationError(
@@ -74,6 +77,21 @@ class ProjectSession:
                 "Проект был изменён после открытия формы. Перечитайте данные и повторите изменение.",
                 details={"expectedRevision": expected_revision, "actualRevision": current.record_revision},
             )
+        normalized = {
+            "name": name.strip(),
+            "projectNumber": project_number.strip(),
+            "description": description.strip(),
+            "status": status,
+        }
+        before = {
+            "name": current.name,
+            "projectNumber": current.project_number,
+            "description": current.description,
+            "status": current.status,
+        }
+        changed_fields = [field for field in before if before[field] != normalized[field]]
+        if not changed_fields:
+            return current
         now = utc_now()
         new_revision = current.record_revision + 1
         try:
@@ -84,7 +102,16 @@ class ProjectSession:
                 SET name = ?, project_number = ?, description = ?, status = ?, record_revision = ?, updated_at_utc = ?
                 WHERE project_id = ? AND record_revision = ?
                 """,
-                (name.strip(), project_number.strip(), description.strip(), status, new_revision, now, current.project_id, expected_revision),
+                (
+                    normalized["name"],
+                    normalized["projectNumber"],
+                    normalized["description"],
+                    normalized["status"],
+                    new_revision,
+                    now,
+                    current.project_id,
+                    expected_revision,
+                ),
             )
             if cursor.rowcount != 1:
                 raise ProjectOperationError("revision_conflict", "Редакция проекта изменилась во время сохранения.")
@@ -93,15 +120,28 @@ class ProjectSession:
                 event_type="project.metadata_updated",
                 actor_kind="user",
                 occurred_at_utc=now,
-                payload={"fromRevision": expected_revision, "toRevision": new_revision},
+                payload={
+                    "entityType": "project",
+                    "entityId": current.project_id,
+                    "fromRevision": expected_revision,
+                    "toRevision": new_revision,
+                    "changedFields": changed_fields,
+                    "changes": {field: {"before": before[field], "after": normalized[field]} for field in changed_fields},
+                },
             )
+            _check_deadline(deadline, "metadata_commit")
             self._connection.commit()
         except Exception:
             self._connection.rollback()
             raise
         return self.overview()
 
-    def create_backup(self) -> tuple[Path, str, str]:
+    def create_backup(
+        self,
+        *,
+        deadline: RequestDeadline | None = None,
+    ) -> tuple[Path, str, str]:
+        _check_deadline(deadline, "backup_start")
         created_at = utc_now()
         schema_version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
         backup_path = create_verified_backup(
@@ -109,8 +149,9 @@ class ProjectSession:
             self.path / "project.sqlite",
             self.path / "backups",
             schema_version,
+            deadline=deadline,
         )
-        return (backup_path, sha256_file(backup_path), created_at)
+        return (backup_path, sha256_file(backup_path, deadline), created_at)
 
     def validate(self) -> None:
         validate_project_database(self._connection, self.manifest)
@@ -141,3 +182,8 @@ def _parse_project_status(value: str) -> Literal["draft", "active", "completed",
     if value == "archived":
         return "archived"
     raise ProjectOperationError("corrupt_project", "Статус проекта в project.sqlite не поддерживается.")
+
+
+def _check_deadline(deadline: RequestDeadline | None, stage: str) -> None:
+    if deadline is not None:
+        deadline.check(stage)

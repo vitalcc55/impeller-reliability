@@ -22,14 +22,14 @@ WorkerRuntime: "Python worker runtime" {
 MainRuntime: "Electron Main runtime" {
   WorkerProcess: "one worker process + controlled restart"
   Lifecycle: "starting/ready/unavailable/stopping/stopped"
-  Pending: "requestId + operation + revision + deadline"
+  Pending: "requestId + operation + revision + domain/transport deadlines"
   Paths: "approved file/project paths"
   Recent: "recent project allowlist JSON"
   Status: "handshake and health read model"
 }
 
 RendererRuntime: "React runtime" {
-  Drafts: "unsaved form drafts"
+  Drafts: "unsaved form drafts survive detached worker state"
   QueryCache: "replaceable read-model cache"
   Shell: "navigation and temporary UI preferences"
   Preview: "DEV-only synthetic browser adapter"
@@ -56,4 +56,4 @@ Persisted.Assets -> Derived.Exports
 RendererRuntime.Preview -> RendererRuntime.QueryCache: "synthetic DEV state only"
 ```
 
-App-level `health.sqlite` остаётся отдельной инфраструктурной диагностикой. M02.1 project truth находится только в `.irproj`; Renderer хранит draft, Main — allowlist недавних путей, Python — активную ProjectSession. Browser preview ничего не сохраняет и не является evidence persistence.
+App-level `health.sqlite` остаётся отдельной инфраструктурной диагностикой. M02.1 project truth находится только в `.irproj`; Renderer хранит draft, Main — allowlist недавних путей, Python — активную ProjectSession. Stateful domain timeout проверяется до commit; transport timeout завершает worker и тем самым однозначно снимает ProjectSession и OS lock. Потеря worker не размонтирует форму: повторное присоединение возможно только при совпадении `projectId` и `record_revision`. Browser preview ничего не сохраняет и не является evidence persistence.

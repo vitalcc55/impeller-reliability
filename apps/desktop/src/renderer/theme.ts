@@ -2,7 +2,7 @@ import { createTheme } from '@mantine/core';
 
 export const impellerTheme = createTheme({
   fontFamily: '"Segoe UI", Arial, sans-serif',
-  headings: { fontFamily: '"Etelka Local", "Segoe UI", Arial, sans-serif' },
+  headings: { fontFamily: '"Golos Text Local", "Segoe UI", Arial, sans-serif' },
   primaryColor: 'navy',
   colors: {
     navy: [

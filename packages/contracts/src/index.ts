@@ -438,7 +438,9 @@ export interface ImpellerApi {
     ping(): Promise<RuntimeStatus>;
     restart(): Promise<RuntimeStatus>;
     openLog(): Promise<void>;
+    confirmClose(): Promise<void>;
     subscribeStatus(listener: (status: RuntimeStatus) => void): () => void;
+    subscribeCloseRequested(listener: () => void): () => void;
   };
   readonly project: {
     create(draft: ProjectDraft): Promise<DesktopResult<ProjectOverview>>;

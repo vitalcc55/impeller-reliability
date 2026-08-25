@@ -54,10 +54,12 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
         return Promise.resolve(status);
       },
       openLog: () => Promise.resolve(),
+      confirmClose: () => Promise.resolve(),
       subscribeStatus: (listener) => {
         listeners.add(listener);
         return () => listeners.delete(listener);
       },
+      subscribeCloseRequested: () => () => undefined,
     },
     project: {
       create: (draft) => {

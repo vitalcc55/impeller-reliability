@@ -30,6 +30,65 @@ interface PendingRequest {
   readonly timeout: NodeJS.Timeout;
 }
 
+export interface WorkerOperationPolicy {
+  readonly domainDeadlineMs: number;
+  readonly transportTimeoutMs: number;
+  readonly terminateWorkerOnTimeout: boolean;
+}
+
+export const WORKER_OPERATION_POLICIES = {
+  'system.handshake': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'system.ping': {
+    domainDeadlineMs: 3_000,
+    transportTimeoutMs: 5_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'system.shutdown': {
+    domainDeadlineMs: 2_000,
+    transportTimeoutMs: 3_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'storage.health': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'project.create': {
+    domainDeadlineMs: 15_000,
+    transportTimeoutMs: 18_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'project.open': {
+    domainDeadlineMs: 15_000,
+    transportTimeoutMs: 18_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'project.close': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'project.getOverview': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'project.updateMetadata': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'project.createBackup': {
+    domainDeadlineMs: 25_000,
+    transportTimeoutMs: 28_000,
+    terminateWorkerOnTimeout: true,
+  },
+} as const satisfies Readonly<Record<WorkerOperation, WorkerOperationPolicy>>;
+
 export interface WorkerLifecycleEvent {
   readonly state: WorkerLifecycleState;
   readonly reason: string | null;
@@ -51,6 +110,9 @@ export class WorkerClient {
     private readonly stateDirectory: string,
     private readonly logger: JsonlLogger,
     private readonly onLifecycleChange: (event: WorkerLifecycleEvent) => void,
+    private readonly operationPolicies: Readonly<
+      Record<WorkerOperation, WorkerOperationPolicy>
+    > = WORKER_OPERATION_POLICIES,
   ) {}
 
   public get processId(): number | null {
@@ -79,76 +141,68 @@ export class WorkerClient {
   public request(
     operation: 'system.handshake',
     payload: WorkerOperationMap['system.handshake']['request'],
-    deadlineMs?: number,
   ): Promise<WorkerResponseFor<'system.handshake'>>;
   public request(
     operation: 'system.ping',
     payload: WorkerOperationMap['system.ping']['request'],
-    deadlineMs?: number,
   ): Promise<WorkerResponseFor<'system.ping'>>;
   public request(
     operation: 'system.shutdown',
     payload: WorkerOperationMap['system.shutdown']['request'],
-    deadlineMs?: number,
   ): Promise<WorkerResponseFor<'system.shutdown'>>;
   public request(
     operation: 'storage.health',
     payload: WorkerOperationMap['storage.health']['request'],
-    deadlineMs?: number,
   ): Promise<WorkerResponseFor<'storage.health'>>;
   public request(
     operation: 'project.create',
     payload: WorkerOperationMap['project.create']['request'],
-    deadlineMs?: number,
   ): Promise<WorkerResponseFor<'project.create'>>;
   public request(
     operation: 'project.open',
     payload: WorkerOperationMap['project.open']['request'],
-    deadlineMs?: number,
   ): Promise<WorkerResponseFor<'project.open'>>;
   public request(
     operation: 'project.close',
     payload: WorkerOperationMap['project.close']['request'],
-    deadlineMs?: number,
   ): Promise<WorkerResponseFor<'project.close'>>;
   public request(
     operation: 'project.getOverview',
     payload: WorkerOperationMap['project.getOverview']['request'],
-    deadlineMs?: number,
   ): Promise<WorkerResponseFor<'project.getOverview'>>;
   public request(
     operation: 'project.updateMetadata',
     payload: WorkerOperationMap['project.updateMetadata']['request'],
-    deadlineMs?: number,
   ): Promise<WorkerResponseFor<'project.updateMetadata'>>;
   public request(
     operation: 'project.createBackup',
     payload: WorkerOperationMap['project.createBackup']['request'],
-    deadlineMs?: number,
   ): Promise<WorkerResponseFor<'project.createBackup'>>;
   public request(
     operation: WorkerOperation,
     payload: WorkerOperationMap[WorkerOperation]['request'],
-    deadlineMs = 5_000,
   ): Promise<WorkerResponse> {
     const child = this.#process;
     if (child === null) return Promise.reject(new Error('worker_unavailable'));
     const requestId = randomUUID();
     const revision = this.#revision++;
+    const policy = this.operationPolicies[operation];
     const request = workerRequestSchema.parse({
       protocolVersion: IPC_PROTOCOL_VERSION,
       requestId,
       kind: 'request',
       operation,
       revision,
-      deadlineMs,
+      deadlineMs: policy.domainDeadlineMs,
       payload,
     });
     return new Promise<WorkerResponse>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pending.delete(requestId);
-        reject(new Error('worker_timeout'));
-      }, deadlineMs);
+        const error = new Error(`worker_transport_timeout:${operation}`);
+        reject(error);
+        if (policy.terminateWorkerOnTimeout) this.#terminateAfterTimeout(child, error);
+      }, policy.transportTimeoutMs);
       this.#pending.set(requestId, { operation, revision, resolve, reject, timeout });
       child.stdin.write(`${JSON.stringify(request)}\n`, 'utf8', (error) => {
         if (error === null || error === undefined) return;
@@ -180,7 +234,7 @@ export class WorkerClient {
     this.#emitLifecycle('stopping', null);
     const closePromise = new Promise<void>((resolve) => child.once('close', () => resolve()));
     try {
-      await this.request('system.shutdown', {}, timeoutMs);
+      await this.request('system.shutdown', {});
     } catch (error) {
       await this.logger.write({
         severity: 'warning',
@@ -291,6 +345,12 @@ export class WorkerClient {
     this.#failAll(error);
     const child = this.#process;
     if (child !== null) child.kill('SIGKILL');
+    this.#emitLifecycle('unavailable', error.message);
+  }
+
+  #terminateAfterTimeout(child: ChildProcessWithoutNullStreams, error: Error): void {
+    this.#failAll(error);
+    if (this.#process === child) child.kill('SIGKILL');
     this.#emitLifecycle('unavailable', error.message);
   }
 

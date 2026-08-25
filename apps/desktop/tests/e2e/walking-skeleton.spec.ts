@@ -50,7 +50,15 @@ test('renderer reflects worker failure and controlled restart through the narrow
         const system: unknown = Reflect.get(api, 'system');
         return typeof system === 'object' && system !== null ? Reflect.ownKeys(system).sort() : [];
       }),
-    ).toEqual(['getStatus', 'openLog', 'ping', 'restart', 'subscribeStatus']);
+    ).toEqual([
+      'confirmClose',
+      'getStatus',
+      'openLog',
+      'ping',
+      'restart',
+      'subscribeCloseRequested',
+      'subscribeStatus',
+    ]);
     expect(
       await page.evaluate(() => {
         const api: unknown = Reflect.get(window, 'impeller');
@@ -119,6 +127,29 @@ test('renderer reflects worker failure and controlled restart through the narrow
     await expect(page.getByText('Есть несохранённые изменения')).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Проект надёжности РК' })).toBeVisible();
     await page.getByRole('button', { name: 'Продолжить редактирование' }).click();
+    const dirtyWorkerId = workerProcessIds(mainProcessId)[0];
+    if (dirtyWorkerId === undefined) throw new Error('dirty_worker_process_missing');
+    process.kill(dirtyWorkerId);
+    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
+    await expect(page.getByLabel('Название проекта')).toHaveValue('Несохранённый draft');
+    await page.getByRole('button', { name: 'Диагностика' }).click();
+    await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
+    await expect(page.getByRole('dialog', { name: 'Есть несохранённые изменения' })).toBeVisible();
+    await page.getByRole('button', { name: 'Перезапустить и сохранить черновик' }).click();
+    await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
+    await page.getByRole('button', { name: 'Проекты' }).click();
+    await expect(page.getByLabel('Название проекта')).toHaveValue('Несохранённый draft');
+    await expect(
+      page.getByText('Ядро перезапущено. Несохранённый черновик сохранён.'),
+    ).toBeVisible();
+
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.close();
+    });
+    await expect(page.getByRole('dialog', { name: 'Есть несохранённые изменения' })).toBeVisible();
+    await expect(page.getByText(/Закрыть приложение без сохранения/u)).toBeVisible();
+    await page.getByRole('button', { name: 'Продолжить редактирование' }).click();
+    await expect(page.getByLabel('Название проекта')).toHaveValue('Несохранённый draft');
     await page.getByLabel('Название проекта').fill('Проект надёжности РК');
     await page.screenshot({
       path: resolve(import.meta.dirname, '../../../../.tmp/.codex/evidence/renderer.png'),

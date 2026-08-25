@@ -14,8 +14,10 @@ from uuid import uuid4
 import pytest
 
 from impeller_reliability.application.project_service import ProjectService
+from impeller_reliability.persistence import project_database
 from impeller_reliability.persistence.project_database import MIGRATIONS, Migration, ProjectMigrator, configure_project_connection
 from impeller_reliability.persistence.project_errors import ProjectOperationError
+from impeller_reliability.worker.deadline import RequestDeadline
 
 
 def _create_project(path: Path) -> ProjectService:
@@ -75,8 +77,18 @@ def test_create_update_close_and_reopen_with_cyrillic_path(tmp_path: Path) -> No
     reopened.close()
 
     with _database(project_path) as connection:
-        events = connection.execute("SELECT event_type FROM project_audit_events ORDER BY sequence").fetchall()
+        events = connection.execute("SELECT event_type, payload_json FROM project_audit_events ORDER BY sequence").fetchall()
     assert [str(row["event_type"]) for row in events] == ["project.created", "project.metadata_updated"]
+    created_payload = json.loads(str(events[0]["payload_json"]))
+    assert created_payload["after"] == {
+        "description": "Проверка контейнера с кириллицей.",
+        "name": "Проект рабочего колеса",
+        "projectNumber": "ИР-001",
+        "status": "draft",
+    }
+    update_payload = json.loads(str(events[1]["payload_json"]))
+    assert update_payload["changedFields"] == ["name", "projectNumber", "description", "status"]
+    assert update_payload["changes"]["status"] == {"before": "draft", "after": "active"}
 
 
 def test_stale_revision_is_rejected_without_audit_event(tmp_path: Path) -> None:
@@ -105,6 +117,46 @@ def test_stale_revision_is_rejected_without_audit_event(tmp_path: Path) -> None:
     with _database(project_path) as connection:
         count = int(connection.execute("SELECT count(*) FROM project_audit_events").fetchone()[0])
     assert count == 2
+
+
+def test_noop_update_does_not_create_revision_or_false_changed_fields(tmp_path: Path) -> None:
+    project_path = tmp_path / "noop.irproj"
+    service = _create_project(project_path)
+    unchanged = service.update_metadata(
+        expected_revision=1,
+        name="  Проект рабочего колеса  ",
+        project_number=" ИР-001 ",
+        description=" Проверка контейнера с кириллицей. ",
+        status="draft",
+    )
+    assert unchanged.record_revision == 1
+    service.close()
+    with _database(project_path) as connection:
+        events = connection.execute("SELECT event_type, payload_json FROM project_audit_events ORDER BY sequence").fetchall()
+    assert [str(row["event_type"]) for row in events] == ["project.created"]
+    assert "changes" not in json.loads(str(events[0]["payload_json"]))
+
+
+def test_audit_failure_rolls_back_metadata_update(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project_path = tmp_path / "audit-rollback.irproj"
+    service = _create_project(project_path)
+
+    def fail_audit(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("audit write failed")
+
+    monkeypatch.setattr("impeller_reliability.persistence.project_session.insert_audit", fail_audit)
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        service.update_metadata(
+            expected_revision=1,
+            name="Не должно сохраниться",
+            project_number="ИР-999",
+            description="rollback",
+            status="active",
+        )
+    overview = service.get_overview()
+    assert overview.name == "Проект рабочего колеса"
+    assert overview.record_revision == 1
+    service.close()
 
 
 def test_manual_backup_and_active_session_guards(tmp_path: Path) -> None:
@@ -175,7 +227,11 @@ def test_backup_precedes_forward_migration(tmp_path: Path) -> None:
     service.close()
     manifest = json.loads((project_path / "project-manifest.json").read_text(encoding="utf-8"))
 
-    def migration_0002(connection: sqlite3.Connection, _manifest: object) -> None:
+    def migration_0002(
+        connection: sqlite3.Connection,
+        _manifest: object,
+        _initial_metadata: object,
+    ) -> None:
         connection.execute("CREATE TABLE migration_marker (value TEXT NOT NULL)")
 
     from impeller_reliability.persistence.project_manifest import ProjectManifest
@@ -198,7 +254,11 @@ def test_failed_migration_rolls_back_and_keeps_verified_backup(tmp_path: Path) -
     service.close()
     from impeller_reliability.persistence.project_manifest import read_manifest
 
-    def broken_migration(connection: sqlite3.Connection, _manifest: object) -> None:
+    def broken_migration(
+        connection: sqlite3.Connection,
+        _manifest: object,
+        _initial_metadata: object,
+    ) -> None:
         connection.execute("CREATE TABLE should_rollback (value TEXT NOT NULL)")
         raise RuntimeError("migration failed")
 
@@ -232,6 +292,90 @@ def test_failed_create_leaves_no_final_or_staging_directory(tmp_path: Path) -> N
     assert raised.value.code == "storage_error"
     assert not project_path.exists()
     assert list(tmp_path.glob("*.creating-*")) == []
+
+
+class _DelayedClock:
+    def __init__(self, expire_on_call: int) -> None:
+        self._expire_on_call = expire_on_call
+        self._calls = 0
+
+    def __call__(self) -> float:
+        self._calls += 1
+        return 2.0 if self._calls >= self._expire_on_call else 0.0
+
+
+def test_delayed_create_times_out_without_final_or_staging_directory(tmp_path: Path) -> None:
+    project_path = tmp_path / "delayed-create.irproj"
+    clock = _DelayedClock(expire_on_call=3)
+    deadline = RequestDeadline.start(1_000, clock=clock)
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().create(
+            path=str(project_path),
+            application_instance_id=str(uuid4()),
+            application_version="0.1.0",
+            name="Проект",
+            project_number="",
+            description="",
+            status="draft",
+            deadline=deadline,
+        )
+    assert raised.value.code == "timeout"
+    assert not project_path.exists()
+    assert list(tmp_path.glob("*.creating-*")) == []
+
+
+def test_delayed_open_times_out_and_releases_lock(tmp_path: Path) -> None:
+    project_path = tmp_path / "delayed-open.irproj"
+    service = _create_project(project_path)
+    service.close()
+    clock = _DelayedClock(expire_on_call=3)
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(
+            path=str(project_path),
+            application_instance_id=str(uuid4()),
+            deadline=RequestDeadline.start(1_000, clock=clock),
+        )
+    assert raised.value.code == "timeout"
+    reopened = ProjectService()
+    reopened.open(path=str(project_path), application_instance_id=str(uuid4()))
+    reopened.close()
+
+
+def test_delayed_backup_removes_partial_file_and_keeps_session(tmp_path: Path) -> None:
+    project_path = tmp_path / "delayed-backup.irproj"
+    service = _create_project(project_path)
+    clock = _DelayedClock(expire_on_call=5)
+    with pytest.raises(ProjectOperationError) as raised:
+        service.create_backup(deadline=RequestDeadline.start(1_000, clock=clock))
+    assert raised.value.code == "timeout"
+    assert list((project_path / "backups").glob("*.sqlite")) == []
+    assert service.get_overview().record_revision == 1
+    service.close()
+
+
+def test_open_database_closes_connection_when_wal_configuration_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[sqlite3.Connection] = []
+
+    def capture_connection(database: Path) -> sqlite3.Connection:
+        connection = sqlite3.connect(database)
+        captured.append(connection)
+        return connection
+
+    def fail_configuration(_connection: sqlite3.Connection) -> None:
+        raise ProjectOperationError("storage_error", "WAL unavailable")
+
+    monkeypatch.setattr(project_database, "configure_project_connection", fail_configuration)
+    with pytest.raises(ProjectOperationError, match="WAL unavailable"):
+        project_database.open_project_database(
+            tmp_path / "failed.sqlite",
+            connection_factory=capture_connection,
+        )
+    assert len(captured) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        captured[0].execute("SELECT 1")
 
 
 def test_os_lock_blocks_second_process_and_releases_after_crash(tmp_path: Path) -> None:

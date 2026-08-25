@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 ProjectErrorCode = Literal[
+    "timeout",
     "project_locked",
     "corrupt_project",
     "incompatible_schema",

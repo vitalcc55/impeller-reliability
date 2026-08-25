@@ -37,6 +37,7 @@ let mainWindow: BrowserWindow | null = null;
 let workerClient: WorkerClient | null = null;
 let restartPromise: Promise<RuntimeStatus> | null = null;
 let quitting = false;
+let rendererCloseApproved = false;
 const applicationInstanceId = randomUUID();
 
 declare const __APPLICATION_VERSION__: string;
@@ -149,6 +150,10 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
     return refreshStatus();
   });
   ipcMain.handle(IPC_CHANNELS.restart, () => restartWorker());
+  ipcMain.handle(IPC_CHANNELS.confirmClose, () => {
+    rendererCloseApproved = true;
+    app.quit();
+  });
   ipcMain.handle(IPC_CHANNELS.openLog, async () => {
     const result = await shell.openPath(logPath);
     if (result !== '') throw new Error(`open_log_failed:${result}`);
@@ -391,6 +396,12 @@ async function createWindow(): Promise<void> {
   mainWindow.webContents.session.setPermissionRequestHandler(
     (_webContents, _permission, callback) => callback(false),
   );
+  mainWindow.on('close', (event) => {
+    if (quitting || rendererCloseApproved || process.env['IMPELLER_SMOKE_OUTPUT'] !== undefined)
+      return;
+    event.preventDefault();
+    mainWindow?.webContents.send(IPC_CHANNELS.closeRequested);
+  });
   mainWindow.once('ready-to-show', () => {
     if (process.env['IMPELLER_SMOKE_OUTPUT'] === undefined) mainWindow?.show();
   });
@@ -470,6 +481,7 @@ async function runSmokeIfRequested(): Promise<void> {
   if (Number.isInteger(holdMs) && holdMs > 0 && holdMs <= 5_000) {
     await new Promise<void>((resolveHold) => setTimeout(resolveHold, holdMs));
   }
+  rendererCloseApproved = true;
   app.quit();
 }
 
