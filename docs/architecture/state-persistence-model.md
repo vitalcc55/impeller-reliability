@@ -5,16 +5,16 @@
 ```d2
 direction: down
 
-Persisted: "Future project source of truth" {
-  Sqlite: "project.sqlite: entities, revisions, audit, snapshots" { shape: cylinder }
-  Imports: "imports/r130sh: immutable source packages + SHA-256"
-  Assets: "photos, spectra, documents"
-  Manifest: "project-manifest.json"
-  Backups: "migration/project backups"
+Persisted: "M02.1 project source of truth" {
+  Sqlite: "project.sqlite: metadata, record_revision, audit" { shape: cylinder }
+  Manifest: "project-manifest.json: container identity"
+  Backups: "verified migration/manual SQLite backups"
+  Assets: "assets/documents: reserved for M02.2 sources"
 }
 
 WorkerRuntime: "Python worker runtime" {
-  Connection: "one sequential SQLite writer"
+  Connection: "one ProjectSession + sequential SQLite writer"
+  Lock: "Windows OS-held exclusive lock"
   Jobs: "request/job progress + cancellation"
   Canonical: "validated domain values and report inputs"
 }
@@ -24,6 +24,7 @@ MainRuntime: "Electron Main runtime" {
   Lifecycle: "starting/ready/unavailable/stopping/stopped"
   Pending: "requestId + operation + revision + deadline"
   Paths: "approved file/project paths"
+  Recent: "recent project allowlist JSON"
   Status: "handshake and health read model"
 }
 
@@ -41,8 +42,9 @@ Derived: "Replaceable outputs" {
 }
 
 Persisted.Sqlite -> WorkerRuntime.Connection
-Persisted.Imports -> WorkerRuntime.Canonical
 Persisted.Assets -> WorkerRuntime.Canonical
+Persisted.Manifest -> WorkerRuntime.Connection
+WorkerRuntime.Lock -> Persisted.Sqlite: "one writer"
 WorkerRuntime.Canonical -> Persisted.Sqlite
 WorkerRuntime.Canonical -> MainRuntime.Status
 MainRuntime.Status -> RendererRuntime.QueryCache
@@ -54,4 +56,4 @@ Persisted.Assets -> Derived.Exports
 RendererRuntime.Preview -> RendererRuntime.QueryCache: "synthetic DEV state only"
 ```
 
-M01 persistent state ограничен инфраструктурной `schema_info` в health database; положительный verdict требует foreign keys, `quick_check`, ожидаемую schema version и WAL. Lifecycle/revision являются runtime state и не сохраняются. Browser preview ничего не сохраняет и не является evidence предметного расчёта.
+App-level `health.sqlite` остаётся отдельной инфраструктурной диагностикой. M02.1 project truth находится только в `.irproj`; Renderer хранит draft, Main — allowlist недавних путей, Python — активную ProjectSession. Browser preview ничего не сохраняет и не является evidence persistence.

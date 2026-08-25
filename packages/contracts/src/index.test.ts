@@ -52,4 +52,34 @@ describe('worker contracts', () => {
       }),
     ).toThrow();
   });
+
+  it('validates project commands and rejects a path on session operations', () => {
+    expect(
+      workerRequestSchema.parse({
+        protocolVersion: 1,
+        requestId: 'project-1',
+        kind: 'request',
+        operation: 'project.create',
+        revision: 4,
+        deadlineMs: 5_000,
+        payload: {
+          path: 'C:\\Проекты\\Колесо.irproj',
+          applicationInstanceId: 'instance-1',
+          applicationVersion: '0.1.0',
+          draft: { name: 'Колесо', projectNumber: '', description: '', status: 'draft' },
+        },
+      }).operation,
+    ).toBe('project.create');
+    expect(
+      workerRequestSchema.safeParse({
+        protocolVersion: 1,
+        requestId: 'project-2',
+        kind: 'request',
+        operation: 'project.getOverview',
+        revision: 5,
+        deadlineMs: 5_000,
+        payload: { path: 'C:\\arbitrary.irproj' },
+      }).success,
+    ).toBe(false);
+  });
 });

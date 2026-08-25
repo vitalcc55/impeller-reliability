@@ -16,3 +16,11 @@
 | Portable x64 | electron-builder | real portable smoke |
 | Windows quality automation | `.github/workflows/quality.yml` | GitHub Actions status check |
 | No business logic | capability/DB allowlists | source/test review |
+| Atomic `.irproj` container | Python ProjectService staging/rename | pytest integration + packaged smoke |
+| Python-owned project SQLite | ProjectSession/ProjectMigrator | pytest + E2E |
+| Single writer OS lock | `msvcrt` lock + one active session | two-process contention/crash test |
+| Optimistic project revision | `record_revision` command contract | pytest + Electron E2E |
+| Append-only audit | transaction + UPDATE/DELETE triggers | pytest integration |
+| Migration backup/rollback | SQLite Backup API + forward migrator | pytest integration |
+| Main-owned project paths | dialogs + recent allowlist | contracts + E2E + preload review |
+| Project persistence packaged | create/update/close/reopen smoke | win-unpacked + portable smoke |

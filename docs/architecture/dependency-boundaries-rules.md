@@ -45,6 +45,7 @@ Contracts -> React: "FORBIDDEN" { style.stroke-dash: 5 }
 Contracts -> Electron: "FORBIDDEN" { style.stroke-dash: 5 }
 WorkerApplication -> Electron: "FORBIDDEN" { style.stroke-dash: 5 }
 Main -> SQLite: "FORBIDDEN: Python owns storage" { style.stroke-dash: 5 }
+Renderer -> Persistence: "FORBIDDEN: no paths/locks/project.sqlite" { style.stroke-dash: 5 }
 Main -> Network: "FORBIDDEN: offline product" { style.stroke-dash: 5 }
 WorkerApplication -> Network: "FORBIDDEN" { style.stroke-dash: 5 }
 Main -> StandControl: "FORBIDDEN" { style.stroke-dash: 5 }

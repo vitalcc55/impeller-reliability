@@ -11,7 +11,7 @@
 - Browser dev preview — основная интерактивная поверхность разработки renderer;
 - PyInstaller onedir внутри electron-builder portable — Windows x64 поставка.
 
-M00–M01 реализуют walking skeleton. РБД, РПТ, ПМН, FMEA, статистика, Марков, Монте-Карло, вибрация и R130SH import/export не считаются реализованными до появления утверждённых контрактов и тестов.
+M00–M01 реализуют walking skeleton; M02.1 добавляет `.irproj`, ProjectSession, metadata revision и append-only audit. Customer/WheelModel/Specimen/TestCampaign/SourceDocument относятся к M02.2. РБД, РПТ, ПМН, FMEA, статистика, Марков, Монте-Карло, вибрация и R130SH import/export не считаются реализованными до появления утверждённых контрактов и тестов.
 
 ## Scope
 

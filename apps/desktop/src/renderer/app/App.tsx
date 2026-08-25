@@ -1,36 +1,14 @@
-import { Badge, Button, Group, Paper, Stack, Text, Title } from '@mantine/core';
+import { Button, Text } from '@mantine/core';
 import { useCallback, useEffect, useState } from 'react';
 
 import type { ImpellerApi, RuntimeStatus } from '@impeller-reliability/contracts';
 
-type UiPhase = 'loading' | 'ready' | 'unavailable' | 'reconnecting' | 'error' | 'stopped';
+import logoUrl from '../assets/logo-lic-vvu.svg';
+import { DiagnosticsPanel } from '../features/diagnostics/DiagnosticsPanel';
+import { ProjectWorkspace } from '../features/projects/ProjectWorkspace';
 
-const phaseLabel: Readonly<Record<UiPhase, string>> = {
-  loading: 'Запуск',
-  ready: 'Готов',
-  unavailable: 'Недоступен',
-  reconnecting: 'Перезапуск',
-  error: 'Ошибка',
-  stopped: 'Остановлен',
-};
-
-const statusClassName = (phase: UiPhase): string => {
-  if (phase === 'ready') return 'status-badge status-badge--success';
-  if (phase === 'loading' || phase === 'reconnecting') {
-    return 'status-badge status-badge--warning';
-  }
-  if (phase === 'unavailable' || phase === 'error') {
-    return 'status-badge status-badge--danger';
-  }
-  return 'status-badge';
-};
-
-const phaseFromRuntime = (runtime: RuntimeStatus): UiPhase => {
-  if (runtime.workerStatus === 'ready') return 'ready';
-  if (runtime.workerStatus === 'unavailable') return 'unavailable';
-  if (runtime.workerStatus === 'stopped') return 'stopped';
-  return 'loading';
-};
+export type UiPhase = 'loading' | 'ready' | 'unavailable' | 'reconnecting' | 'error' | 'stopped';
+type AppView = 'projects' | 'diagnostics';
 
 const browserPreviewRequiredStatus: RuntimeStatus = {
   applicationVersion: '0.1.0',
@@ -43,12 +21,20 @@ const browserPreviewRequiredStatus: RuntimeStatus = {
   message: 'Откройте renderer с параметром ?preview=ready или ?preview=unavailable.',
 };
 
+const phaseFromRuntime = (runtime: RuntimeStatus): UiPhase => {
+  if (runtime.workerStatus === 'ready') return 'ready';
+  if (runtime.workerStatus === 'unavailable') return 'unavailable';
+  if (runtime.workerStatus === 'stopped') return 'stopped';
+  return 'loading';
+};
+
 export interface AppProps {
   readonly browserPreview: boolean;
   readonly desktopApi: ImpellerApi | null;
 }
 
 export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element {
+  const [view, setView] = useState<AppView>('projects');
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [phase, setPhase] = useState<UiPhase>('loading');
   const [checking, setChecking] = useState(false);
@@ -60,7 +46,6 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
     setPhase(phaseFromRuntime(nextRuntime));
     setErrorMessage(null);
   }, []);
-
   const showConnectionError = useCallback((): void => {
     setPhase('error');
     setErrorMessage(
@@ -92,6 +77,7 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
   const displayedPhase: UiPhase = restarting ? 'reconnecting' : phase;
   const displayedMessage =
     errorMessage ?? displayedRuntime?.message ?? 'Получение состояния локального контура…';
+  const workerReady = displayedPhase === 'ready';
 
   const checkConnection = async (): Promise<void> => {
     if (desktopApi === null) return;
@@ -105,7 +91,6 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
       setChecking(false);
     }
   };
-
   const restartWorker = async (): Promise<void> => {
     if (desktopApi === null) return;
     setRestarting(true);
@@ -121,82 +106,74 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
   };
 
   return (
-    <main className="app-shell">
-      <section className="hero" aria-labelledby="application-title">
-        <Text className="product-name">Impeller Reliability</Text>
-        <Title id="application-title" order={1}>
-          Калькулятор показателей надёжности рабочих колёс вентиляторов
-        </Title>
-        <Text c="dimmed" maw={720}>
-          Инфраструктурный экран M01. Предметные расчёты ещё не реализованы.
-        </Text>
-      </section>
-
-      <Paper className="status-panel" radius="lg" withBorder>
-        <Group justify="space-between" align="flex-start">
-          <Stack className="status-copy" gap={4}>
-            <Title order={2}>Состояние локального контура</Title>
-            <Text className="status-message" c="dimmed" aria-live="polite">
-              {displayedMessage}
-            </Text>
-          </Stack>
-          <Badge className={statusClassName(displayedPhase)} size="lg" variant="light">
-            {phaseLabel[displayedPhase]}
-          </Badge>
-        </Group>
-
-        <dl className="status-grid">
-          <div>
-            <dt>Версия приложения</dt>
-            <dd>{displayedRuntime?.applicationVersion ?? '—'}</dd>
+    <div className="desktop-shell">
+      <header className="shell-header">
+        <div className="brand-lockup">
+          <span className="brand-logo-frame">
+            <img src={logoUrl} alt="ЛИЦ ВВУ" className="brand-logo" />
+          </span>
+          <div className="product-lockup">
+            <Text fw={700}>Impeller Reliability</Text>
+            <Text size="sm">Надёжность рабочих колёс</Text>
           </div>
-          <div>
-            <dt>Electron</dt>
-            <dd>{displayedRuntime?.electronVersion ?? '—'}</dd>
-          </div>
-          <div>
-            <dt>Python worker</dt>
-            <dd>{displayedRuntime?.workerVersion ?? '—'}</dd>
-          </div>
-          <div>
-            <dt>IPC protocol</dt>
-            <dd>{displayedRuntime?.protocolVersion ?? '—'}</dd>
-          </div>
-          <div>
-            <dt>SQLite</dt>
-            <dd>{displayedRuntime?.sqliteStatus ?? 'pending'}</dd>
-          </div>
-          <div>
-            <dt>Режим</dt>
-            <dd>{displayedRuntime?.mode ?? '—'}</dd>
-          </div>
-        </dl>
-
-        <Group className="status-actions" mt="xl">
+        </div>
+        <nav className="shell-navigation" aria-label="Разделы приложения">
           <Button
-            disabled={desktopApi === null || restarting}
-            loading={checking}
-            onClick={() => void checkConnection()}
-          >
-            Проверить связь
-          </Button>
-          <Button
-            disabled={desktopApi === null || checking}
-            loading={restarting}
-            variant="default"
-            onClick={() => void restartWorker()}
-          >
-            Перезапустить ядро
-          </Button>
-          <Button
-            disabled={desktopApi === null || browserPreview || checking || restarting}
+            aria-current={view === 'projects' ? 'page' : undefined}
+            className={
+              view === 'projects'
+                ? 'navigation-button navigation-button--active'
+                : 'navigation-button'
+            }
             variant="subtle"
-            onClick={() => void desktopApi?.system.openLog()}
+            onClick={() => setView('projects')}
           >
-            Открыть журнал
+            Проекты
           </Button>
-        </Group>
-      </Paper>
-    </main>
+          <Button
+            aria-current={view === 'diagnostics' ? 'page' : undefined}
+            className={
+              view === 'diagnostics'
+                ? 'navigation-button navigation-button--active'
+                : 'navigation-button'
+            }
+            variant="subtle"
+            onClick={() => setView('diagnostics')}
+          >
+            Диагностика
+          </Button>
+        </nav>
+        <div
+          className={`runtime-indicator runtime-indicator--${displayedPhase}`}
+          aria-label={displayedMessage}
+        >
+          <span aria-hidden="true" />
+          {workerReady ? 'Контур готов' : 'Требуется внимание'}
+        </div>
+      </header>
+
+      <main className="shell-content">
+        <section hidden={view !== 'projects'} aria-label="Работа с проектами">
+          <ProjectWorkspace
+            key={workerReady ? 'worker-ready' : 'worker-unavailable'}
+            desktopApi={desktopApi}
+            workerReady={workerReady}
+          />
+        </section>
+        <section hidden={view !== 'diagnostics'} aria-label="Диагностика приложения">
+          <DiagnosticsPanel
+            browserPreview={browserPreview}
+            desktopApi={desktopApi}
+            runtime={displayedRuntime}
+            phase={displayedPhase}
+            message={displayedMessage}
+            checking={checking}
+            restarting={restarting}
+            onCheck={() => void checkConnection()}
+            onRestart={() => void restartWorker()}
+          />
+        </section>
+      </main>
+    </div>
   );
 }

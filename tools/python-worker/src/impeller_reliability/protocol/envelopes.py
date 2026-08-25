@@ -2,9 +2,22 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
-Operation = Literal["system.handshake", "system.ping", "system.shutdown", "storage.health"]
+Operation = Literal[
+    "system.handshake",
+    "system.ping",
+    "system.shutdown",
+    "storage.health",
+    "project.create",
+    "project.open",
+    "project.close",
+    "project.getOverview",
+    "project.updateMetadata",
+    "project.createBackup",
+]
+
+ProjectStatus = Literal["draft", "active", "completed", "archived"]
 
 
 class EmptyPayload(BaseModel):
@@ -41,8 +54,92 @@ class StorageHealthRequest(RequestBase):
     payload: EmptyPayload
 
 
+class ProjectDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    name: str = Field(min_length=1, max_length=200)
+    projectNumber: str = Field(max_length=100)
+    description: str = Field(max_length=4000)
+    status: ProjectStatus
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized == "":
+            raise ValueError("project_name_blank")
+        return normalized
+
+    @field_validator("projectNumber", "description")
+    @classmethod
+    def normalize_optional_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class ProjectCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    path: str = Field(min_length=1, max_length=32_767)
+    applicationInstanceId: str = Field(min_length=1, max_length=128)
+    applicationVersion: str = Field(min_length=1, max_length=64)
+    draft: ProjectDraft
+
+
+class ProjectOpenPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    path: str = Field(min_length=1, max_length=32_767)
+    applicationInstanceId: str = Field(min_length=1, max_length=128)
+
+
+class ProjectUpdateMetadataPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expectedRevision: int = Field(ge=1)
+    metadata: ProjectDraft
+
+
+class ProjectCreateRequest(RequestBase):
+    operation: Literal["project.create"]
+    payload: ProjectCreatePayload
+
+
+class ProjectOpenRequest(RequestBase):
+    operation: Literal["project.open"]
+    payload: ProjectOpenPayload
+
+
+class ProjectCloseRequest(RequestBase):
+    operation: Literal["project.close"]
+    payload: EmptyPayload
+
+
+class ProjectGetOverviewRequest(RequestBase):
+    operation: Literal["project.getOverview"]
+    payload: EmptyPayload
+
+
+class ProjectUpdateMetadataRequest(RequestBase):
+    operation: Literal["project.updateMetadata"]
+    payload: ProjectUpdateMetadataPayload
+
+
+class ProjectCreateBackupRequest(RequestBase):
+    operation: Literal["project.createBackup"]
+    payload: EmptyPayload
+
+
 type RequestEnvelope = Annotated[
-    HandshakeRequest | PingRequest | ShutdownRequest | StorageHealthRequest,
+    HandshakeRequest
+    | PingRequest
+    | ShutdownRequest
+    | StorageHealthRequest
+    | ProjectCreateRequest
+    | ProjectOpenRequest
+    | ProjectCloseRequest
+    | ProjectGetOverviewRequest
+    | ProjectUpdateMetadataRequest
+    | ProjectCreateBackupRequest,
     Field(discriminator="operation"),
 ]
 REQUEST_ENVELOPE_ADAPTER: TypeAdapter[RequestEnvelope] = TypeAdapter(RequestEnvelope)
@@ -85,6 +182,36 @@ class StorageHealthResult(BaseModel):
     journalMode: str
 
 
+class ProjectOverviewResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    projectId: str
+    path: str
+    name: str
+    projectNumber: str
+    description: str
+    status: ProjectStatus
+    recordRevision: int = Field(ge=1)
+    createdAtUtc: str
+    updatedAtUtc: str
+    createdWithApplicationVersion: str
+    schemaVersion: int = Field(ge=1)
+
+
+class ProjectCloseResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    closed: bool
+
+
+class ProjectBackupResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    fileName: str
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    createdAtUtc: str
+
+
 class ErrorPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -96,6 +223,10 @@ class ErrorPayload(BaseModel):
         "cancelled",
         "timeout",
         "worker_unavailable",
+        "project_locked",
+        "corrupt_project",
+        "incompatible_schema",
+        "revision_conflict",
         "internal_error",
     ]
     message: str
@@ -116,7 +247,15 @@ class SuccessResponse[ResultT: BaseModel](BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-type SuccessResponseType = SuccessResponse[HandshakeResult] | SuccessResponse[PingResult] | SuccessResponse[ShutdownResult] | SuccessResponse[StorageHealthResult]
+type SuccessResponseType = (
+    SuccessResponse[HandshakeResult]
+    | SuccessResponse[PingResult]
+    | SuccessResponse[ShutdownResult]
+    | SuccessResponse[StorageHealthResult]
+    | SuccessResponse[ProjectOverviewResult]
+    | SuccessResponse[ProjectCloseResult]
+    | SuccessResponse[ProjectBackupResult]
+)
 
 
 class ErrorResponse(BaseModel):

@@ -1,6 +1,16 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
-import { runtimeStatusSchema, type ImpellerApi } from '@impeller-reliability/contracts';
+import {
+  createDesktopResultSchema,
+  projectBackupResultSchema,
+  projectCloseResultSchema,
+  projectDraftSchema,
+  projectOverviewSchema,
+  projectUpdateMetadataPayloadSchema,
+  recentProjectsSchema,
+  runtimeStatusSchema,
+  type ImpellerApi,
+} from '@impeller-reliability/contracts';
 
 import { IPC_CHANNELS } from '../main/channels';
 
@@ -20,6 +30,43 @@ const api: ImpellerApi = {
       ipcRenderer.on(IPC_CHANNELS.statusChanged, handleStatus);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.statusChanged, handleStatus);
     },
+  },
+  project: {
+    create: async (draft) =>
+      createDesktopResultSchema(projectOverviewSchema).parse(
+        await ipcRenderer.invoke(IPC_CHANNELS.projectCreate, projectDraftSchema.parse(draft)),
+      ),
+    open: async () =>
+      createDesktopResultSchema(projectOverviewSchema).parse(
+        await ipcRenderer.invoke(IPC_CHANNELS.projectOpen),
+      ),
+    openRecent: async (path) =>
+      createDesktopResultSchema(projectOverviewSchema).parse(
+        await ipcRenderer.invoke(IPC_CHANNELS.projectOpenRecent, path),
+      ),
+    close: async () =>
+      createDesktopResultSchema(projectCloseResultSchema).parse(
+        await ipcRenderer.invoke(IPC_CHANNELS.projectClose),
+      ),
+    getOverview: async () =>
+      createDesktopResultSchema(projectOverviewSchema).parse(
+        await ipcRenderer.invoke(IPC_CHANNELS.projectGetOverview),
+      ),
+    updateMetadata: async (command) =>
+      createDesktopResultSchema(projectOverviewSchema).parse(
+        await ipcRenderer.invoke(
+          IPC_CHANNELS.projectUpdateMetadata,
+          projectUpdateMetadataPayloadSchema.parse(command),
+        ),
+      ),
+    createBackup: async () =>
+      createDesktopResultSchema(projectBackupResultSchema).parse(
+        await ipcRenderer.invoke(IPC_CHANNELS.projectCreateBackup),
+      ),
+    listRecent: async () =>
+      createDesktopResultSchema(recentProjectsSchema).parse(
+        await ipcRenderer.invoke(IPC_CHANNELS.projectListRecent),
+      ),
   },
 };
 

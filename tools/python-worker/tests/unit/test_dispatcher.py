@@ -12,7 +12,7 @@ from impeller_reliability.protocol.envelopes import (
 from impeller_reliability.worker.dispatcher import Dispatcher
 
 
-def test_handshake_reports_only_m01_capabilities_and_revision(tmp_path: Path) -> None:
+def test_handshake_reports_m02_1_capabilities_and_revision(tmp_path: Path) -> None:
     request = HandshakeRequest(
         protocolVersion=1,
         requestId="request-1",
@@ -32,6 +32,12 @@ def test_handshake_reports_only_m01_capabilities_and_revision(tmp_path: Path) ->
         "system.ping",
         "system.shutdown",
         "storage.health",
+        "project.create",
+        "project.open",
+        "project.close",
+        "project.getOverview",
+        "project.updateMetadata",
+        "project.createBackup",
     ]
 
 

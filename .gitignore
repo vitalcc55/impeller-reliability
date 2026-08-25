@@ -152,6 +152,7 @@ tools/python-worker/build/
 tools/python-worker/dist/
 tools/python-worker/.mypy_cache/
 tools/python-worker/.pytest_cache/
+.pytest_tmp/
 tools/python-worker/.ruff_cache/
 **/__pycache__/
 *.pyc

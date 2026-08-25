@@ -4,4 +4,12 @@ export const IPC_CHANNELS = {
   restart: 'impeller:system:restart',
   openLog: 'impeller:system:open-log',
   statusChanged: 'impeller:system:status-changed',
+  projectCreate: 'impeller:project:create',
+  projectOpen: 'impeller:project:open',
+  projectOpenRecent: 'impeller:project:open-recent',
+  projectClose: 'impeller:project:close',
+  projectGetOverview: 'impeller:project:get-overview',
+  projectUpdateMetadata: 'impeller:project:update-metadata',
+  projectCreateBackup: 'impeller:project:create-backup',
+  projectListRecent: 'impeller:project:list-recent',
 } as const;

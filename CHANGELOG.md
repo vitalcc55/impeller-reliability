@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- M02.1: добавлены атомарный `.irproj`, ProjectSession/lock, schema v1, metadata revision, append-only audit, migration backup, typed project IPC и первый продуктовый shell на визуальной системе ЛИЦ ВВУ.
+
 ## 0.1.0 — 2026-08-25
 
 - Созданы M00 repository constitution и M01 walking skeleton.

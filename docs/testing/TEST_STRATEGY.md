@@ -1,3 +1,5 @@
 # Test Strategy
 
 TypeScript unit covers operation-specific contracts, path и revision gate; Python unit/integration covers exhaustive JSONL dispatch, revision echo и WAL verdict. Browser preview проверяет renderer loading/ready/unavailable/error/restart states. Playwright Electron E2E завершает worker внутри дерева конкретного Electron, наблюдает unavailable event и доказывает controlled restart без второго worker. Packaging smoke подтверждает onedir, fuses, production CSP, `win-unpacked`, portable, отсутствие TCP и cleanup конкретного process tree. Critical algorithms require approved golden fixtures и branch/invariant coverage. Python coverage gate M01 — 85%; фактическое подтверждение даёт текущий `pnpm check`, а не отдельный status-документ.
+
+M02.1 Python tests дополнительно доказывают atomic create, кириллицу/пробелы, close/reopen, optimistic revision, immutable audit, corruption/newer schema, backup before migration, rollback и реальный lock contention между процессами с освобождением после crash. Electron E2E и packaged smoke выполняют create → update → close → reopen; Browser preview остаётся синтетическим и не считается проверкой persistence.

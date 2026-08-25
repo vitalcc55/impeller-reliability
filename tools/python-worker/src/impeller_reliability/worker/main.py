@@ -6,9 +6,11 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.protocol.envelopes import (
     REQUEST_ENVELOPE_ADAPTER,
     EmptyPayload,
@@ -21,6 +23,13 @@ from impeller_reliability.protocol.envelopes import (
 from impeller_reliability.worker.dispatcher import Dispatcher
 
 MAX_MESSAGE_BYTES = 1_048_576
+
+
+@runtime_checkable
+class _BinaryWriter(Protocol):
+    def write(self, data: bytes) -> int: ...
+
+    def flush(self) -> None: ...
 
 
 class _RequestIdentity(BaseModel):
@@ -36,8 +45,14 @@ def _reject_non_finite(value: str) -> object:
 
 def _write_protocol(model: ProtocolResponse | BaseModel | dict[str, object]) -> None:
     payload = model.model_dump(mode="json") if isinstance(model, BaseModel) else model
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    line = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
+    binary_stdout = getattr(sys.stdout, "buffer", None)
+    if isinstance(binary_stdout, _BinaryWriter):
+        binary_stdout.write(line.encode("utf-8"))
+        binary_stdout.flush()
+    else:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def _contract_error(request_id: str, revision: int, message: str) -> ErrorResponse:
@@ -58,36 +73,50 @@ def _request_identity(raw_request: object) -> tuple[str, int]:
 
 def run_worker(state_directory: Path) -> int:
     dispatcher = Dispatcher(state_directory)
-    for raw_line in sys.stdin.buffer:
-        request_id = "unknown"
-        revision = 0
-        if len(raw_line) > MAX_MESSAGE_BYTES:
-            _write_protocol(_contract_error(request_id, revision, "Сообщение превышает допустимый размер."))
-            continue
-        try:
-            decoded = raw_line.decode("utf-8", errors="strict")
-            raw_request: object = json.loads(decoded, parse_constant=_reject_non_finite)
-            request_id, revision = _request_identity(raw_request)
-            request = REQUEST_ENVELOPE_ADAPTER.validate_python(raw_request)
-            response: ProtocolResponse = dispatcher.dispatch(request)
-        except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, ValueError) as error:
-            response = _contract_error(request_id, revision, f"Некорректный запрос: {error}")
-        except Exception as error:
-            print(f"worker_internal_error:{type(error).__name__}:{error}", file=sys.stderr, flush=True)
-            response = ErrorResponse(
-                requestId=request_id,
-                revision=revision,
-                error=ErrorPayload(
-                    code="internal_error",
-                    message="Внутренняя ошибка worker.",
-                    details={},
-                    retryable=False,
-                ),
-            )
-        _write_protocol(response)
-        if dispatcher.shutdown_requested:
-            return 0
-    return 0
+    try:
+        for raw_line in sys.stdin.buffer:
+            request_id = "unknown"
+            revision = 0
+            if len(raw_line) > MAX_MESSAGE_BYTES:
+                _write_protocol(_contract_error(request_id, revision, "Сообщение превышает допустимый размер."))
+                continue
+            try:
+                decoded = raw_line.decode("utf-8", errors="strict")
+                raw_request: object = json.loads(decoded, parse_constant=_reject_non_finite)
+                request_id, revision = _request_identity(raw_request)
+                request = REQUEST_ENVELOPE_ADAPTER.validate_python(raw_request)
+                response: ProtocolResponse = dispatcher.dispatch(request)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, ValueError) as error:
+                response = _contract_error(request_id, revision, f"Некорректный запрос: {error}")
+            except ProjectOperationError as error:
+                response = ErrorResponse(
+                    requestId=request_id,
+                    revision=revision,
+                    error=ErrorPayload(
+                        code=error.code,
+                        message=error.message,
+                        details=error.details,
+                        retryable=error.retryable,
+                    ),
+                )
+            except Exception as error:
+                print(f"worker_internal_error:{type(error).__name__}:{error}", file=sys.stderr, flush=True)
+                response = ErrorResponse(
+                    requestId=request_id,
+                    revision=revision,
+                    error=ErrorPayload(
+                        code="internal_error",
+                        message="Внутренняя ошибка worker.",
+                        details={},
+                        retryable=False,
+                    ),
+                )
+            _write_protocol(response)
+            if dispatcher.shutdown_requested:
+                return 0
+        return 0
+    finally:
+        dispatcher.close()
 
 
 def run_self_test() -> int:

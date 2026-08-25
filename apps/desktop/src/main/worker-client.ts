@@ -10,6 +10,7 @@ import {
   workerResponseIdentitySchema,
 } from '@impeller-reliability/contracts';
 import type {
+  WorkerOperationMap,
   WorkerLifecycleState,
   WorkerOperation,
   WorkerResponse,
@@ -77,21 +78,59 @@ export class WorkerClient {
 
   public request(
     operation: 'system.handshake',
+    payload: WorkerOperationMap['system.handshake']['request'],
     deadlineMs?: number,
   ): Promise<WorkerResponseFor<'system.handshake'>>;
   public request(
     operation: 'system.ping',
+    payload: WorkerOperationMap['system.ping']['request'],
     deadlineMs?: number,
   ): Promise<WorkerResponseFor<'system.ping'>>;
   public request(
     operation: 'system.shutdown',
+    payload: WorkerOperationMap['system.shutdown']['request'],
     deadlineMs?: number,
   ): Promise<WorkerResponseFor<'system.shutdown'>>;
   public request(
     operation: 'storage.health',
+    payload: WorkerOperationMap['storage.health']['request'],
     deadlineMs?: number,
   ): Promise<WorkerResponseFor<'storage.health'>>;
-  public request(operation: WorkerOperation, deadlineMs = 5_000): Promise<WorkerResponse> {
+  public request(
+    operation: 'project.create',
+    payload: WorkerOperationMap['project.create']['request'],
+    deadlineMs?: number,
+  ): Promise<WorkerResponseFor<'project.create'>>;
+  public request(
+    operation: 'project.open',
+    payload: WorkerOperationMap['project.open']['request'],
+    deadlineMs?: number,
+  ): Promise<WorkerResponseFor<'project.open'>>;
+  public request(
+    operation: 'project.close',
+    payload: WorkerOperationMap['project.close']['request'],
+    deadlineMs?: number,
+  ): Promise<WorkerResponseFor<'project.close'>>;
+  public request(
+    operation: 'project.getOverview',
+    payload: WorkerOperationMap['project.getOverview']['request'],
+    deadlineMs?: number,
+  ): Promise<WorkerResponseFor<'project.getOverview'>>;
+  public request(
+    operation: 'project.updateMetadata',
+    payload: WorkerOperationMap['project.updateMetadata']['request'],
+    deadlineMs?: number,
+  ): Promise<WorkerResponseFor<'project.updateMetadata'>>;
+  public request(
+    operation: 'project.createBackup',
+    payload: WorkerOperationMap['project.createBackup']['request'],
+    deadlineMs?: number,
+  ): Promise<WorkerResponseFor<'project.createBackup'>>;
+  public request(
+    operation: WorkerOperation,
+    payload: WorkerOperationMap[WorkerOperation]['request'],
+    deadlineMs = 5_000,
+  ): Promise<WorkerResponse> {
     const child = this.#process;
     if (child === null) return Promise.reject(new Error('worker_unavailable'));
     const requestId = randomUUID();
@@ -103,7 +142,7 @@ export class WorkerClient {
       operation,
       revision,
       deadlineMs,
-      payload: {},
+      payload,
     });
     return new Promise<WorkerResponse>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -141,7 +180,7 @@ export class WorkerClient {
     this.#emitLifecycle('stopping', null);
     const closePromise = new Promise<void>((resolve) => child.once('close', () => resolve()));
     try {
-      await this.request('system.shutdown', timeoutMs);
+      await this.request('system.shutdown', {}, timeoutMs);
     } catch (error) {
       await this.logger.write({
         severity: 'warning',

@@ -29,10 +29,12 @@ Worker: "tools/python-worker" {
   Integration: "Future R130SH import/export"
 }
 
-Project: "Future *.irproj" {
-  Database: "project.sqlite" { shape: cylinder }
-  Assets: "immutable imports, documents, spectra, photos"
-  Exports: "derived reports and packages"
+Project: "*.irproj — M02.1 container" {
+  Manifest: "project-manifest.json: container identity"
+  Database: "project.sqlite: metadata, migrations, audit" { shape: cylinder }
+  Lock: ".project.lock: OS-held session lock"
+  Assets: "assets/documents (empty until M02.2)"
+  Backups: "verified SQLite backups"
 }
 
 Engineer -> Desktop.Renderer
@@ -44,6 +46,8 @@ Desktop.Main -> Worker.Protocol: "UTF-8 JSONL stdin/stdout"
 Worker.Protocol -> Worker.Domain
 Worker.Domain -> Worker.Persistence
 Worker.Persistence -> Project.Database
+Worker.Persistence -> Project.Manifest
+Worker.Persistence -> Project.Lock
 Worker.Persistence -> Project.Assets
 TypeScript.Application -> TypeScript.Reporting
 Desktop.Main -> TypeScript.Reporting
@@ -55,4 +59,4 @@ R130SH -> RunPackage
 RunPackage -> Desktop.Main
 ```
 
-M01.1 реализует Renderer/Preload/Main, operation-specific contracts, response revision, worker lifecycle/restart, WAL health, production CSP и packaged fuses. Предметные модули, project storage и R130SH packages остаются будущими границами, а не заглушками с фиктивным результатом.
+M02.1 реализует container/manifest, ProjectSession, OS lock, schema v1, migration backup, metadata revision и append-only audit. Customer/WheelModel/Specimen/TestCampaign/SourceDocument, предметные модули и R130SH packages остаются будущими границами, а не заглушками.

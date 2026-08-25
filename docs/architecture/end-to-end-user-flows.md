@@ -26,12 +26,18 @@ Renderer -> Main: "controlled restart"
 Main -> Worker: "bounded stop, then one new process"
 Worker -> Renderer: "new handshake/health status"
 
-User -> Renderer: "Создать/открыть проект (M02)"
-Renderer -> Main: "approved dialog/path"
-Main -> Worker: "project command"
-Worker -> Project: "migration/lock/read model"
+User -> Renderer: "Создать/открыть проект"
+Renderer -> Main: "typed command; no path"
+Main -> Worker: "approved dialog/recent path + project command"
+Worker -> Project: "OS lock, manifest, migration/backup, integrity"
 Project -> Worker
-Worker -> Renderer: "canonical project read model"
+Worker -> Renderer: "ProjectOverview"
+User -> Renderer: "Изменить metadata с record_revision"
+Renderer -> Worker: "project.updateMetadata"
+Worker -> Project: "metadata + audit, one transaction"
+User -> Renderer: "Закрыть и открыть повторно"
+Worker -> Project: "release/reacquire OS lock"
+Project -> Renderer: "persisted revision and values"
 
 User -> Renderer: "Утвердить план (M03/M04)"
 Renderer -> Worker: "source values + references"
@@ -51,4 +57,4 @@ Project -> Main: "canonical report data"
 Main -> User: "preview/exported document + SHA-256"
 ```
 
-Browser preview воспроизводит renderer-состояния и restart через `?preview=ready` и `?preview=unavailable`. Он не запускает worker, не открывает файлы и не доказывает packaged behavior; crash/restart boundary подтверждает Electron E2E, fuses/integrity/network/process cleanup — packaged smoke.
+Browser preview воспроизводит renderer/project/diagnostics states через typed synthetic adapter. Он не запускает worker, не открывает файлы и не доказывает persistence; create/update/close/reopen подтверждают Electron E2E и packaged smoke.
