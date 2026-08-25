@@ -1,0 +1,114 @@
+:root {
+  --ir-color-canvas: #f7f8fa;
+  --ir-color-surface: #ffffff;
+  --ir-color-surface-subtle: #fbfcfd;
+  --ir-color-text: #18212f;
+  --ir-color-text-muted: #687386;
+  --ir-color-border: #e6eaf0;
+  --ir-color-accent: #305f9e;
+  --ir-color-focus: #5b8def;
+  --ir-color-success-bg: #d5f5e9;
+  --ir-color-success-text: #087a55;
+  --ir-color-warning-bg: #fff2c7;
+  --ir-color-warning-text: #8a5b00;
+  --ir-color-danger-bg: #ffe0e0;
+  --ir-color-danger-text: #b42318;
+  --ir-radius-surface: 16px;
+  --ir-radius-group: 12px;
+  --ir-shadow-surface: 0 18px 50px rgba(31, 49, 74, 0.08);
+
+  color: var(--ir-color-text);
+  background: var(--ir-color-canvas);
+  font-family: 'Segoe UI', Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+button:focus-visible {
+  outline: 3px solid var(--ir-color-focus);
+  outline-offset: 2px;
+}
+
+.app-shell {
+  width: min(900px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: 64px 0;
+}
+.hero {
+  margin-bottom: 32px;
+}
+.product-name {
+  color: var(--ir-color-accent);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-bottom: 8px;
+}
+.hero h1 {
+  max-width: 780px;
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  margin: 0 0 16px;
+}
+.status-panel {
+  padding: 28px;
+  background: var(--ir-color-surface);
+  border-radius: var(--ir-radius-surface);
+  box-shadow: var(--ir-shadow-surface);
+}
+.status-badge {
+  color: var(--ir-color-text-muted);
+  background-color: var(--ir-color-border);
+}
+.status-badge--success {
+  color: var(--ir-color-success-text);
+  background-color: var(--ir-color-success-bg);
+}
+.status-badge--warning {
+  color: var(--ir-color-warning-text);
+  background-color: var(--ir-color-warning-bg);
+}
+.status-badge--danger {
+  color: var(--ir-color-danger-text);
+  background-color: var(--ir-color-danger-bg);
+}
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 28px 0 0;
+  background: var(--ir-color-border);
+  border: 1px solid var(--ir-color-border);
+  border-radius: var(--ir-radius-group);
+  overflow: hidden;
+}
+.status-grid div {
+  background: var(--ir-color-surface-subtle);
+  padding: 18px;
+}
+.status-grid dt {
+  color: var(--ir-color-text-muted);
+  font-size: 0.8rem;
+  margin-bottom: 6px;
+}
+.status-grid dd {
+  margin: 0;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    width: min(100% - 28px, 900px);
+    padding: 32px 0;
+  }
+  .status-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}

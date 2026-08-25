@@ -1,0 +1,14 @@
+packages:
+  - apps/*
+  - packages/*
+
+savePrefix: ''
+engineStrict: true
+strictPeerDependencies: true
+nodeVersion: 24.18.0
+pmOnFail: error
+
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  esbuild: true

@@ -1,0 +1,42 @@
+{
+  "name": "impeller-reliability",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=24.18.0 <25",
+    "pnpm": "11.17.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @impeller-reliability/desktop dev",
+    "dev:preview": "pnpm --filter @impeller-reliability/desktop dev:preview",
+    "build": "pnpm --filter @impeller-reliability/desktop build",
+    "build:worker": "pwsh.exe -NoProfile -File tools/python-worker/scripts/build.ps1",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "eslint . --max-warnings=0",
+    "format": "prettier --write \"**/*.{json,js,mjs,ts,tsx,css,html,yaml,yml}\"",
+    "format:check": "prettier --check \"**/*.{json,js,mjs,ts,tsx,css,html,yaml,yml}\"",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "check:python": "pwsh.exe -NoProfile -File tools/python-worker/scripts/check.ps1",
+    "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm check:python",
+    "package:win-unpacked": "pwsh.exe -NoProfile -File scripts/build/package.ps1 -Target WinUnpacked",
+    "package:portable": "pwsh.exe -NoProfile -File scripts/build/package.ps1 -Target Portable",
+    "smoke:worker": "pwsh.exe -NoProfile -File scripts/smoke/worker.ps1",
+    "smoke:win-unpacked": "pwsh.exe -NoProfile -File scripts/smoke/desktop.ps1 -Target WinUnpacked",
+    "smoke:portable": "pwsh.exe -NoProfile -File scripts/smoke/desktop.ps1 -Target Portable",
+    "verify": "pwsh.exe -NoProfile -File scripts/codex/verify.ps1"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.62.1",
+    "eslint": "10.9.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "happy-dom": "20.11.6",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.11"
+  }
+}

@@ -1,0 +1,27 @@
+appId: ru.rvz.impellerreliability
+productName: Impeller Reliability
+copyright: Copyright © 2026 ООО «РВЗ»
+artifactName: ImpellerReliabilityCalc-${version}-portable-${arch}.${ext}
+directories:
+  output: dist
+  buildResources: resources
+asar: true
+afterPack: ./scripts/after-pack-worker-integrity.mjs
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+  executableName: ImpellerReliabilityCalc
+  requestedExecutionLevel: asInvoker
+  signExecutable: false
+portable:
+  requestExecutionLevel: user
+  unpackDirName: false
+extraResources:
+  - from: ../../tools/python-worker/dist/impeller-reliability-worker
+    to: python-worker
+  - from: resources/licenses
+    to: licenses
+  - from: resources/reference-data
+    to: reference-data
