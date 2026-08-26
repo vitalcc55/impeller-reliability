@@ -67,6 +67,8 @@ Database invariants:
 - `busy_timeout = 5000`;
 - один последовательный writer внутри активной ProjectSession.
 
+Первая опубликованная project schema — v1. `user_version=0` не является внешним форматом и не мигрируется при открытии existing container; будущие forward migrations начинаются только с подтверждённой v1.
+
 ### `schema_migrations`
 
 ```text
@@ -106,7 +108,7 @@ payload_json TEXT NOT NULL
 
 ## Lock и ProjectSession
 
-Python открывает `.project.lock`, удерживает через `msvcrt.locking(..., LK_NBLCK, 1)` эксклюзивную блокировку одного байта и только затем читает manifest/SQLite. После успешного захвата в файл записываются диагностические поля `projectId`, `applicationInstanceId`, `pid`, `startedAtUtc`, `host`. PID не участвует в решении о владении.
+После read-only manifest/SQLite identity preflight Python безопасно открывает `.project.lock`, сверяет identity открытого regular file и удерживает через `msvcrt.locking(..., LK_NBLCK, 1)` эксклюзивную блокировку одного байта. Только после захвата в файл записываются диагностические поля `projectId`, `applicationInstanceId`, `pid`, `startedAtUtc`, `host`. PID не участвует в решении о владении.
 
 Один worker владеет максимум одной ProjectSession. Повторный `project.open/create` при активной сессии отклоняется. `project.close`, bounded shutdown и аварийное завершение процесса освобождают OS lock; отдельный process test доказывает освобождение после crash.
 
@@ -114,17 +116,16 @@ Python открывает `.project.lock`, удерживает через `msvc
 
 Последовательность worker:
 
-1. проверить абсолютный путь, расширение `.irproj` и состав контейнера;
-2. захватить OS lock;
-3. строго прочитать manifest;
-4. открыть SQLite и применить connection pragmas;
-5. проверить `application_id` и определить `user_version`;
-6. при `current < supported` создать SQLite Backup API snapshot в `backups/`, выполнить его `quick_check`, затем применить forward-only migrations;
+1. проверить абсолютный путь и расширение `.irproj`, строго прочитать manifest;
+2. проверить topology зарезервированных `project-manifest.json`, `project.sqlite`, optional `.project.lock`, `backups/` и SQLite sidecars; symlink/junction/reparse и hard-linked files запрещены;
+3. открыть `project.sqlite` через immutable read-only URI и проверить `application_id`, `user_version`, совместимость schema и `projectId` для schema v1 без WAL/lock/backup;
+4. захватить OS lock и повторно сверить file identity зарезервированных путей;
+5. открыть подтверждённый SQLite только в `mode=rw`, ещё раз проверить file identity и применить WAL/FK/FULL/busy timeout;
+6. при `current < supported` создать SQLite Backup API snapshot в проверенном `backups/`, выполнить его `quick_check`, затем применить forward-only migrations;
 7. выполнить `quick_check`, `foreign_key_check` и семантические проверки schema v1;
-8. сверить единственный `project_metadata.project_id` с manifest;
-9. вернуть канонический `ProjectOverview`.
+8. получить канонический `ProjectOverview` и только затем назначить активную ProjectSession.
 
-При `current > supported` возвращается `incompatible_schema`; база не меняется и backup не создаётся. Неудачная migration откатывается, исходная база остаётся доступной, проверенный backup сохраняется. Отдельный `ProjectMigrator` не использует `check_storage()`.
+При неверном identity или `current > supported` ошибка возвращается до создания/изменения lock, WAL и backup. Неудачная migration откатывается, исходная база остаётся доступной, проверенный migration backup сохраняется. Ручной backup считается завершённым только после `quick_check`, SHA-256 и final deadline; новый файл и принадлежащие ему sidecars удаляются при любой ошибке. Отдельный `ProjectMigrator` не использует `check_storage()`.
 
 ## IPC и ownership путей
 
@@ -201,6 +202,16 @@ Review closure устраняет пять рисков до M02.2 без рас
 Права на официальный SVG подтверждены владельцем проекта 2026-08-26; внутреннее подтверждение хранится вне публичного репозитория. Права на Etelka не подтверждены, поэтому файлы удаляются текущим review-fix commit без переписывания опубликованной Git-истории. Заголовочный шрифт заменяется официальным Golos Text из Google Fonts под SIL Open Font License 1.1; лицензия поставляется рядом с приложением и описана в `THIRD_PARTY_ASSETS.md`.
 
 Review closure считается завершённым после Python timeout/audit/connection tests, Electron E2E для dirty restart и window close, Browser QA desktop/640 px, Impeccable detector, полного локального packaging gate, review-fix commit, PR и зелёного Quality workflow. PR не сливается без отдельного решения владельца.
+
+## Final PR review closure
+
+Финальное ревью PR #1 закрывает три P2 до слияния и не расширяет M02.1:
+
+1. Существующий контейнер проходит structural preflight зарезервированных путей и read-only SQLite identity probe до создания lock, WAL или backup. После OS lock пути и file identity сверяются повторно; write connection открывается только для подтверждённых `application_id` и поддерживаемой schema. Файловые symlink/junction/reparse points и hard-linked reserved files отклоняются.
+2. Ручной backup принадлежит одному запросу до завершения SQLite copy, `quick_check`, SHA-256 и финальной deadline-проверки. Любая ошибка этой последовательности удаляет только новый файл текущего запроса; существующие manual/migration backups сохраняются.
+3. Permanently detached workspace предлагает независимые действия: повторное подключение/перечитывание и двухшаговый локальный discard. Discard очищает только Renderer project/draft state, не вызывает `project.close`, не изменяет `.irproj` и не удаляет recent path.
+
+Исправления публикуются отдельным commit, каждый review thread получает ссылку на commit и regression test и разрешается только после push. Затем запрашивается повторный Codex review. Squash merge допустим только при отсутствии открытых P1/P2, зелёных Quality/package gates, совпадающем SHA и конечном дереве без Etelka; M02.2 в этом цикле не начинается.
 
 ## Stop condition
 

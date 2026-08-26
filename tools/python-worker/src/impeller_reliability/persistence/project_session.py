@@ -5,10 +5,18 @@ from pathlib import Path
 import sqlite3
 from typing import Literal, Self
 
-from impeller_reliability.persistence.project_database import create_verified_backup, insert_audit, sha256_file, utc_now, validate_project_database
+from impeller_reliability.persistence.project_database import (
+    create_verified_backup,
+    insert_audit,
+    remove_owned_backup,
+    sha256_file,
+    utc_now,
+    validate_project_database,
+)
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_lock import ProjectLock
 from impeller_reliability.persistence.project_manifest import ProjectManifest
+from impeller_reliability.persistence.project_paths import PathIdentity, inspect_reserved_directory
 from impeller_reliability.worker.deadline import RequestDeadline
 
 
@@ -28,11 +36,19 @@ class ProjectOverview:
 
 
 class ProjectSession:
-    def __init__(self, path: Path, manifest: ProjectManifest, connection: sqlite3.Connection, project_lock: ProjectLock) -> None:
+    def __init__(
+        self,
+        path: Path,
+        manifest: ProjectManifest,
+        connection: sqlite3.Connection,
+        project_lock: ProjectLock,
+        backups_identity: PathIdentity,
+    ) -> None:
         self.path = path
         self.manifest = manifest
         self._connection = connection
         self._lock = project_lock
+        self._backups_identity = backups_identity
         self._closed = False
 
     def overview(self) -> ProjectOverview:
@@ -142,16 +158,25 @@ class ProjectSession:
         deadline: RequestDeadline | None = None,
     ) -> tuple[Path, str, str]:
         _check_deadline(deadline, "backup_start")
+        current_backups_identity = inspect_reserved_directory(self.path / "backups", "backups/")
+        if current_backups_identity != self._backups_identity:
+            raise ProjectOperationError("corrupt_project", "Каталог backups/ был подменён после открытия проекта.")
         created_at = utc_now()
         schema_version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
-        backup_path = create_verified_backup(
+        backup = create_verified_backup(
             self._connection,
             self.path / "project.sqlite",
             self.path / "backups",
             schema_version,
             deadline=deadline,
         )
-        return (backup_path, sha256_file(backup_path, deadline), created_at)
+        try:
+            digest = sha256_file(backup.path, deadline)
+            _check_deadline(deadline, "backup_finalize")
+            return (backup.path, digest, created_at)
+        except Exception:
+            remove_owned_backup(backup)
+            raise
 
     def validate(self) -> None:
         validate_project_database(self._connection, self.manifest)

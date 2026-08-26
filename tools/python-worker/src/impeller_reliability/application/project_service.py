@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shutil
 from uuid import UUID, uuid4
@@ -7,13 +8,20 @@ from uuid import UUID, uuid4
 from impeller_reliability.persistence.project_database import (
     ProjectMetadataSeed,
     ProjectMigrator,
+    create_project_database,
     open_project_database,
+    probe_project_database_identity,
     utc_now,
     validate_project_database,
 )
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_lock import ProjectLock, current_lock_owner
 from impeller_reliability.persistence.project_manifest import PROJECT_DATABASE_FILE, ProjectManifest, read_manifest, write_manifest
+from impeller_reliability.persistence.project_paths import (
+    inspect_project_container,
+    inspect_reserved_directory,
+    verify_project_snapshot_stable,
+)
 from impeller_reliability.persistence.project_session import ProjectOverview, ProjectSession
 from impeller_reliability.worker.deadline import RequestDeadline
 
@@ -60,7 +68,7 @@ class ProjectService:
             (staging / "assets" / "documents").mkdir(parents=True)
             (staging / "backups").mkdir()
             write_manifest(staging / "project-manifest.json", manifest)
-            connection = open_project_database(staging / PROJECT_DATABASE_FILE)
+            connection = create_project_database(staging / PROJECT_DATABASE_FILE)
             try:
                 self._migrator.initialize(
                     connection,
@@ -111,6 +119,13 @@ class ProjectService:
             UUID(manifest.projectId)
         except ValueError as error:
             raise ProjectOperationError("corrupt_project", "projectId в manifest не является UUID.") from error
+        preflight_snapshot = inspect_project_container(project_path, manifest)
+        database_identity = probe_project_database_identity(
+            project_path / manifest.databaseFile,
+            manifest,
+            self._migrator.latest_version,
+        )
+        _check_deadline(deadline, "project_identity_probe")
         acquired_at = utc_now()
         project_lock = ProjectLock.acquire(
             project_path / ".project.lock",
@@ -118,8 +133,18 @@ class ProjectService:
         )
         connection = None
         try:
+            locked_snapshot = inspect_project_container(project_path, manifest)
+            verify_project_snapshot_stable(preflight_snapshot, locked_snapshot)
             _check_deadline(deadline, "project_open_database")
-            connection = open_project_database(project_path / manifest.databaseFile)
+            connection = open_project_database(
+                project_path / manifest.databaseFile,
+                locked_snapshot.database,
+                database_identity,
+                manifest,
+            )
+            current_backups_identity = inspect_reserved_directory(project_path / "backups", "backups/")
+            if current_backups_identity != locked_snapshot.backups:
+                raise ProjectOperationError("corrupt_project", "Каталог backups/ был подменён перед migration.")
             self._migrator.migrate_existing(
                 connection,
                 project_path / manifest.databaseFile,
@@ -129,9 +154,16 @@ class ProjectService:
             )
             validate_project_database(connection, manifest)
             _check_deadline(deadline, "project_open_session")
-            session = ProjectSession(project_path, manifest, connection, project_lock)
+            session = ProjectSession(
+                project_path,
+                manifest,
+                connection,
+                project_lock,
+                locked_snapshot.backups,
+            )
+            overview = session.overview()
             self._session = session
-            return session.overview()
+            return overview
         except Exception as error:
             if connection is not None:
                 connection.close()
@@ -193,7 +225,7 @@ class ProjectService:
         path = Path(raw_path)
         if not path.is_absolute() or path.suffix.lower() != ".irproj":
             raise ProjectOperationError("storage_error", "Путь проекта должен быть абсолютным каталогом *.irproj.")
-        return path.resolve()
+        return Path(os.path.abspath(path))
 
 
 def _check_deadline(deadline: RequestDeadline | None, stage: str) -> None:

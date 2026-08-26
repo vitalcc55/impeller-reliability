@@ -27,3 +27,6 @@
 | Migration backup/rollback | SQLite Backup API + forward migrator | pytest integration |
 | Main-owned project paths | dialogs + recent allowlist | contracts + E2E + preload review |
 | Project persistence packaged | create/update/close/reopen smoke | win-unpacked + portable smoke |
+| Existing project no-mutation preflight | reserved topology + immutable SQLite identity + repeated file identity | Windows hardlink/symlink/junction pytest integration |
+| Manual backup request atomicity | copy + quick_check + SHA-256 + final deadline owned cleanup | hash-timeout/read-error pytest integration |
+| Permanently detached workspace exit | confirmed Renderer-only local discard | Electron E2E moved-project recovery |

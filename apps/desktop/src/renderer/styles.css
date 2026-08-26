@@ -313,6 +313,17 @@ h3 {
   margin-top: 4px;
   color: var(--ir-color-warning-text);
 }
+.feedback--warning .mantine-Button-root[data-variant='filled'] {
+  color: var(--mantine-color-white);
+}
+.detached-discard {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(121, 83, 13, 0.18);
+}
 .project-heading,
 .page-heading {
   display: flex;

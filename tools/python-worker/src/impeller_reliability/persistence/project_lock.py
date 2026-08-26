@@ -9,6 +9,10 @@ import socket
 from typing import BinaryIO, Self
 
 from impeller_reliability.persistence.project_errors import ProjectOperationError
+from impeller_reliability.persistence.project_paths import (
+    inspect_opened_regular_file,
+    inspect_reserved_file,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +42,20 @@ class ProjectLock:
 
     @classmethod
     def acquire(cls, path: Path, owner: LockOwner) -> ProjectLock:
-        descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        expected_identity = inspect_reserved_file(path, ".project.lock", allow_missing=True)
+        try:
+            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_BINARY, 0o600)
+        except FileExistsError:
+            if expected_identity is None:
+                expected_identity = inspect_reserved_file(path, ".project.lock")
+            descriptor = os.open(path, os.O_RDWR | os.O_BINARY)
+        try:
+            opened_identity = inspect_opened_regular_file(descriptor, ".project.lock")
+            if expected_identity is not None and opened_identity != expected_identity:
+                raise ProjectOperationError("corrupt_project", ".project.lock был подменён перед захватом блокировки.")
+        except Exception:
+            os.close(descriptor)
+            raise
         stream = os.fdopen(descriptor, "r+b", buffering=0)
         if os.fstat(descriptor).st_size == 0:
             stream.write(b"\0")

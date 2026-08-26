@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import closing, contextmanager
+import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -14,9 +16,18 @@ from uuid import uuid4
 import pytest
 
 from impeller_reliability.application.project_service import ProjectService
-from impeller_reliability.persistence import project_database
-from impeller_reliability.persistence.project_database import MIGRATIONS, Migration, ProjectMigrator, configure_project_connection
+from impeller_reliability.persistence import project_database, project_session
+from impeller_reliability.persistence.project_database import (
+    MIGRATIONS,
+    Migration,
+    ProjectMigrator,
+    configure_project_connection,
+    sha256_file,
+)
 from impeller_reliability.persistence.project_errors import ProjectOperationError
+from impeller_reliability.persistence.project_manifest import ProjectManifest, read_manifest, write_manifest
+from impeller_reliability.persistence.project_paths import inspect_reserved_file
+from impeller_reliability.persistence.project_session import ProjectSession
 from impeller_reliability.worker.deadline import RequestDeadline
 
 
@@ -32,6 +43,32 @@ def _create_project(path: Path) -> ProjectService:
         status="draft",
     )
     return service
+
+
+def _create_container_shell(path: Path, project_id: str) -> Path:
+    path.mkdir()
+    (path / "backups").mkdir()
+    write_manifest(
+        path / "project-manifest.json",
+        ProjectManifest(
+            projectId=project_id,
+            createdAtUtc="2026-08-26T00:00:00.000Z",
+            createdWithApplicationVersion="0.1.0",
+        ),
+    )
+    return path / "project.sqlite"
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _read_journal_mode_without_writes(path: Path) -> str:
+    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro&immutable=1", uri=True)
+    try:
+        return str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    finally:
+        connection.close()
 
 
 @contextmanager
@@ -206,18 +243,212 @@ def test_corrupt_project_is_rejected(tmp_path: Path, corruption: str) -> None:
     assert raised.value.code == "corrupt_project"
 
 
+def test_foreign_sqlite_is_rejected_without_any_mutation(tmp_path: Path) -> None:
+    project_path = tmp_path / "foreign.irproj"
+    database_path = _create_container_shell(project_path, str(uuid4()))
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute("CREATE TABLE unrelated_data (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO unrelated_data VALUES ('untouched')")
+    before_hash = _sha256(database_path)
+    before_mtime = database_path.stat().st_mtime_ns
+    before_journal_mode = _read_journal_mode_without_writes(database_path)
+
+    service = ProjectService()
+    with pytest.raises(ProjectOperationError) as raised:
+        service.open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+    assert service.has_active_session is False
+    assert _sha256(database_path) == before_hash
+    assert database_path.stat().st_mtime_ns == before_mtime
+    assert _read_journal_mode_without_writes(database_path) == before_journal_mode == "delete"
+    assert not (project_path / ".project.lock").exists()
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
+    assert not (project_path / "project.sqlite-journal").exists()
+
+
+def test_missing_project_database_is_not_created_by_open(tmp_path: Path) -> None:
+    project_path = tmp_path / "missing-database.irproj"
+    database_path = _create_container_shell(project_path, str(uuid4()))
+
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+    assert not database_path.exists()
+    assert not (project_path / ".project.lock").exists()
+    assert list((project_path / "backups").iterdir()) == []
+
+
+def test_mismatched_project_id_is_rejected_before_any_write(tmp_path: Path) -> None:
+    project_path = tmp_path / "mismatched-project-id.irproj"
+    service = _create_project(project_path)
+    service.close()
+    manifest_path = project_path / "project-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["projectId"] = str(uuid4())
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    database_path = project_path / "project.sqlite"
+    lock_path = project_path / ".project.lock"
+    before_database_hash = _sha256(database_path)
+    before_database_mtime = database_path.stat().st_mtime_ns
+    before_lock = lock_path.read_bytes()
+    before_lock_mtime = lock_path.stat().st_mtime_ns
+
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+    assert _sha256(database_path) == before_database_hash
+    assert database_path.stat().st_mtime_ns == before_database_mtime
+    assert lock_path.read_bytes() == before_lock
+    assert lock_path.stat().st_mtime_ns == before_lock_mtime
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
+
+
+def test_invalid_application_id_is_rejected_before_lock_or_wal(tmp_path: Path) -> None:
+    project_id = str(uuid4())
+    project_path = tmp_path / "wrong-application-id.irproj"
+    database_path = _create_container_shell(project_path, project_id)
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute("PRAGMA application_id = 123")
+        connection.execute("PRAGMA user_version = 1")
+        connection.execute("CREATE TABLE project_metadata (project_id TEXT NOT NULL)")
+        connection.execute("INSERT INTO project_metadata VALUES (?)", (project_id,))
+    before_hash = _sha256(database_path)
+
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+    assert _sha256(database_path) == before_hash
+    assert not (project_path / ".project.lock").exists()
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
+
+
+def test_unpublished_schema_zero_is_not_migrated_or_modified(tmp_path: Path) -> None:
+    project_path = tmp_path / "schema-zero.irproj"
+    database_path = _create_container_shell(project_path, str(uuid4()))
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute(f"PRAGMA application_id = {project_database.PROJECT_APPLICATION_ID}")
+        connection.execute("CREATE TABLE unrelated_data (value TEXT NOT NULL)")
+    before_hash = _sha256(database_path)
+    before_mtime = database_path.stat().st_mtime_ns
+
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+    assert _sha256(database_path) == before_hash
+    assert database_path.stat().st_mtime_ns == before_mtime
+    assert not (project_path / ".project.lock").exists()
+    assert list((project_path / "backups").iterdir()) == []
+
+
+@pytest.mark.parametrize("link_kind", ["hardlink", "symlink"])
+def test_linked_project_database_is_rejected_without_touching_target(
+    tmp_path: Path,
+    link_kind: str,
+) -> None:
+    project_path = tmp_path / f"database-{link_kind}.irproj"
+    database_path = _create_container_shell(project_path, str(uuid4()))
+    external_database = tmp_path / f"external-{link_kind}.sqlite"
+    with closing(sqlite3.connect(external_database)) as connection:
+        connection.execute("CREATE TABLE external_data (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO external_data VALUES ('untouched')")
+    if link_kind == "hardlink":
+        os.link(external_database, database_path)
+    else:
+        os.symlink(external_database, database_path)
+    before_hash = _sha256(external_database)
+    before_mtime = external_database.stat().st_mtime_ns
+
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+    assert _sha256(external_database) == before_hash
+    assert external_database.stat().st_mtime_ns == before_mtime
+    assert not (project_path / ".project.lock").exists()
+    assert not external_database.with_name(f"{external_database.name}-wal").exists()
+    assert not external_database.with_name(f"{external_database.name}-shm").exists()
+
+
+def test_reparse_backups_directory_is_rejected_without_external_write(tmp_path: Path) -> None:
+    project_path = tmp_path / "junction-backups.irproj"
+    service = _create_project(project_path)
+    service.close()
+    backups_path = project_path / "backups"
+    backups_path.rmdir()
+    external_backups = tmp_path / "external-backups"
+    external_backups.mkdir()
+    marker = external_backups / "marker.txt"
+    marker.write_text("untouched", encoding="utf-8")
+    subprocess.run(
+        ["cmd.exe", "/c", "mklink", "/J", str(backups_path), str(external_backups)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert backups_path.is_junction()
+
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+    assert marker.read_text(encoding="utf-8") == "untouched"
+    assert list(external_backups.iterdir()) == [marker]
+
+
+@pytest.mark.parametrize("lock_kind", ["hardlink", "symlink"])
+def test_linked_lock_and_reparse_sidecar_are_rejected_without_touching_targets(
+    tmp_path: Path,
+    lock_kind: str,
+) -> None:
+    project_path = tmp_path / f"linked-reserved-files-{lock_kind}.irproj"
+    service = _create_project(project_path)
+    service.close()
+    lock_path = project_path / ".project.lock"
+    lock_path.unlink()
+    external_lock = tmp_path / "external-lock.bin"
+    external_lock.write_bytes(b"external lock")
+    if lock_kind == "hardlink":
+        os.link(external_lock, lock_path)
+    else:
+        os.symlink(external_lock, lock_path)
+    external_sidecar = tmp_path / f"external-sidecar-{lock_kind}.bin"
+    external_sidecar.write_bytes(b"external sidecar")
+    os.symlink(external_sidecar, project_path / "project.sqlite-wal")
+    lock_hash = _sha256(external_lock)
+    sidecar_hash = _sha256(external_sidecar)
+
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+    assert _sha256(external_lock) == lock_hash
+    assert _sha256(external_sidecar) == sidecar_hash
+
+
 def test_newer_schema_is_not_modified(tmp_path: Path) -> None:
     project_path = tmp_path / "newer.irproj"
     service = _create_project(project_path)
     service.close()
     with _database(project_path) as connection:
         connection.execute("PRAGMA user_version = 99")
-    before = (project_path / "project.sqlite").stat().st_mtime_ns
+    database_path = project_path / "project.sqlite"
+    lock_path = project_path / ".project.lock"
+    before_mtime = database_path.stat().st_mtime_ns
+    before_hash = _sha256(database_path)
+    before_lock = lock_path.read_bytes()
+    before_lock_mtime = lock_path.stat().st_mtime_ns
+    before_journal_mode = _read_journal_mode_without_writes(database_path)
 
     with pytest.raises(ProjectOperationError) as raised:
         ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
     assert raised.value.code == "incompatible_schema"
-    assert (project_path / "project.sqlite").stat().st_mtime_ns == before
+    assert database_path.stat().st_mtime_ns == before_mtime
+    assert _sha256(database_path) == before_hash
+    assert _read_journal_mode_without_writes(database_path) == before_journal_mode
+    assert lock_path.read_bytes() == before_lock
+    assert lock_path.stat().st_mtime_ns == before_lock_mtime
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
     assert list((project_path / "backups").iterdir()) == []
 
 
@@ -304,6 +535,14 @@ class _DelayedClock:
         return 2.0 if self._calls >= self._expire_on_call else 0.0
 
 
+class _ControlledClock:
+    def __init__(self) -> None:
+        self.expired = False
+
+    def __call__(self) -> float:
+        return 2.0 if self.expired else 0.0
+
+
 def test_delayed_create_times_out_without_final_or_staging_directory(tmp_path: Path) -> None:
     project_path = tmp_path / "delayed-create.irproj"
     clock = _DelayedClock(expire_on_call=3)
@@ -341,6 +580,29 @@ def test_delayed_open_times_out_and_releases_lock(tmp_path: Path) -> None:
     reopened.close()
 
 
+def test_overview_failure_does_not_leave_closed_session_referenced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = tmp_path / "overview-failure.irproj"
+    service = _create_project(project_path)
+    service.close()
+
+    def fail_overview(_session: ProjectSession) -> object:
+        raise RuntimeError("overview failed")
+
+    monkeypatch.setattr(ProjectSession, "overview", fail_overview)
+    opening_service = ProjectService()
+    with pytest.raises(ProjectOperationError, match="открыть"):
+        opening_service.open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert opening_service.has_active_session is False
+    monkeypatch.undo()
+
+    reopened = ProjectService()
+    assert reopened.open(path=str(project_path), application_instance_id=str(uuid4())).name == "Проект рабочего колеса"
+    reopened.close()
+
+
 def test_delayed_backup_removes_partial_file_and_keeps_session(tmp_path: Path) -> None:
     project_path = tmp_path / "delayed-backup.irproj"
     service = _create_project(project_path)
@@ -353,14 +615,102 @@ def test_delayed_backup_removes_partial_file_and_keeps_session(tmp_path: Path) -
     service.close()
 
 
+def test_hash_deadline_removes_only_new_backup_and_keeps_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = tmp_path / "hash-timeout.irproj"
+    service = _create_project(project_path)
+    previous_backup = project_path / "backups" / "previous.sqlite"
+    previous_backup.write_bytes(b"previous backup")
+    controlled_clock = _ControlledClock()
+    deadline = RequestDeadline.start(1_000, clock=controlled_clock)
+    original_hash = sha256_file
+
+    def expire_during_hash(path: Path, active_deadline: RequestDeadline | None = None) -> str:
+        controlled_clock.expired = True
+        return original_hash(path, active_deadline)
+
+    monkeypatch.setattr(project_session, "sha256_file", expire_during_hash)
+    with pytest.raises(ProjectOperationError) as raised:
+        service.create_backup(deadline=deadline)
+    assert raised.value.code == "timeout"
+    assert list((project_path / "backups").iterdir()) == [previous_backup]
+    assert previous_backup.read_bytes() == b"previous backup"
+    assert service.get_overview().record_revision == 1
+    service.close()
+
+
+def test_hash_read_error_removes_only_new_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project_path = tmp_path / "hash-read-error.irproj"
+    service = _create_project(project_path)
+    previous_backup = project_path / "backups" / "previous.sqlite"
+    previous_backup.write_bytes(b"previous backup")
+
+    def fail_hash(_path: Path, _deadline: RequestDeadline | None = None) -> str:
+        raise OSError("hash read failed")
+
+    monkeypatch.setattr(project_session, "sha256_file", fail_hash)
+    with pytest.raises(OSError, match="hash read failed"):
+        service.create_backup()
+    assert list((project_path / "backups").iterdir()) == [previous_backup]
+    assert service.get_overview().record_revision == 1
+    service.close()
+
+
+def test_hash_cleanup_does_not_delete_substituted_previous_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = tmp_path / "hash-substitution.irproj"
+    service = _create_project(project_path)
+    previous_backup = project_path / "backups" / "previous.sqlite"
+    previous_backup.write_bytes(b"previous backup")
+    displaced_new_backups: list[Path] = []
+    substituted_paths: list[Path] = []
+
+    def substitute_before_failure(path: Path, _deadline: RequestDeadline | None = None) -> str:
+        displaced_new_backup = path.with_name("displaced-new.sqlite")
+        displaced_new_backups.append(displaced_new_backup)
+        substituted_paths.append(path)
+        path.replace(displaced_new_backup)
+        previous_backup.replace(path)
+        path.with_name(f"{path.name}-wal").write_bytes(b"previous sidecar")
+        raise OSError("hash substitution")
+
+    monkeypatch.setattr(project_session, "sha256_file", substitute_before_failure)
+    with pytest.raises(OSError, match="hash substitution"):
+        service.create_backup()
+    assert len(displaced_new_backups) == 1 and not displaced_new_backups[0].exists()
+    assert len(substituted_paths) == 1
+    substituted_path = substituted_paths[0]
+    assert substituted_path.read_bytes() == b"previous backup"
+    assert substituted_path.with_name(f"{substituted_path.name}-wal").read_bytes() == b"previous sidecar"
+    assert service.get_overview().record_revision == 1
+    service.close()
+
+
 def test_open_database_closes_connection_when_wal_configuration_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: list[sqlite3.Connection] = []
 
-    def capture_connection(database: Path) -> sqlite3.Connection:
-        connection = sqlite3.connect(database)
+    project_path = tmp_path / "configuration-failure.irproj"
+    service = _create_project(project_path)
+    service.close()
+    database_path = project_path / "project.sqlite"
+    manifest = read_manifest(project_path / "project-manifest.json")
+    expected_identity = inspect_reserved_file(database_path, database_path.name)
+    assert expected_identity is not None
+    expected_database_identity = project_database.probe_project_database_identity(
+        database_path,
+        manifest,
+        project_database.PROJECT_SCHEMA_VERSION,
+    )
+
+    def capture_connection(database_uri: str) -> sqlite3.Connection:
+        connection = sqlite3.connect(database_uri, uri=True)
         captured.append(connection)
         return connection
 
@@ -370,12 +720,53 @@ def test_open_database_closes_connection_when_wal_configuration_fails(
     monkeypatch.setattr(project_database, "configure_project_connection", fail_configuration)
     with pytest.raises(ProjectOperationError, match="WAL unavailable"):
         project_database.open_project_database(
-            tmp_path / "failed.sqlite",
+            database_path,
+            expected_identity,
+            expected_database_identity,
+            manifest,
             connection_factory=capture_connection,
         )
     assert len(captured) == 1
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         captured[0].execute("SELECT 1")
+
+
+def test_write_connection_factory_cannot_redirect_to_external_database(tmp_path: Path) -> None:
+    project_path = tmp_path / "connection-binding.irproj"
+    service = _create_project(project_path)
+    service.close()
+    database_path = project_path / "project.sqlite"
+    manifest = read_manifest(project_path / "project-manifest.json")
+    expected_path_identity = inspect_reserved_file(database_path, database_path.name)
+    assert expected_path_identity is not None
+    expected_database_identity = project_database.probe_project_database_identity(
+        database_path,
+        manifest,
+        project_database.PROJECT_SCHEMA_VERSION,
+    )
+    external_database = tmp_path / "external-connection.sqlite"
+    shutil.copy2(database_path, external_database)
+    with closing(sqlite3.connect(external_database)) as connection:
+        assert str(connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0]).lower() == "delete"
+    before_hash = _sha256(external_database)
+    before_mtime = external_database.stat().st_mtime_ns
+
+    def connect_external(_database_uri: str) -> sqlite3.Connection:
+        return sqlite3.connect(external_database)
+
+    with pytest.raises(ProjectOperationError, match=r"другой project\.sqlite"):
+        project_database.open_project_database(
+            database_path,
+            expected_path_identity,
+            expected_database_identity,
+            manifest,
+            connection_factory=connect_external,
+        )
+    assert _sha256(external_database) == before_hash
+    assert external_database.stat().st_mtime_ns == before_mtime
+    assert _read_journal_mode_without_writes(external_database) == "delete"
+    assert not external_database.with_name(f"{external_database.name}-wal").exists()
+    assert not external_database.with_name(f"{external_database.name}-shm").exists()
 
 
 def test_os_lock_blocks_second_process_and_releases_after_crash(tmp_path: Path) -> None:

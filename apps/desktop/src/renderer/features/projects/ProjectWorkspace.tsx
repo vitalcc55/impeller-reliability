@@ -43,6 +43,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     const [confirmClose, setConfirmClose] = useState(false);
     const [reattachBlocked, setReattachBlocked] = useState(false);
     const [confirmReload, setConfirmReload] = useState(false);
+    const [confirmDiscardLocal, setConfirmDiscardLocal] = useState(false);
     const dirty =
       project !== null &&
       (draft.name !== project.name ||
@@ -92,6 +93,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
       setConfirmClose(false);
       setReattachBlocked(false);
       setConfirmReload(false);
+      setConfirmDiscardLocal(false);
       setMessage(notice);
       void refreshRecent();
     };
@@ -174,6 +176,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     const changeDraft = (nextDraft: ProjectDraft): void => {
       setDraft(nextDraft);
       setConfirmClose(false);
+      setConfirmDiscardLocal(false);
     };
 
     const reattachAfterWorkerRestart = useCallback(async (): Promise<boolean> => {
@@ -208,6 +211,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
         setProject(result.result);
         setReattachBlocked(false);
         setConfirmReload(false);
+        setConfirmDiscardLocal(false);
         setError(null);
         setMessage(
           dirty
@@ -247,6 +251,23 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           );
         else handleFailure(result.error);
       });
+
+    const discardLocalWorkspace = (): void => {
+      if (!confirmDiscardLocal) {
+        setConfirmDiscardLocal(true);
+        setMessage(null);
+        return;
+      }
+      setProject(null);
+      setDraft(newProjectDraft);
+      setError(null);
+      setConfirmClose(false);
+      setReattachBlocked(false);
+      setConfirmReload(false);
+      setConfirmDiscardLocal(false);
+      setMessage('Локальный черновик удалён. Файлы проекта не изменялись.');
+      void refreshRecent();
+    };
 
     if (project === null)
       return (
@@ -354,7 +375,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
             <strong>Проект отсоединён от worker</strong>
             <span>
               {reattachBlocked
-                ? 'Редакция проекта не совпала или повторное подключение не завершилось. Черновик сохранён локально и не будет записан автоматически.'
+                ? 'Локальный черновик сохранён. Worker session не подключена: редакция не совпала или повторное подключение не завершилось. Черновик не будет записан автоматически.'
                 : 'Введённые значения сохранены в форме. Перезапустите ядро; запись станет доступна только после сверки проекта и редакции.'}
             </span>
             {workerReady && reattachBlocked ? (
@@ -379,6 +400,37 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                   </Button>
                 ) : null}
               </Group>
+            ) : null}
+            {reattachBlocked ? (
+              <div className="detached-discard">
+                {confirmDiscardLocal ? (
+                  <Text size="sm">
+                    Будет очищена только локальная форма. Контейнер `.irproj` и список недавних
+                    проектов не изменятся.
+                  </Text>
+                ) : null}
+                <Group>
+                  <Button
+                    size="compact-sm"
+                    variant={confirmDiscardLocal ? 'filled' : 'subtle'}
+                    color="red"
+                    onClick={discardLocalWorkspace}
+                  >
+                    {confirmDiscardLocal
+                      ? 'Удалить только локальный черновик'
+                      : 'Отказаться от локального черновика'}
+                  </Button>
+                  {confirmDiscardLocal ? (
+                    <Button
+                      size="compact-sm"
+                      variant="subtle"
+                      onClick={() => setConfirmDiscardLocal(false)}
+                    >
+                      Оставить черновик
+                    </Button>
+                  ) : null}
+                </Group>
+              </div>
             ) : null}
           </div>
         ) : null}

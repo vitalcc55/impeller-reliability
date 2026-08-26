@@ -9,7 +9,7 @@
 
 ## Решение
 
-Рабочий проект — каталог `.irproj` с manifest и Python-owned `project.sqlite`. Один worker удерживает максимум одну ProjectSession и Windows OS lock; создание выполняется sibling staging + atomic rename, migrations только forward с проверенным backup.
+Рабочий проект — каталог `.irproj` с manifest и Python-owned `project.sqlite`. Existing container проходит read-only identity/topology preflight до OS lock и любых SQLite-записей; reserved reparse/hard-link objects запрещены. Один worker удерживает максимум одну ProjectSession и Windows OS lock; создание выполняется sibling staging + atomic rename, migrations только forward с проверенным backup.
 
 ## Альтернативы
 
@@ -21,4 +21,4 @@ ZIP для текущей работы требовал бы постоянно�
 
 ## Риски
 
-Повреждённый manifest/SQLite, несовместимая схема и lock contention. Они отклоняются typed errors после `application_id`, schema, integrity и projectId checks; новая schema не модифицируется.
+Повреждённый manifest/SQLite, path substitution, несовместимая схема и lock contention. Они отклоняются typed errors после read-only `application_id`, schema, projectId и file-identity checks; новая/чужая SQLite не модифицируется. Полное устранение malicious same-user TOCTOU потребовало бы custom SQLite VFS или отдельной directory ACL policy и остаётся за границей M02.1.
