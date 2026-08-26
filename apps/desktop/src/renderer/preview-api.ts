@@ -38,7 +38,7 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
     path: 'C:\\Проекты\\Надёжность рабочего колеса.irproj',
     name: 'Надёжность рабочего колеса',
     projectNumber: 'ИР-2026-001',
-    lastOpenedAtUtc: '2026-08-25T15:00:00Z',
+    lastOpenedAtUtc: '2026-08-25T15:00:00.000Z',
   };
   const listeners = new Set<(nextStatus: RuntimeStatus) => void>();
   return {
@@ -144,8 +144,8 @@ function projectOverview(
     path,
     ...draft,
     recordRevision: 1,
-    createdAtUtc: '2026-08-25T15:00:00Z',
-    updatedAtUtc: '2026-08-25T15:00:00Z',
+    createdAtUtc: '2026-08-25T15:00:00.000Z',
+    updatedAtUtc: '2026-08-25T15:00:00.000Z',
     createdWithApplicationVersion: '0.1.0',
     schemaVersion: 1,
   };

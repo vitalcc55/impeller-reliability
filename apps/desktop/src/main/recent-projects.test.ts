@@ -18,8 +18,8 @@ describe('RecentProjectsStore', () => {
         description: '',
         status: 'draft' as const,
         recordRevision: 1,
-        createdAtUtc: '2026-08-25T15:00:00Z',
-        updatedAtUtc: '2026-08-25T15:00:00Z',
+        createdAtUtc: '2026-08-25T15:00:00.000Z',
+        updatedAtUtc: '2026-08-25T15:00:00.000Z',
         createdWithApplicationVersion: '0.1.0',
         schemaVersion: 1,
       };

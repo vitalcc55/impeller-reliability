@@ -75,6 +75,13 @@ export const projectUpdateMetadataPayloadSchema = z
     metadata: projectDraftSchema,
   })
   .strict();
+const canonicalUtcTimestampSchema = z
+  .string()
+  .regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/u)
+  .refine((value) => {
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+  });
 export const projectOverviewSchema = z
   .object({
     projectId: z.string().uuid(),
@@ -84,8 +91,8 @@ export const projectOverviewSchema = z
     description: z.string().max(4_000),
     status: projectStatusSchema,
     recordRevision: z.number().int().positive(),
-    createdAtUtc: z.string().min(1),
-    updatedAtUtc: z.string().min(1),
+    createdAtUtc: canonicalUtcTimestampSchema,
+    updatedAtUtc: canonicalUtcTimestampSchema,
     createdWithApplicationVersion: z.string().min(1),
     schemaVersion: z.number().int().positive(),
   })
@@ -95,7 +102,7 @@ export const projectBackupResultSchema = z
   .object({
     fileName: z.string().min(1),
     sha256: z.string().regex(/^[0-9a-f]{64}$/u),
-    createdAtUtc: z.string().min(1),
+    createdAtUtc: canonicalUtcTimestampSchema,
   })
   .strict();
 
@@ -422,7 +429,7 @@ export const recentProjectSchema = z
     path: z.string().min(1),
     name: z.string().min(1),
     projectNumber: z.string(),
-    lastOpenedAtUtc: z.string().min(1),
+    lastOpenedAtUtc: canonicalUtcTimestampSchema,
   })
   .strict();
 export const recentProjectsSchema = z.array(recentProjectSchema);

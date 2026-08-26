@@ -31,3 +31,4 @@
 | Manual backup request atomicity | copy + quick_check + SHA-256 + final deadline owned cleanup | hash-timeout/read-error pytest integration |
 | Permanently detached workspace exit | confirmed Renderer-only local discard | Electron E2E moved-project recovery |
 | Published project schema integrity | exact schema objects/triggers/migration ledger before lock and WAL | pytest mutation + TOCTOU integration |
+| Canonical UTC project timestamps | Python manifest/schema/evidence validation + Zod/Pydantic boundary | pytest mutation + Vitest contract |

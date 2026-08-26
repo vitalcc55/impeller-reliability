@@ -21,6 +21,7 @@ from impeller_reliability.persistence.project_schema import (
     validate_project_evidence,
     validate_published_schema,
 )
+from impeller_reliability.persistence.timestamps import utc_now
 from impeller_reliability.worker.deadline import RequestDeadline
 
 PROJECT_APPLICATION_ID: Final = 0x49525043
@@ -37,10 +38,6 @@ class ProjectDatabaseIdentity:
 class VerifiedBackup:
     path: Path
     identity: PathIdentity
-
-
-def utc_now() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def configure_project_connection(connection: sqlite3.Connection) -> None:
@@ -77,7 +74,7 @@ def probe_project_database_identity(
             )
         validate_published_schema(connection, schema_version)
         if schema_version == PROJECT_SCHEMA_VERSION:
-            validate_project_evidence(connection, manifest.projectId)
+            validate_project_evidence(connection, manifest.projectId, manifest.createdAtUtc)
         return ProjectDatabaseIdentity(
             application_id=application_id,
             schema_version=schema_version,
@@ -397,7 +394,7 @@ def _validate_open_connection_identity(
         raise ProjectOperationError("corrupt_project", "SQLite identity изменился между read-only probe и write open.")
     validate_published_schema(connection, schema_version)
     if schema_version == PROJECT_SCHEMA_VERSION:
-        validate_project_evidence(connection, manifest.projectId)
+        validate_project_evidence(connection, manifest.projectId, manifest.createdAtUtc)
 
 
 def validate_project_database(connection: sqlite3.Connection, manifest: ProjectManifest) -> None:
@@ -413,7 +410,7 @@ def validate_project_database(connection: sqlite3.Connection, manifest: ProjectM
     if application_id != PROJECT_APPLICATION_ID or schema_version != PROJECT_SCHEMA_VERSION:
         raise ProjectOperationError("corrupt_project", "Версия или application_id project.sqlite не согласованы.")
     validate_published_schema(connection, schema_version)
-    validate_project_evidence(connection, manifest.projectId)
+    validate_project_evidence(connection, manifest.projectId, manifest.createdAtUtc)
 
 
 def insert_audit(

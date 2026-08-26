@@ -592,6 +592,52 @@ def test_null_sqlite_schema_object_is_rejected_by_read_only_probe(tmp_path: Path
     assert not (project_path / "project.sqlite-shm").exists()
 
 
+@pytest.mark.parametrize(
+    "timestamp_target",
+    ["manifest", "metadata_created", "metadata_updated", "audit"],
+)
+def test_invalid_project_timestamp_is_rejected_without_mutation(
+    tmp_path: Path,
+    timestamp_target: str,
+) -> None:
+    project_path = tmp_path / "invalid-timestamp.irproj"
+    service = _create_project(project_path)
+    service.close()
+    invalid_timestamp = "2026-99-99T25:61:61.000Z"
+    if timestamp_target == "manifest":
+        manifest_path = project_path / "project-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["createdAtUtc"] = invalid_timestamp
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    else:
+        with _database(project_path) as connection:
+            if timestamp_target == "audit":
+                connection.execute("DROP TRIGGER project_audit_events_no_update")
+                connection.execute(
+                    "UPDATE project_audit_events SET occurred_at_utc = ? WHERE sequence = 1",
+                    (invalid_timestamp,),
+                )
+                connection.execute(project_schema.PROJECT_AUDIT_NO_UPDATE_TRIGGER_SQL)
+            else:
+                column = "created_at_utc" if timestamp_target == "metadata_created" else "updated_at_utc"
+                connection.execute(f"UPDATE project_metadata SET {column} = ?", (invalid_timestamp,))
+            connection.commit()
+    database_path = project_path / "project.sqlite"
+    lock_path = project_path / ".project.lock"
+    before_hash = _sha256(database_path)
+    before_lock = lock_path.read_bytes()
+    candidate = ProjectService()
+
+    with pytest.raises(ProjectOperationError) as raised:
+        candidate.open(path=str(project_path), application_instance_id=str(uuid4()))
+
+    assert raised.value.code == "corrupt_project"
+    assert _sha256(database_path) == before_hash
+    assert lock_path.read_bytes() == before_lock
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
+
+
 def test_backup_precedes_forward_migration(tmp_path: Path) -> None:
     project_path = tmp_path / "migration.irproj"
     service = _create_project(project_path)

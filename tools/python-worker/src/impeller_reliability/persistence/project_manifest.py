@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 from typing import Final, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from impeller_reliability.persistence.project_errors import ProjectOperationError
+from impeller_reliability.persistence.timestamps import require_canonical_utc_timestamp
 
 PROJECT_CONTAINER_SCHEMA: Final = "impeller.project-container.v1"
 PROJECT_DATABASE_FILE: Final = "project.sqlite"
@@ -20,6 +21,11 @@ class ProjectManifest(BaseModel):
     createdAtUtc: str
     createdWithApplicationVersion: str
     databaseFile: Literal["project.sqlite"] = PROJECT_DATABASE_FILE
+
+    @field_validator("createdAtUtc")
+    @classmethod
+    def validate_created_at_utc(cls, value: str) -> str:
+        return require_canonical_utc_timestamp(value)
 
 
 def read_manifest(path: Path) -> ProjectManifest:

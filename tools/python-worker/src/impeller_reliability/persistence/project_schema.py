@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import sqlite3
 from typing import Final
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from impeller_reliability.persistence.project_errors import ProjectOperationError
+from impeller_reliability.persistence.timestamps import parse_canonical_utc_timestamp
 
 PROJECT_SCHEMA_VERSION: Final = 1
 PROJECT_METADATA_FIELDS: Final = ("name", "projectNumber", "description", "status")
@@ -84,7 +86,10 @@ def validate_published_schema(connection: sqlite3.Connection, schema_version: in
             "corrupt_project",
             "Структура project.sqlite не соответствует опубликованной schema.",
         )
-    migration_rows = tuple((int(row[0]), str(row[1])) for row in connection.execute("SELECT version, name FROM schema_migrations ORDER BY version").fetchall())
+    migration_records = connection.execute("SELECT version, name, applied_at_utc FROM schema_migrations ORDER BY version").fetchall()
+    migration_rows = tuple((int(row[0]), str(row[1])) for row in migration_records)
+    for row in migration_records:
+        _require_timestamp(str(row[2]))
     if migration_rows != contract.migrations:
         raise ProjectOperationError(
             "corrupt_project",
@@ -92,8 +97,12 @@ def validate_published_schema(connection: sqlite3.Connection, schema_version: in
         )
 
 
-def validate_project_evidence(connection: sqlite3.Connection, project_id: str) -> None:
-    metadata_rows = connection.execute("SELECT project_id, name, project_number, description, status, record_revision FROM project_metadata").fetchall()
+def validate_project_evidence(
+    connection: sqlite3.Connection,
+    project_id: str,
+    project_created_at_utc: str,
+) -> None:
+    metadata_rows = connection.execute("SELECT project_id, name, project_number, description, status, record_revision, created_at_utc, updated_at_utc FROM project_metadata").fetchall()
     if len(metadata_rows) != 1 or str(metadata_rows[0][0]) != project_id:
         raise _evidence_error()
     metadata = metadata_rows[0]
@@ -104,16 +113,25 @@ def validate_project_evidence(connection: sqlite3.Connection, project_id: str) -
         "status": str(metadata[4]),
     }
     record_revision = _require_int(metadata[5])
-    event_rows = connection.execute("SELECT sequence, event_type, actor_kind, payload_json FROM project_audit_events ORDER BY sequence").fetchall()
+    manifest_created_at = _require_timestamp(project_created_at_utc)
+    metadata_created_at = _require_timestamp(str(metadata[6]))
+    metadata_updated_at = _require_timestamp(str(metadata[7]))
+    if metadata_created_at != manifest_created_at or metadata_updated_at < metadata_created_at:
+        raise _evidence_error()
+    event_rows = connection.execute("SELECT sequence, event_type, actor_kind, occurred_at_utc, payload_json FROM project_audit_events ORDER BY sequence").fetchall()
     if not event_rows:
         raise _evidence_error()
 
     reconstructed: dict[str, str] | None = None
     expected_revision = 0
+    previous_event_at = metadata_created_at
     for expected_sequence, row in enumerate(event_rows, start=1):
         if _require_int(row[0]) != expected_sequence:
             raise _evidence_error()
-        payload = _parse_json_object(str(row[3]))
+        event_at = _require_timestamp(str(row[3]))
+        if event_at < previous_event_at:
+            raise _evidence_error()
+        payload = _parse_json_object(str(row[4]))
         if expected_sequence == 1:
             if str(row[1]) != "project.created" or str(row[2]) != "application":
                 raise _evidence_error()
@@ -125,8 +143,11 @@ def validate_project_evidence(connection: sqlite3.Connection, project_id: str) -
                 or _require_string_list(payload.get("changedFields")) != list(PROJECT_METADATA_FIELDS)
             ):
                 raise _evidence_error()
+            if event_at != metadata_created_at:
+                raise _evidence_error()
             reconstructed = _require_metadata_values(payload.get("after"))
             expected_revision = 1
+            previous_event_at = event_at
             continue
 
         if reconstructed is None:
@@ -155,8 +176,9 @@ def validate_project_evidence(connection: sqlite3.Connection, project_id: str) -
                 raise _evidence_error()
             reconstructed[field] = after
         expected_revision += 1
+        previous_event_at = event_at
 
-    if reconstructed != expected_current or expected_revision != record_revision:
+    if reconstructed != expected_current or expected_revision != record_revision or previous_event_at != metadata_updated_at:
         raise _evidence_error()
 
 
@@ -208,6 +230,13 @@ def _require_int(value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise _evidence_error()
     return value
+
+
+def _require_timestamp(value: str) -> datetime:
+    try:
+        return parse_canonical_utc_timestamp(value)
+    except ValueError as error:
+        raise _evidence_error() from error
 
 
 def _evidence_error() -> ProjectOperationError:

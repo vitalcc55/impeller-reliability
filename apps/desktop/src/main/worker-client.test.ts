@@ -22,7 +22,7 @@ function serialWorkerScript(operationDelayMs: number): string {
             revision: request.revision,
             kind: 'response',
             ok: true,
-            result: { fileName: 'project-v1.sqlite', sha256: 'a'.repeat(64), createdAtUtc: '2026-08-26T00:00:00Z' },
+            result: { fileName: 'project-v1.sqlite', sha256: 'a'.repeat(64), createdAtUtc: '2026-08-26T00:00:00.000Z' },
             evidence: {},
             warnings: [],
           }) + '\n');

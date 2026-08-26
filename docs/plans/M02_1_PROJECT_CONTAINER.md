@@ -69,6 +69,8 @@ Database invariants:
 
 Первая опубликованная project schema — v1. `user_version=0` не является внешним форматом и не мигрируется при открытии existing container; будущие forward migrations начинаются только с подтверждённой v1.
 
+Все persisted и IPC timestamps M02.1 имеют один канонический UTC-формат `YYYY-MM-DDTHH:mm:ss.sssZ`. Python проверяет календарную корректность manifest, migration ledger, metadata и audit evidence до ProjectSession; TypeScript повторно валидирует тот же формат на desktop boundary. Renderer не получает невалидную дату для форматирования.
+
 ### `schema_migrations`
 
 ```text
@@ -206,13 +208,14 @@ Review closure считается завершённым после Python timeo
 
 ## Final PR review closure
 
-Финальные итерации ревью PR #1 закрывают пять P2 до слияния и не расширяют M02.1:
+Финальные итерации ревью PR #1 закрывают шесть P2 до слияния и не расширяют M02.1:
 
 1. Существующий контейнер проходит structural preflight зарезервированных путей и read-only SQLite identity probe до создания lock, WAL или backup. После OS lock пути и file identity сверяются повторно; write connection открывается только для подтверждённых `application_id` и поддерживаемой schema. Файловые symlink/junction/reparse points и hard-linked reserved files отклоняются.
 2. Ручной backup принадлежит одному запросу до завершения SQLite copy, `quick_check`, SHA-256 и финальной deadline-проверки. Любая ошибка этой последовательности удаляет только новый файл текущего запроса; существующие manual/migration backups сохраняются.
 3. Permanently detached workspace предлагает независимые действия: повторное подключение/перечитывание и двухшаговый локальный discard. Discard очищает только Renderer project/draft state, не вызывает `project.close`, не изменяет `.irproj` и не удаляет recent path.
 4. `WorkerClient` владеет одной последовательной очередью, совпадающей с serial JSONL worker и ограниченной одним active + одним queued request. Shutdown и controlled restart закрывают вход, дренируют уже принятые операции в пределах их собственных transport deadlines и только затем останавливают process; queued deadlines больше не истекают до фактического dispatch, а final shutdown отменяет пересекающийся restart.
 5. Schema v1 имеет один канонический version-specific contract, из которого создаются и проверяются таблицы/триггеры. Read-only probe, write-open до WAL и post-migration validation проверяют точный набор user objects, migration ledger и согласованность metadata с append-only audit chain; неизвестные user schema objects отклоняются.
+6. Manifest, migration, metadata, audit, backup и desktop read models используют канонический UTC timestamp с миллисекундами. Невалидные календарные значения отклоняются как `corrupt_project` до lock/WAL, а Zod/Pydantic не пропускают их в Renderer.
 
 Исправления публикуются отдельным commit, каждый review thread получает ссылку на commit и regression test и разрешается только после push. Затем запрашивается повторный Codex review. Squash merge допустим только при отсутствии открытых P1/P2, зелёных Quality/package gates, совпадающем SHA и конечном дереве без Etelka; M02.2 в этом цикле не начинается.
 

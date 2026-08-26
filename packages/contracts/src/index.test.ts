@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseWorkerResponse, runtimeStatusSchema, workerRequestSchema } from './index';
+import {
+  parseWorkerResponse,
+  projectBackupResultSchema,
+  projectOverviewSchema,
+  runtimeStatusSchema,
+  workerRequestSchema,
+} from './index';
 
 describe('worker contracts', () => {
   it('rejects generic operations', () => {
@@ -79,6 +85,33 @@ describe('worker contracts', () => {
         revision: 5,
         deadlineMs: 5_000,
         payload: { path: 'C:\\arbitrary.irproj' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects non-canonical UTC timestamps at the desktop boundary', () => {
+    const overview = {
+      projectId: '019c89f0-0b57-7ef5-9656-595184fcb272',
+      path: 'C:\\Projects\\Wheel.irproj',
+      name: 'Wheel',
+      projectNumber: '',
+      description: '',
+      status: 'draft',
+      recordRevision: 1,
+      createdAtUtc: '2026-08-26T00:00:00.000Z',
+      updatedAtUtc: '2026-08-26T00:00:00.000Z',
+      createdWithApplicationVersion: '0.1.0',
+      schemaVersion: 1,
+    } as const;
+
+    expect(projectOverviewSchema.safeParse({ ...overview, updatedAtUtc: 'invalid' }).success).toBe(
+      false,
+    );
+    expect(
+      projectBackupResultSchema.safeParse({
+        fileName: 'project-v1.sqlite',
+        sha256: 'a'.repeat(64),
+        createdAtUtc: '2026-99-99T25:61:61.000Z',
       }).success,
     ).toBe(false);
   });

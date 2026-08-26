@@ -11,7 +11,6 @@ from impeller_reliability.persistence.project_database import (
     create_project_database,
     open_project_database,
     probe_project_database_identity,
-    utc_now,
     validate_project_database,
 )
 from impeller_reliability.persistence.project_errors import ProjectOperationError
@@ -23,6 +22,7 @@ from impeller_reliability.persistence.project_paths import (
     verify_project_snapshot_stable,
 )
 from impeller_reliability.persistence.project_session import ProjectOverview, ProjectSession
+from impeller_reliability.persistence.timestamps import utc_now
 from impeller_reliability.worker.deadline import RequestDeadline
 
 

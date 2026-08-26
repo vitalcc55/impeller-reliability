@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+
+from impeller_reliability.persistence.timestamps import require_canonical_utc_timestamp
 
 Operation = Literal[
     "system.handshake",
@@ -18,6 +20,7 @@ Operation = Literal[
 ]
 
 ProjectStatus = Literal["draft", "active", "completed", "archived"]
+CanonicalUtcTimestamp = Annotated[str, AfterValidator(require_canonical_utc_timestamp)]
 
 
 class EmptyPayload(BaseModel):
@@ -192,8 +195,8 @@ class ProjectOverviewResult(BaseModel):
     description: str
     status: ProjectStatus
     recordRevision: int = Field(ge=1)
-    createdAtUtc: str
-    updatedAtUtc: str
+    createdAtUtc: CanonicalUtcTimestamp
+    updatedAtUtc: CanonicalUtcTimestamp
     createdWithApplicationVersion: str
     schemaVersion: int = Field(ge=1)
 
@@ -209,7 +212,7 @@ class ProjectBackupResult(BaseModel):
 
     fileName: str
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    createdAtUtc: str
+    createdAtUtc: CanonicalUtcTimestamp
 
 
 class ErrorPayload(BaseModel):

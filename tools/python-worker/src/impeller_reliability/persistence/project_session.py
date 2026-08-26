@@ -10,13 +10,13 @@ from impeller_reliability.persistence.project_database import (
     insert_audit,
     remove_owned_backup,
     sha256_file,
-    utc_now,
     validate_project_database,
 )
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_lock import ProjectLock
 from impeller_reliability.persistence.project_manifest import ProjectManifest
 from impeller_reliability.persistence.project_paths import PathIdentity, inspect_reserved_directory
+from impeller_reliability.persistence.timestamps import utc_now
 from impeller_reliability.worker.deadline import RequestDeadline
 
 
