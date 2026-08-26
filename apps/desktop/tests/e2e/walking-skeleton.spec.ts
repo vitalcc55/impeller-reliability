@@ -34,7 +34,7 @@ test('renderer reflects worker failure and controlled restart through the narrow
   });
   try {
     const page = await app.firstWindow();
-    await expect(page.getByRole('heading', { name: /Проект объединяет испытания/u })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Дело объединяет результаты/u })).toBeVisible();
     expect(await page.evaluate(() => Reflect.has(window, 'process'))).toBe(false);
     expect(await page.evaluate(() => Reflect.has(window, 'require'))).toBe(false);
     expect(
@@ -42,7 +42,7 @@ test('renderer reflects worker failure and controlled restart through the narrow
         const api: unknown = Reflect.get(window, 'impeller');
         return typeof api === 'object' && api !== null ? Reflect.ownKeys(api) : [];
       }),
-    ).toEqual(['system', 'project']);
+    ).toEqual(['system', 'project', 'caseCustomer', 'wheelModel', 'specimen']);
     expect(
       await page.evaluate(() => {
         const api: unknown = Reflect.get(window, 'impeller');
@@ -181,7 +181,7 @@ test('renderer reflects worker failure and controlled restart through the narrow
     await expect(page.getByLabel('Название проекта')).toHaveValue('Несохранённый draft');
     await expect(page.getByText(/Будет очищена только локальная форма/u)).toBeVisible();
     await page.getByRole('button', { name: 'Удалить только локальный черновик' }).click();
-    await expect(page.getByRole('heading', { name: /Проект объединяет испытания/u })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Дело объединяет результаты/u })).toBeVisible();
     await expect(page.getByText(projectPath)).toBeVisible();
     expect(existsSync(movedProjectPath)).toBe(true);
     await page.getByRole('button', { name: 'Создать проект' }).click();
@@ -190,6 +190,179 @@ test('renderer reflects worker failure and controlled restart through the narrow
       path: resolve(import.meta.dirname, '../../../../.tmp/.codex/evidence/renderer.png'),
       fullPage: true,
     });
+  } finally {
+    await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
+test('persists customer wheel model and specimen dossier with one draft guard', async () => {
+  const evidenceRoot = resolve(import.meta.dirname, '../../../../.tmp/.codex/evidence/m02-2a-e2e');
+  const projectPath = join(evidenceRoot, 'Аналитическое дело.irproj');
+  const userDataPath = join(evidenceRoot, 'user-data');
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(evidenceRoot, { recursive: true });
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: resolve(import.meta.dirname, '../../../..'),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
+      IMPELLER_TEST_USER_DATA: userDataPath,
+    },
+  });
+  try {
+    const page = await app.firstWindow();
+    await page.getByRole('button', { name: 'Создать проект' }).click();
+    await page.getByRole('button', { name: 'Заказчик' }).click();
+    await page.getByLabel('Полное наименование').fill('АО «Заказчик»');
+    await page.getByRole('button', { name: 'Модели колёс' }).click();
+    await expect(page.getByText('Сначала решите, что делать с черновиком')).toBeVisible();
+    await page.getByRole('button', { name: 'Остаться здесь' }).click();
+    await page.getByLabel('Юридический адрес').fill('Москва');
+    await page.getByLabel('Фактический адрес').fill('Москва');
+    await page.getByRole('button', { name: 'Сохранить заказчика' }).click();
+    await expect(page.getByText(/Сведения заказчика сохранены/u)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Модели колёс' }).click();
+    await page.getByRole('button', { name: 'Новая модель' }).click();
+    await page.getByLabel('Полное наименование').fill('Рабочее колесо ВР-1');
+    await page.getByLabel('Обозначение').fill('ВР-1');
+    await page.getByLabel('Номинальный диаметр').fill('500,0');
+    await page.getByLabel('Номинальная частота вращения').fill('1500');
+    await page.getByLabel('Количество лопастей').fill('12');
+    await page.getByRole('button', { name: 'Сохранить модель' }).click();
+    await expect(page.getByText(/Модель сохранена/u)).toBeVisible();
+    await page.getByLabel('Обозначение').fill('UNSAVED-DESIGNATION');
+    await page.getByRole('button', { name: 'Новая модель' }).click();
+    await expect(page.getByText('Сначала решите, что делать с черновиком')).toBeVisible();
+    await page.getByRole('button', { name: 'Остаться здесь' }).click();
+    await expect(page.getByLabel('Обозначение')).toHaveValue('UNSAVED-DESIGNATION');
+    await page.getByLabel('Обозначение').fill('ВР-1');
+    await page.getByRole('button', { name: 'Архивировать' }).click();
+    await expect(page.getByRole('button', { name: 'Подтвердить действие' })).toBeVisible();
+    await page.getByRole('button', { name: 'Новая модель' }).click();
+    await page.getByRole('button', { name: 'Рабочее колесо ВР-1' }).click();
+    await expect(page.getByRole('button', { name: 'Архивировать' })).toBeVisible();
+    await page.getByLabel('Обозначение').fill('UNSAVED-BEFORE-ARCHIVE');
+    await page.getByRole('button', { name: 'Архивировать' }).click();
+    await page.getByRole('button', { name: 'Подтвердить действие' }).click();
+    await expect(page.getByText('Сначала решите, что делать с черновиком')).toBeVisible();
+    await page.getByRole('button', { name: 'Остаться здесь' }).click();
+    await expect(page.getByLabel('Обозначение')).toHaveValue('UNSAVED-BEFORE-ARCHIVE');
+    await page.getByLabel('Обозначение').fill('ВР-1');
+
+    await page.getByRole('button', { name: 'Новая модель' }).click();
+    await page.getByLabel('Полное наименование').fill('Запасная модель');
+    await page.getByRole('button', { name: 'Сохранить модель' }).click();
+    await expect(page.getByText(/Модель сохранена/u)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Образцы' }).click();
+    await page.getByRole('button', { name: 'Новый образец' }).click();
+    await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
+    await page.getByRole('option', { name: 'Рабочее колесо ВР-1 · ВР-1' }).click();
+    await page.getByRole('button', { name: 'Модели колёс' }).click();
+    await expect(page.getByText('Сначала решите, что делать с черновиком')).toBeVisible();
+    await page.getByRole('button', { name: 'Остаться здесь' }).click();
+    await expect(page.getByRole('combobox', { name: 'Модель рабочего колеса' })).toHaveValue(
+      'Рабочее колесо ВР-1 · ВР-1',
+    );
+    await page.getByLabel('Идентификационный номер').fill('SN-001');
+    await page.getByLabel('Рабочий диаметр').fill('499.5');
+    await page.getByRole('button', { name: 'Сохранить образец' }).click();
+    await expect(page.getByText(/Образец сохранён/u)).toBeVisible();
+    await page.getByLabel('Примечания').fill('UNSAVED-SPECIMEN-BEFORE-ARCHIVE');
+    await page.getByRole('button', { name: 'Архивировать' }).click();
+    await page.getByRole('button', { name: 'Подтвердить действие' }).click();
+    await expect(page.getByText('Сначала решите, что делать с черновиком')).toBeVisible();
+    await page.getByRole('button', { name: 'Остаться здесь' }).click();
+    await expect(page.getByLabel('Примечания')).toHaveValue('UNSAVED-SPECIMEN-BEFORE-ARCHIVE');
+    await page.getByLabel('Примечания').fill('');
+    await page.getByRole('button', { name: 'Подтвердить действие' }).click();
+
+    await page.getByRole('button', { name: 'Модели колёс' }).click();
+    await page.getByRole('button', { name: 'Рабочее колесо ВР-1' }).click();
+    await page.getByRole('button', { name: 'Архивировать' }).click();
+    await page.getByRole('button', { name: 'Подтвердить действие' }).click();
+    await page.getByRole('button', { name: 'Восстановить' }).click();
+    await page.getByRole('button', { name: 'Подтвердить действие' }).click();
+    await page.getByRole('button', { name: 'Образцы' }).click();
+    await page.getByRole('checkbox', { name: 'Показывать архивные' }).check();
+    await page.getByRole('button', { name: 'SN-001' }).click();
+    await page.getByRole('button', { name: 'Восстановить' }).click();
+    await page.getByRole('button', { name: 'Подтвердить действие' }).click();
+
+    await page.getByRole('button', { name: 'Закрыть проект' }).click();
+    await page.getByRole('button', { name: 'Новый проект' }).click();
+    await page.getByRole('button', { name: 'Заказчик' }).click();
+    await expect(page.getByLabel('Полное наименование')).toHaveValue('АО «Заказчик»');
+    await page.getByRole('button', { name: 'Модели колёс' }).click();
+    await page.getByRole('button', { name: 'Рабочее колесо ВР-1' }).click();
+    await expect(page.getByLabel('Номинальный диаметр')).toHaveValue('500');
+    await page.getByRole('button', { name: 'Образцы' }).click();
+    await page.getByRole('button', { name: 'SN-001' }).click();
+    await expect(page.getByLabel('Рабочий диаметр')).toHaveValue('499.5');
+
+    await page.getByRole('button', { name: 'Модели колёс' }).click();
+    await page.getByRole('button', { name: 'Рабочее колесо ВР-1' }).click();
+    await expect(page.getByLabel('Обозначение')).toHaveValue('ВР-1');
+    await page.getByLabel('Обозначение').fill('UNSAVED-WHEEL');
+    const mainProcessId = app.process().pid;
+    if (mainProcessId === undefined) throw new Error('electron_main_process_missing');
+    const workerId = workerProcessIds(mainProcessId)[0];
+    if (workerId === undefined) throw new Error('dossier_worker_process_missing');
+    process.kill(workerId);
+    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
+    await page.getByRole('button', { name: 'Диагностика' }).click();
+    await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
+    await expect(page.getByRole('dialog', { name: 'Есть несохранённые изменения' })).toBeVisible();
+    await page.getByRole('button', { name: 'Перезапустить и сохранить черновик' }).click();
+    await page.getByRole('button', { name: 'Проекты' }).click();
+    await expect(page.getByLabel('Обозначение')).toHaveValue('UNSAVED-WHEEL');
+  } finally {
+    await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
+test('preserves a dirty specimen draft when window close is cancelled', async () => {
+  const evidenceRoot = resolve(
+    import.meta.dirname,
+    '../../../../.tmp/.codex/evidence/m02-2a-specimen-close-e2e',
+  );
+  const projectPath = join(evidenceRoot, 'Черновик образца.irproj');
+  const userDataPath = join(evidenceRoot, 'user-data');
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(evidenceRoot, { recursive: true });
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: resolve(import.meta.dirname, '../../../..'),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
+      IMPELLER_TEST_USER_DATA: userDataPath,
+    },
+  });
+  try {
+    const page = await app.firstWindow();
+    await page.getByRole('button', { name: 'Создать проект' }).click();
+    await page.getByRole('button', { name: 'Модели колёс' }).click();
+    await page.getByRole('button', { name: 'Новая модель' }).click();
+    await page.getByLabel('Полное наименование').fill('Модель для образца');
+    await page.getByRole('button', { name: 'Сохранить модель' }).click();
+    await expect(page.getByText(/Модель сохранена/u)).toBeVisible();
+    await page.getByRole('button', { name: 'Образцы' }).click();
+    await page.getByRole('button', { name: 'Новый образец' }).click();
+    await page.getByLabel('Идентификационный номер').fill('CLOSE-SN-1');
+    await page.getByRole('button', { name: 'Сохранить образец' }).click();
+    await expect(page.getByText(/Образец сохранён/u)).toBeVisible();
+    await page.getByLabel('Примечания').fill('UNSAVED-SPECIMEN');
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.close());
+    await expect(page.getByRole('dialog', { name: 'Есть несохранённые изменения' })).toBeVisible();
+    await page.getByRole('button', { name: 'Продолжить редактирование' }).click();
+    await expect(page.getByLabel('Примечания')).toHaveValue('UNSAVED-SPECIMEN');
   } finally {
     await app.close();
     rmSync(evidenceRoot, { recursive: true, force: true });
