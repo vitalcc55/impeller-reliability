@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
 from contextlib import closing, contextmanager
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -21,7 +22,9 @@ from impeller_reliability.persistence.project_database import (
     MIGRATIONS,
     Migration,
     ProjectMigrator,
+    VerifiedBackup,
     configure_project_connection,
+    remove_owned_backup,
     sha256_file,
 )
 from impeller_reliability.persistence.project_errors import ProjectOperationError
@@ -172,6 +175,32 @@ def test_noop_update_does_not_create_revision_or_false_changed_fields(tmp_path: 
         events = connection.execute("SELECT event_type, payload_json FROM project_audit_events ORDER BY sequence").fetchall()
     assert [str(row["event_type"]) for row in events] == ["project.created"]
     assert "changes" not in json.loads(str(events[0]["payload_json"]))
+
+
+def test_metadata_update_keeps_audit_time_monotonic_when_wall_clock_moves_backward(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = tmp_path / "clock-correction.irproj"
+    service = _create_project(project_path)
+    before = service.get_overview()
+    monkeypatch.setattr(project_session, "utc_now", lambda: "2000-01-01T00:00:00.000Z")
+
+    updated = service.update_metadata(
+        expected_revision=before.record_revision,
+        name="После коррекции часов",
+        project_number=before.project_number,
+        description=before.description,
+        status=before.status,
+    )
+
+    assert updated.updated_at_utc >= before.updated_at_utc
+    service.close()
+    reopened = ProjectService()
+    persisted = reopened.open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert persisted.name == "После коррекции часов"
+    assert persisted.updated_at_utc == updated.updated_at_utc
+    reopened.close()
 
 
 def test_audit_failure_rolls_back_metadata_update(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -592,6 +621,107 @@ def test_null_sqlite_schema_object_is_rejected_by_read_only_probe(tmp_path: Path
     assert not (project_path / "project.sqlite-shm").exists()
 
 
+def test_oversized_audit_payload_is_rejected_before_json_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = tmp_path / "oversized-audit.irproj"
+    service = _create_project(project_path)
+    service.close()
+    with _database(project_path) as connection:
+        payload = json.loads(str(connection.execute("SELECT payload_json FROM project_audit_events WHERE sequence = 1").fetchone()[0]))
+        payload["padding"] = "A" * 100_000
+        connection.execute("DROP TRIGGER project_audit_events_no_update")
+        connection.execute(
+            "UPDATE project_audit_events SET payload_json = ? WHERE sequence = 1",
+            (json.dumps(payload, ensure_ascii=False),),
+        )
+        connection.execute(project_schema.PROJECT_AUDIT_NO_UPDATE_TRIGGER_SQL)
+        connection.commit()
+
+    def fail_if_materialized(_value: str) -> dict[str, object]:
+        raise AssertionError("oversized_audit_payload_was_materialized")
+
+    monkeypatch.setattr(project_schema, "_parse_json_object", fail_if_materialized)
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+
+
+def test_oversized_audit_scalar_is_rejected_before_timestamp_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = tmp_path / "oversized-audit-scalar.irproj"
+    service = _create_project(project_path)
+    service.close()
+    with _database(project_path) as connection:
+        connection.execute("DROP TRIGGER project_audit_events_no_update")
+        connection.execute(
+            "UPDATE project_audit_events SET occurred_at_utc = ? WHERE sequence = 1",
+            ("2" * 100_000,),
+        )
+        connection.execute(project_schema.PROJECT_AUDIT_NO_UPDATE_TRIGGER_SQL)
+        connection.commit()
+
+    def reject_materialized_scalar(value: str) -> datetime:
+        if len(value.encode("utf-8")) > 32:
+            raise AssertionError("oversized_audit_scalar_was_materialized")
+        if value == "None":
+            raise ProjectOperationError("corrupt_project", "bounded audit scalar rejected")
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+    monkeypatch.setattr(project_schema, "_require_timestamp", reject_materialized_scalar)
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+
+
+def test_non_integer_metadata_revision_is_rejected_before_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = tmp_path / "oversized-metadata-revision.irproj"
+    service = _create_project(project_path)
+    service.close()
+    with _database(project_path) as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE project_metadata SET record_revision = ?",
+            (sqlite3.Binary(b"1" * 100_000),),
+        )
+        connection.commit()
+
+    def reject_materialized_revision(value: object) -> int:
+        if isinstance(value, bytes) and len(value) > 32:
+            raise AssertionError("oversized_metadata_revision_was_materialized")
+        if isinstance(value, int):
+            return value
+        raise ProjectOperationError("corrupt_project", "bounded metadata revision rejected")
+
+    monkeypatch.setattr(project_schema, "_require_int", reject_materialized_revision)
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+
+
+def test_audit_evidence_validation_honors_deadline_while_streaming(tmp_path: Path) -> None:
+    project_path = tmp_path / "audit-deadline.irproj"
+    service = _create_project(project_path)
+    service.close()
+    manifest = read_manifest(project_path / "project-manifest.json")
+    clock = _DelayedClock(expire_on_call=3)
+    with closing(sqlite3.connect(f"file:{(project_path / 'project.sqlite').as_posix()}?mode=ro&immutable=1", uri=True)) as connection, pytest.raises(ProjectOperationError) as raised:
+        project_schema.validate_project_evidence(
+            connection,
+            manifest.projectId,
+            manifest.createdAtUtc,
+            manifest.createdWithApplicationVersion,
+            deadline=RequestDeadline.start(1_000, clock=clock),
+        )
+    assert raised.value.code == "timeout"
+
+
 @pytest.mark.parametrize(
     "timestamp_target",
     ["manifest", "metadata_created", "metadata_updated", "audit"],
@@ -953,6 +1083,73 @@ def test_delayed_backup_removes_partial_file_and_keeps_session(tmp_path: Path) -
         service.create_backup(deadline=RequestDeadline.start(1_000, clock=clock))
     assert raised.value.code == "timeout"
     assert list((project_path / "backups").glob("*.sqlite")) == []
+    assert service.get_overview().record_revision == 1
+    service.close()
+
+
+def test_backup_quick_check_is_interrupted_at_its_deadline() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute("CREATE TABLE values_for_check (value TEXT NOT NULL)")
+        connection.executemany(
+            "INSERT INTO values_for_check VALUES (?)",
+            ((str(index),) for index in range(1_000)),
+        )
+        clock = _DelayedClock(expire_on_call=2)
+        with pytest.raises(ProjectOperationError) as raised:
+            project_database.quick_check_with_deadline(
+                connection,
+                RequestDeadline.start(1_000, clock=clock),
+                progress_steps=1,
+            )
+        assert raised.value.code == "timeout"
+    finally:
+        connection.close()
+
+
+def test_owned_backup_cleanup_does_not_scan_the_backup_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backup_path = tmp_path / "owned.sqlite"
+    backup_path.write_bytes(b"owned")
+    identity = inspect_reserved_file(backup_path, backup_path.name)
+    assert identity is not None
+
+    def fail_on_directory_scan(_path: Path, _pattern: str) -> Iterator[Path]:
+        raise AssertionError("backup_directory_was_scanned")
+
+    monkeypatch.setattr(Path, "glob", fail_on_directory_scan)
+    assert remove_owned_backup(VerifiedBackup(path=backup_path, identity=identity))
+    assert not backup_path.exists()
+
+
+def test_backup_quick_check_timeout_removes_only_new_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = tmp_path / "quick-check-timeout.irproj"
+    service = _create_project(project_path)
+    previous_backup = project_path / "backups" / "previous.sqlite"
+    previous_backup.write_bytes(b"previous backup")
+    clock = _ControlledClock()
+    deadline = RequestDeadline.start(1_000, clock=clock)
+
+    def expire_during_quick_check(
+        _connection: sqlite3.Connection,
+        active_deadline: RequestDeadline | None,
+        **_kwargs: object,
+    ) -> str:
+        clock.expired = True
+        assert active_deadline is not None
+        active_deadline.check("backup_verify")
+        raise AssertionError("deadline_check_did_not_raise")
+
+    monkeypatch.setattr(project_database, "quick_check_with_deadline", expire_during_quick_check)
+    with pytest.raises(ProjectOperationError) as raised:
+        service.create_backup(deadline=deadline)
+    assert raised.value.code == "timeout"
+    assert list((project_path / "backups").iterdir()) == [previous_backup]
     assert service.get_overview().record_revision == 1
     service.close()
 

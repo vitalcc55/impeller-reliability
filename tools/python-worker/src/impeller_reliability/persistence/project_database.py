@@ -21,6 +21,7 @@ from impeller_reliability.persistence.project_schema import (
     validate_project_evidence,
     validate_published_schema,
 )
+from impeller_reliability.persistence.sqlite_deadline import sqlite_deadline_guard
 from impeller_reliability.persistence.timestamps import utc_now
 from impeller_reliability.worker.deadline import RequestDeadline
 
@@ -53,6 +54,7 @@ def probe_project_database_identity(
     database_path: Path,
     manifest: ProjectManifest,
     supported_schema_version: int,
+    deadline: RequestDeadline | None = None,
 ) -> ProjectDatabaseIdentity:
     connection: sqlite3.Connection | None = None
     try:
@@ -72,13 +74,14 @@ def probe_project_database_identity(
                     "supportedSchemaVersion": supported_schema_version,
                 },
             )
-        validate_published_schema(connection, schema_version)
+        validate_published_schema(connection, schema_version, deadline)
         if schema_version == PROJECT_SCHEMA_VERSION:
             validate_project_evidence(
                 connection,
                 manifest.projectId,
                 manifest.createdAtUtc,
                 manifest.createdWithApplicationVersion,
+                deadline,
             )
         return ProjectDatabaseIdentity(
             application_id=application_id,
@@ -284,7 +287,7 @@ def create_verified_backup(
         _check_deadline(deadline, "backup_verify")
         check = sqlite3.connect(_sqlite_uri(backup_path, "mode=ro&immutable=1"), uri=True)
         try:
-            quick_check = str(check.execute("PRAGMA quick_check").fetchone()[0])
+            quick_check = quick_check_with_deadline(check, deadline, stage="backup_verify")
         finally:
             check.close()
         if quick_check != "ok":
@@ -314,8 +317,15 @@ def remove_owned_backup(backup: VerifiedBackup) -> bool:
 
 
 def _find_owned_backup_path(backup: VerifiedBackup) -> Path | None:
-    candidates = [backup.path, *backup.path.parent.glob("*.sqlite")]
-    for candidate in candidates:
+    try:
+        current_identity = inspect_reserved_file(backup.path, backup.path.name, allow_missing=True)
+    except ProjectOperationError:
+        current_identity = None
+    if current_identity == backup.identity:
+        return backup.path
+    for candidate in backup.path.parent.glob("*.sqlite"):
+        if candidate == backup.path:
+            continue
         try:
             current_identity = inspect_reserved_file(candidate, candidate.name, allow_missing=True)
         except ProjectOperationError:
@@ -353,6 +363,7 @@ def open_project_database(
     manifest: ProjectManifest,
     *,
     connection_factory: Callable[[str], sqlite3.Connection] | None = None,
+    deadline: RequestDeadline | None = None,
 ) -> sqlite3.Connection:
     connection: sqlite3.Connection | None = None
     connect = connection_factory or _connect_read_write
@@ -363,6 +374,7 @@ def open_project_database(
             database_path,
             expected_database_identity,
             manifest,
+            deadline,
         )
         current_identity = inspect_reserved_file(database_path, database_path.name)
         if current_identity != expected_identity:
@@ -385,6 +397,7 @@ def _validate_open_connection_identity(
     database_path: Path,
     expected_identity: ProjectDatabaseIdentity,
     manifest: ProjectManifest,
+    deadline: RequestDeadline | None,
 ) -> None:
     database_rows = connection.execute("PRAGMA database_list").fetchall()
     main_rows = [row for row in database_rows if str(row[1]) == "main"]
@@ -397,34 +410,41 @@ def _validate_open_connection_identity(
     schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     if application_id != expected_identity.application_id or schema_version != expected_identity.schema_version:
         raise ProjectOperationError("corrupt_project", "SQLite identity изменился между read-only probe и write open.")
-    validate_published_schema(connection, schema_version)
+    validate_published_schema(connection, schema_version, deadline)
     if schema_version == PROJECT_SCHEMA_VERSION:
         validate_project_evidence(
             connection,
             manifest.projectId,
             manifest.createdAtUtc,
             manifest.createdWithApplicationVersion,
+            deadline,
         )
 
 
-def validate_project_database(connection: sqlite3.Connection, manifest: ProjectManifest) -> None:
+def validate_project_database(
+    connection: sqlite3.Connection,
+    manifest: ProjectManifest,
+    deadline: RequestDeadline | None = None,
+) -> None:
     try:
-        quick_check = str(connection.execute("PRAGMA quick_check").fetchone()[0])
-        foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
+        with sqlite_deadline_guard(connection, deadline, "project_integrity"):
+            quick_check = str(connection.execute("PRAGMA quick_check").fetchone()[0])
+            has_foreign_key_error = connection.execute("PRAGMA foreign_key_check").fetchone() is not None
         application_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
         schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     except sqlite3.DatabaseError as error:
         raise ProjectOperationError("corrupt_project", "Структура project.sqlite повреждена.") from error
-    if quick_check != "ok" or foreign_key_errors:
+    if quick_check != "ok" or has_foreign_key_error:
         raise ProjectOperationError("corrupt_project", "Проверка целостности project.sqlite завершилась ошибкой.")
     if application_id != PROJECT_APPLICATION_ID or schema_version != PROJECT_SCHEMA_VERSION:
         raise ProjectOperationError("corrupt_project", "Версия или application_id project.sqlite не согласованы.")
-    validate_published_schema(connection, schema_version)
+    validate_published_schema(connection, schema_version, deadline)
     validate_project_evidence(
         connection,
         manifest.projectId,
         manifest.createdAtUtc,
         manifest.createdWithApplicationVersion,
+        deadline,
     )
 
 
@@ -446,6 +466,17 @@ def insert_audit(
             json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
         ),
     )
+
+
+def quick_check_with_deadline(
+    connection: sqlite3.Connection,
+    deadline: RequestDeadline | None,
+    *,
+    stage: str = "quick_check",
+    progress_steps: int = 1_000,
+) -> str:
+    with sqlite_deadline_guard(connection, deadline, stage, progress_steps=progress_steps):
+        return str(connection.execute("PRAGMA quick_check").fetchone()[0])
 
 
 def sha256_file(path: Path, deadline: RequestDeadline | None = None) -> str:

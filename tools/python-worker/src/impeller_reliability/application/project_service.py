@@ -81,7 +81,7 @@ class ProjectService:
                     ),
                     deadline=deadline,
                 )
-                validate_project_database(connection, manifest)
+                validate_project_database(connection, manifest, deadline)
             finally:
                 connection.close()
             _check_deadline(deadline, "project_create_publish")
@@ -120,6 +120,7 @@ class ProjectService:
             project_path / manifest.databaseFile,
             manifest,
             self._migrator.latest_version,
+            deadline,
         )
         _check_deadline(deadline, "project_identity_probe")
         acquired_at = utc_now()
@@ -137,6 +138,7 @@ class ProjectService:
                 locked_snapshot.database,
                 database_identity,
                 manifest,
+                deadline=deadline,
             )
             current_backups_identity = inspect_reserved_directory(project_path / "backups", "backups/")
             if current_backups_identity != locked_snapshot.backups:
@@ -148,7 +150,7 @@ class ProjectService:
                 manifest,
                 deadline=deadline,
             )
-            validate_project_database(connection, manifest)
+            validate_project_database(connection, manifest, deadline)
             _check_deadline(deadline, "project_open_session")
             session = ProjectSession(
                 project_path,

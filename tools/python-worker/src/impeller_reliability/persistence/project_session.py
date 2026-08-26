@@ -116,7 +116,7 @@ class ProjectSession:
         changed_fields = [field for field in before if before[field] != normalized[field]]
         if not changed_fields:
             return current
-        now = utc_now()
+        now = max(current.updated_at_utc, utc_now())
         new_revision = current.record_revision + 1
         try:
             self._connection.execute("BEGIN IMMEDIATE")
@@ -186,8 +186,8 @@ class ProjectSession:
             remove_owned_backup(backup)
             raise
 
-    def validate(self) -> None:
-        validate_project_database(self._connection, self.manifest)
+    def validate(self, deadline: RequestDeadline | None = None) -> None:
+        validate_project_database(self._connection, self.manifest, deadline)
 
     def close(self) -> None:
         if self._closed:

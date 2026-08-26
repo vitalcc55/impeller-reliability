@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 import sqlite3
@@ -14,10 +16,21 @@ from impeller_reliability.persistence.project_values import (
     require_canonical_project_id,
     require_project_metadata_value,
 )
+from impeller_reliability.persistence.sqlite_deadline import (
+    sqlite_deadline_guard,
+    sqlite_query_rows_with_deadline,
+)
 from impeller_reliability.persistence.timestamps import parse_canonical_utc_timestamp
+from impeller_reliability.worker.deadline import RequestDeadline
 
 PROJECT_SCHEMA_VERSION: Final = 1
 PROJECT_METADATA_FIELDS: Final = ("name", "projectNumber", "description", "status")
+MAX_SCHEMA_SCALAR_BYTES: Final = 4_096
+MAX_PROJECT_ID_BYTES: Final = 36
+MAX_TIMESTAMP_BYTES: Final = 24
+MAX_APPLICATION_VERSION_BYTES: Final = 64
+# Update evidence holds before+after; escaped control characters may occupy six UTF-8 bytes per input character.
+MAX_AUDIT_PAYLOAD_BYTES: Final = 2 * 6 * (200 + 100 + 4_000 + 9) + 4_096
 JSON_OBJECT_ADAPTER: Final = TypeAdapter(dict[str, JsonValue])
 STRING_LIST_ADAPTER: Final = TypeAdapter(list[str])
 METADATA_VALUES_ADAPTER: Final = TypeAdapter(dict[str, str])
@@ -82,19 +95,53 @@ def create_schema_v1_objects(connection: sqlite3.Connection) -> None:
         connection.execute(schema_object.sql)
 
 
-def validate_published_schema(connection: sqlite3.Connection, schema_version: int) -> None:
+def validate_published_schema(
+    connection: sqlite3.Connection,
+    schema_version: int,
+    deadline: RequestDeadline | None = None,
+) -> None:
     contract = _contract_for(schema_version)
-    rows = connection.execute("SELECT type, name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").fetchall()
-    actual = {(str(row[0]), str(row[1])): _normalize_sql(str(row[2])) for row in rows if row[2] is not None}
     expected = {(schema_object.object_type, schema_object.name): _normalize_sql(schema_object.sql) for schema_object in contract.objects}
+    actual: dict[tuple[str, str], str] = {}
+    with sqlite_deadline_guard(connection, deadline, "project_schema_objects"):
+        rows = connection.execute(
+            """
+            SELECT CASE WHEN typeof(type) = 'text' AND length(CAST(type AS BLOB)) <= 16 THEN type END,
+                   CASE WHEN typeof(name) = 'text' AND length(CAST(name AS BLOB)) <= ? THEN name END,
+                   CASE WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= ? THEN sql END
+            FROM sqlite_schema
+            WHERE name NOT LIKE 'sqlite_%'
+            """,
+            (MAX_SCHEMA_SCALAR_BYTES, MAX_SCHEMA_SCALAR_BYTES),
+        )
+        for row in rows:
+            _check_deadline(deadline, "project_schema_objects")
+            key = (str(row[0]), str(row[1]))
+            if row[2] is None or key not in expected:
+                raise ProjectOperationError(
+                    "corrupt_project",
+                    "Структура project.sqlite не соответствует опубликованной schema.",
+                )
+            actual[key] = _normalize_sql(str(row[2]))
     if actual != expected:
         raise ProjectOperationError(
             "corrupt_project",
             "Структура project.sqlite не соответствует опубликованной schema.",
         )
-    migration_records = connection.execute("SELECT version, name, applied_at_utc FROM schema_migrations ORDER BY version").fetchall()
+    with sqlite_deadline_guard(connection, deadline, "project_schema_migrations"):
+        migration_records = connection.execute(
+            """
+            SELECT version,
+                   CASE WHEN typeof(name) = 'text' AND length(CAST(name AS BLOB)) <= ? THEN name END,
+                   CASE WHEN typeof(applied_at_utc) = 'text' AND length(CAST(applied_at_utc AS BLOB)) <= ? THEN applied_at_utc END
+            FROM schema_migrations
+            ORDER BY version
+            """,
+            (MAX_SCHEMA_SCALAR_BYTES, MAX_TIMESTAMP_BYTES),
+        ).fetchmany(len(contract.migrations) + 1)
     migration_rows = tuple((int(row[0]), str(row[1])) for row in migration_records)
     for row in migration_records:
+        _check_deadline(deadline, "project_schema_migrations")
         _require_timestamp(str(row[2]))
     if migration_rows != contract.migrations:
         raise ProjectOperationError(
@@ -108,10 +155,32 @@ def validate_project_evidence(
     project_id: str,
     project_created_at_utc: str,
     project_created_with_application_version: str,
+    deadline: RequestDeadline | None = None,
 ) -> None:
-    metadata_rows = connection.execute(
-        "SELECT project_id, name, project_number, description, status, record_revision, created_at_utc, updated_at_utc, created_with_application_version FROM project_metadata"
-    ).fetchall()
+    _check_deadline(deadline, "project_evidence_start")
+    with sqlite_deadline_guard(connection, deadline, "project_evidence_metadata"):
+        metadata_rows = connection.execute(
+            """
+            SELECT CASE WHEN typeof(project_id) = 'text' AND length(CAST(project_id AS BLOB)) <= ? THEN project_id END,
+                   CASE WHEN typeof(name) = 'text' AND length(CAST(name AS BLOB)) <= 800 THEN name END,
+                   CASE WHEN typeof(project_number) = 'text' AND length(CAST(project_number AS BLOB)) <= 400 THEN project_number END,
+                   CASE WHEN typeof(description) = 'text' AND length(CAST(description AS BLOB)) <= 16000 THEN description END,
+                   CASE WHEN typeof(status) = 'text' AND length(CAST(status AS BLOB)) <= 36 THEN status END,
+                   CASE
+                       WHEN typeof(record_revision) = 'integer' AND record_revision >= 1
+                       THEN record_revision
+                   END,
+                   CASE WHEN typeof(created_at_utc) = 'text' AND length(CAST(created_at_utc AS BLOB)) <= ? THEN created_at_utc END,
+                   CASE WHEN typeof(updated_at_utc) = 'text' AND length(CAST(updated_at_utc AS BLOB)) <= ? THEN updated_at_utc END,
+                   CASE
+                       WHEN typeof(created_with_application_version) = 'text'
+                        AND length(CAST(created_with_application_version AS BLOB)) <= ?
+                       THEN created_with_application_version
+                   END
+            FROM project_metadata
+            """,
+            (MAX_PROJECT_ID_BYTES, MAX_TIMESTAMP_BYTES, MAX_TIMESTAMP_BYTES, MAX_APPLICATION_VERSION_BYTES),
+        ).fetchmany(2)
     if len(metadata_rows) != 1:
         raise _evidence_error()
     metadata = metadata_rows[0]
@@ -133,20 +202,74 @@ def validate_project_evidence(
         raise _evidence_error()
     if metadata_application_version != manifest_application_version:
         raise _evidence_error()
-    event_rows = connection.execute("SELECT sequence, event_type, actor_kind, occurred_at_utc, payload_json FROM project_audit_events ORDER BY sequence").fetchall()
-    if not event_rows:
+    _check_deadline(deadline, "project_evidence_metadata")
+    event_rows = sqlite_query_rows_with_deadline(
+        connection,
+        """
+            SELECT sequence,
+                   CASE
+                       WHEN typeof(event_type) = 'text'
+                        AND length(CAST(event_type AS BLOB)) <= 32
+                       THEN event_type
+                   END,
+                   CASE
+                       WHEN typeof(actor_kind) = 'text'
+                        AND length(CAST(actor_kind AS BLOB)) <= 16
+                       THEN actor_kind
+                   END,
+                   CASE
+                       WHEN typeof(occurred_at_utc) = 'text'
+                        AND length(CAST(occurred_at_utc AS BLOB)) <= ?
+                       THEN occurred_at_utc
+                   END,
+                   CASE
+                       WHEN typeof(payload_json) = 'text'
+                        AND length(CAST(payload_json AS BLOB)) <= ?
+                       THEN payload_json
+                   END
+            FROM project_audit_events
+            ORDER BY sequence
+            """,
+        (MAX_TIMESTAMP_BYTES, MAX_AUDIT_PAYLOAD_BYTES),
+        deadline,
+        "project_evidence_audit",
+    )
+
+    with closing(event_rows):
+        reconstructed, expected_revision, previous_event_at, event_count = _validate_audit_rows(
+            event_rows,
+            project_id,
+            metadata_created_at,
+            deadline,
+        )
+
+    if event_count == 0:
+        raise _evidence_error()
+    if reconstructed != expected_current or expected_revision != record_revision or previous_event_at != metadata_updated_at:
         raise _evidence_error()
 
+
+def _validate_audit_rows(
+    event_rows: Iterable[Sequence[object]],
+    project_id: str,
+    metadata_created_at: datetime,
+    deadline: RequestDeadline | None,
+) -> tuple[dict[str, str] | None, int, datetime, int]:
     reconstructed: dict[str, str] | None = None
     expected_revision = 0
     previous_event_at = metadata_created_at
+    event_count = 0
     for expected_sequence, row in enumerate(event_rows, start=1):
+        event_count = expected_sequence
+        _check_deadline(deadline, "project_evidence_audit")
         if _require_int(row[0]) != expected_sequence:
             raise _evidence_error()
         event_at = _require_timestamp(str(row[3]))
         if event_at < previous_event_at:
             raise _evidence_error()
-        payload = _parse_json_object(str(row[4]))
+        if not isinstance(row[4], str):
+            raise _evidence_error()
+        payload = _parse_json_object(row[4])
         if expected_sequence == 1:
             if str(row[1]) != "project.created" or str(row[2]) != "application":
                 raise _evidence_error()
@@ -192,9 +315,7 @@ def validate_project_evidence(
             reconstructed[field] = after
         expected_revision += 1
         previous_event_at = event_at
-
-    if reconstructed != expected_current or expected_revision != record_revision or previous_event_at != metadata_updated_at:
-        raise _evidence_error()
+    return reconstructed, expected_revision, previous_event_at, event_count
 
 
 def _contract_for(schema_version: int) -> PublishedSchemaContract:
@@ -284,3 +405,8 @@ def _evidence_error() -> ProjectOperationError:
         "corrupt_project",
         "Audit evidence и metadata project.sqlite не согласованы.",
     )
+
+
+def _check_deadline(deadline: RequestDeadline | None, stage: str) -> None:
+    if deadline is not None:
+        deadline.check(stage)
