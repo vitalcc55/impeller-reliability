@@ -9,7 +9,7 @@
 | Python-owned SQLite | sqlite_health | integration tests |
 | WAL health invariant | sqlite_health verdict | pytest |
 | Worker crash/restart state | lifecycle event/Main/Renderer | Electron E2E |
-| Bounded shutdown/no orphan | WorkerClient/smoke | packaged smoke |
+| Bounded shutdown/no orphan | WorkerClient sequential dispatch + lifecycle drain/smoke | Vitest + packaged smoke |
 | Integrity worker | manifest/Main/afterPack | packaging |
 | ASAR integrity and production fuses | afterPack fuse policy | packaging + smoke |
 | Offline/no TCP | production CSP + process-tree check | build + packaged smoke |
@@ -20,9 +20,9 @@
 | Python-owned project SQLite | ProjectSession/ProjectMigrator | pytest + E2E |
 | Single writer OS lock | `msvcrt` lock + one active session | two-process contention/crash test |
 | Optimistic project revision | `record_revision` command contract | pytest + Electron E2E |
-| Append-only audit | transaction + UPDATE/DELETE triggers | pytest integration |
-| Audit evidence and rollback | changed-fields before/after + atomic transaction | pytest integration |
-| Bounded stateful operations | domain checkpoints + larger transport timeout + worker termination | Vitest + pytest injected deadlines |
+| Append-only audit | canonical schema contract + transaction + UPDATE/DELETE triggers | pytest integration |
+| Audit evidence and rollback | versioned evidence-chain validation + changed-fields before/after + atomic transaction | pytest integration |
+| Bounded stateful operations | sequential dispatch + domain checkpoints + larger transport timeout + worker termination | Vitest + pytest injected deadlines |
 | Unsaved draft lifecycle | renderer draft guard + detached/revision-checked reattach | Electron E2E |
 | Migration backup/rollback | SQLite Backup API + forward migrator | pytest integration |
 | Main-owned project paths | dialogs + recent allowlist | contracts + E2E + preload review |
@@ -30,3 +30,4 @@
 | Existing project no-mutation preflight | reserved topology + immutable SQLite identity + repeated file identity | Windows hardlink/symlink/junction pytest integration |
 | Manual backup request atomicity | copy + quick_check + SHA-256 + final deadline owned cleanup | hash-timeout/read-error pytest integration |
 | Permanently detached workspace exit | confirmed Renderer-only local discard | Electron E2E moved-project recovery |
+| Published project schema integrity | exact schema objects/triggers/migration ledger before lock and WAL | pytest mutation + TOCTOU integration |

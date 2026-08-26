@@ -394,6 +394,7 @@ export const desktopErrorSchema = z
       'corrupt_project',
       'incompatible_schema',
       'revision_conflict',
+      'operation_in_progress',
       'storage_error',
       'worker_unavailable',
       'timeout',

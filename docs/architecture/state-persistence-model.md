@@ -22,7 +22,8 @@ WorkerRuntime: "Python worker runtime" {
 MainRuntime: "Electron Main runtime" {
   WorkerProcess: "one worker process + controlled restart"
   Lifecycle: "starting/ready/unavailable/stopping/stopped"
-  Pending: "requestId + operation + revision + domain/transport deadlines"
+  Queue: "one active + one queued; backpressure; deadline at dispatch"
+  Pending: "one sent requestId + operation + revision + domain/transport deadlines"
   Paths: "approved file/project paths"
   Recent: "recent project allowlist JSON"
   Status: "handshake and health read model"
@@ -49,6 +50,8 @@ WorkerRuntime.Canonical -> Persisted.Sqlite
 WorkerRuntime.Canonical -> MainRuntime.Status
 MainRuntime.Status -> RendererRuntime.QueryCache
 MainRuntime.Lifecycle -> MainRuntime.Status
+MainRuntime.Lifecycle -> MainRuntime.Queue: "close intake → drain → shutdown"
+MainRuntime.Queue -> MainRuntime.Pending
 MainRuntime.Pending -> MainRuntime.Status: "validated operation-specific response"
 RendererRuntime.Drafts -> WorkerRuntime.Canonical: "validate/command; never direct persistence"
 Persisted.Sqlite -> Derived.Exports: "through immutable report snapshot"
@@ -56,4 +59,4 @@ Persisted.Assets -> Derived.Exports
 RendererRuntime.Preview -> RendererRuntime.QueryCache: "synthetic DEV state only"
 ```
 
-App-level `health.sqlite` остаётся отдельной инфраструктурной диагностикой. M02.1 project truth находится только в `.irproj`; Renderer хранит draft, Main — allowlist недавних путей, Python — активную ProjectSession. Existing project становится writable только после read-only identity/topology preflight и повторной file-identity сверки под OS lock. Stateful domain timeout проверяется до commit; transport timeout завершает worker и тем самым однозначно снимает ProjectSession и OS lock. Потеря worker не размонтирует форму: повторное присоединение возможно только при совпадении `projectId` и `record_revision`; permanently detached draft можно удалить локально без изменения project truth или recent list. Browser preview ничего не сохраняет и не является evidence persistence.
+App-level `health.sqlite` остаётся отдельной инфраструктурной диагностикой. M02.1 project truth находится только в `.irproj`; Renderer хранит draft, Main — allowlist недавних путей и последовательную очередь, Python — активную ProjectSession. Existing project становится writable только после read-only identity/topology/schema/evidence preflight и повторной проверки под OS lock до WAL. Stateful domain timeout проверяется до commit; graceful lifecycle сначала дренирует принятую bounded-очередь, а indeterminate transport timeout завершает worker и однозначно снимает ProjectSession/OS lock. Потеря worker не размонтирует форму: повторное присоединение возможно только при совпадении `projectId` и `record_revision`; permanently detached draft можно удалить локально без изменения project truth или recent list. Browser preview ничего не сохраняет и не является evidence persistence.

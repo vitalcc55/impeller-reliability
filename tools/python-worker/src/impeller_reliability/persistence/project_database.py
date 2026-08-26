@@ -15,10 +15,15 @@ from uuid import uuid4
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_manifest import ProjectManifest
 from impeller_reliability.persistence.project_paths import PathIdentity, inspect_reserved_file
+from impeller_reliability.persistence.project_schema import (
+    PROJECT_SCHEMA_VERSION,
+    create_schema_v1_objects,
+    validate_project_evidence,
+    validate_published_schema,
+)
 from impeller_reliability.worker.deadline import RequestDeadline
 
 PROJECT_APPLICATION_ID: Final = 0x49525043
-PROJECT_SCHEMA_VERSION: Final = 1
 MIN_SUPPORTED_PROJECT_SCHEMA_VERSION: Final = 1
 
 
@@ -70,10 +75,9 @@ def probe_project_database_identity(
                     "supportedSchemaVersion": supported_schema_version,
                 },
             )
+        validate_published_schema(connection, schema_version)
         if schema_version == PROJECT_SCHEMA_VERSION:
-            rows = connection.execute("SELECT project_id FROM project_metadata").fetchall()
-            if len(rows) != 1 or str(rows[0][0]) != manifest.projectId:
-                raise ProjectOperationError("corrupt_project", "projectId в manifest и project.sqlite не совпадает.")
+            validate_project_evidence(connection, manifest.projectId)
         return ProjectDatabaseIdentity(
             application_id=application_id,
             schema_version=schema_version,
@@ -104,36 +108,7 @@ def _migration_0001(
     manifest: ProjectManifest,
     initial_metadata: ProjectMetadataSeed | None,
 ) -> None:
-    connection.execute("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, applied_at_utc TEXT NOT NULL)")
-    connection.execute(
-        """
-        CREATE TABLE project_metadata (
-            project_id TEXT PRIMARY KEY,
-            name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 200),
-            project_number TEXT NOT NULL CHECK (length(project_number) <= 100),
-            description TEXT NOT NULL CHECK (length(description) <= 4000),
-            status TEXT NOT NULL CHECK (status IN ('draft', 'active', 'completed', 'archived')),
-            record_revision INTEGER NOT NULL CHECK (record_revision >= 1),
-            created_at_utc TEXT NOT NULL,
-            updated_at_utc TEXT NOT NULL,
-            created_with_application_version TEXT NOT NULL
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE project_audit_events (
-            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_id TEXT NOT NULL UNIQUE,
-            event_type TEXT NOT NULL,
-            occurred_at_utc TEXT NOT NULL,
-            actor_kind TEXT NOT NULL CHECK (actor_kind IN ('application', 'user')),
-            payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
-        )
-        """
-    )
-    connection.execute("CREATE TRIGGER project_audit_events_no_update BEFORE UPDATE ON project_audit_events BEGIN SELECT RAISE(ABORT, 'project_audit_append_only'); END")
-    connection.execute("CREATE TRIGGER project_audit_events_no_delete BEFORE DELETE ON project_audit_events BEGIN SELECT RAISE(ABORT, 'project_audit_append_only'); END")
+    create_schema_v1_objects(connection)
     now = manifest.createdAtUtc
     metadata = initial_metadata or _default_metadata_seed()
     connection.execute(
@@ -420,10 +395,9 @@ def _validate_open_connection_identity(
     schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     if application_id != expected_identity.application_id or schema_version != expected_identity.schema_version:
         raise ProjectOperationError("corrupt_project", "SQLite identity изменился между read-only probe и write open.")
+    validate_published_schema(connection, schema_version)
     if schema_version == PROJECT_SCHEMA_VERSION:
-        rows = connection.execute("SELECT project_id FROM project_metadata").fetchall()
-        if len(rows) != 1 or str(rows[0][0]) != manifest.projectId:
-            raise ProjectOperationError("corrupt_project", "projectId изменился между read-only probe и write open.")
+        validate_project_evidence(connection, manifest.projectId)
 
 
 def validate_project_database(connection: sqlite3.Connection, manifest: ProjectManifest) -> None:
@@ -432,15 +406,14 @@ def validate_project_database(connection: sqlite3.Connection, manifest: ProjectM
         foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
         application_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
         schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        rows = connection.execute("SELECT project_id FROM project_metadata").fetchall()
     except sqlite3.DatabaseError as error:
         raise ProjectOperationError("corrupt_project", "Структура project.sqlite повреждена.") from error
     if quick_check != "ok" or foreign_key_errors:
         raise ProjectOperationError("corrupt_project", "Проверка целостности project.sqlite завершилась ошибкой.")
     if application_id != PROJECT_APPLICATION_ID or schema_version != PROJECT_SCHEMA_VERSION:
         raise ProjectOperationError("corrupt_project", "Версия или application_id project.sqlite не согласованы.")
-    if len(rows) != 1 or str(rows[0]["project_id"]) != manifest.projectId:
-        raise ProjectOperationError("corrupt_project", "projectId в manifest и project.sqlite не совпадает.")
+    validate_published_schema(connection, schema_version)
+    validate_project_evidence(connection, manifest.projectId)
 
 
 def insert_audit(

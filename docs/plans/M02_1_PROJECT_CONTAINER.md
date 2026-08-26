@@ -110,7 +110,7 @@ payload_json TEXT NOT NULL
 
 После read-only manifest/SQLite identity preflight Python безопасно открывает `.project.lock`, сверяет identity открытого regular file и удерживает через `msvcrt.locking(..., LK_NBLCK, 1)` эксклюзивную блокировку одного байта. Только после захвата в файл записываются диагностические поля `projectId`, `applicationInstanceId`, `pid`, `startedAtUtc`, `host`. PID не участвует в решении о владении.
 
-Один worker владеет максимум одной ProjectSession. Повторный `project.open/create` при активной сессии отклоняется. `project.close`, bounded shutdown и аварийное завершение процесса освобождают OS lock; отдельный process test доказывает освобождение после crash.
+Один worker владеет максимум одной ProjectSession. Повторный `project.open/create` при активной сессии отклоняется. Main передаёт JSONL-запросы последовательно: один запрос выполняется и максимум один ожидает dispatch; следующий получает observable busy failure. Domain/transport deadline начинается только при фактической отправке текущей операции. Controlled restart и shutdown сначала прекращают приём новых запросов и дренируют bounded-очередь, затем отправляют `system.shutdown`; отдельный exit timeout относится только к завершению process после ответа. Принудительное завершение остаётся для protocol failure или operation transport timeout. `project.close`, graceful shutdown и аварийное завершение процесса освобождают OS lock; отдельный process test доказывает освобождение после crash.
 
 ## Открытие, миграции и backup
 
@@ -118,11 +118,11 @@ payload_json TEXT NOT NULL
 
 1. проверить абсолютный путь и расширение `.irproj`, строго прочитать manifest;
 2. проверить topology зарезервированных `project-manifest.json`, `project.sqlite`, optional `.project.lock`, `backups/` и SQLite sidecars; symlink/junction/reparse и hard-linked files запрещены;
-3. открыть `project.sqlite` через immutable read-only URI и проверить `application_id`, `user_version`, совместимость schema и `projectId` для schema v1 без WAL/lock/backup;
+3. открыть `project.sqlite` через immutable read-only URI и проверить `application_id`, `user_version`, точный version-specific schema contract, migration ledger, `projectId` и согласованную цепочку metadata/audit для schema v1 без WAL/lock/backup;
 4. захватить OS lock и повторно сверить file identity зарезервированных путей;
-5. открыть подтверждённый SQLite только в `mode=rw`, ещё раз проверить file identity и применить WAL/FK/FULL/busy timeout;
+5. открыть подтверждённый SQLite только в `mode=rw`, ещё раз проверить file identity и полный schema/evidence contract до применения WAL/FK/FULL/busy timeout;
 6. при `current < supported` создать SQLite Backup API snapshot в проверенном `backups/`, выполнить его `quick_check`, затем применить forward-only migrations;
-7. выполнить `quick_check`, `foreign_key_check` и семантические проверки schema v1;
+7. выполнить `quick_check`, `foreign_key_check` и повторные structural/semantic проверки schema v1;
 8. получить канонический `ProjectOverview` и только затем назначить активную ProjectSession.
 
 При неверном identity или `current > supported` ошибка возвращается до создания/изменения lock, WAL и backup. Неудачная migration откатывается, исходная база остаётся доступной, проверенный migration backup сохраняется. Ручной backup считается завершённым только после `quick_check`, SHA-256 и final deadline; новый файл и принадлежащие ему sidecars удаляются при любой ошибке. Отдельный `ProjectMigrator` не использует `check_storage()`.
@@ -175,6 +175,7 @@ Desktop shell содержит start page с Create/Open/Recent/Diagnostics и �
 - `corrupt_project` — manifest/SQLite/integrity/projectId не согласованы;
 - `incompatible_schema` — версия базы новее поддерживаемой;
 - `revision_conflict` — expected revision не равна сохранённой;
+- `operation_in_progress` — bounded transport не принял ещё одну операцию до завершения текущей очереди;
 - `storage_error` — атомарное создание, backup, migration или запись не завершены;
 - worker crash переводит runtime в unavailable; OS lock освобождается процессом Windows.
 
@@ -205,11 +206,13 @@ Review closure считается завершённым после Python timeo
 
 ## Final PR review closure
 
-Финальное ревью PR #1 закрывает три P2 до слияния и не расширяет M02.1:
+Финальные итерации ревью PR #1 закрывают пять P2 до слияния и не расширяют M02.1:
 
 1. Существующий контейнер проходит structural preflight зарезервированных путей и read-only SQLite identity probe до создания lock, WAL или backup. После OS lock пути и file identity сверяются повторно; write connection открывается только для подтверждённых `application_id` и поддерживаемой schema. Файловые symlink/junction/reparse points и hard-linked reserved files отклоняются.
 2. Ручной backup принадлежит одному запросу до завершения SQLite copy, `quick_check`, SHA-256 и финальной deadline-проверки. Любая ошибка этой последовательности удаляет только новый файл текущего запроса; существующие manual/migration backups сохраняются.
 3. Permanently detached workspace предлагает независимые действия: повторное подключение/перечитывание и двухшаговый локальный discard. Discard очищает только Renderer project/draft state, не вызывает `project.close`, не изменяет `.irproj` и не удаляет recent path.
+4. `WorkerClient` владеет одной последовательной очередью, совпадающей с serial JSONL worker и ограниченной одним active + одним queued request. Shutdown и controlled restart закрывают вход, дренируют уже принятые операции в пределах их собственных transport deadlines и только затем останавливают process; queued deadlines больше не истекают до фактического dispatch, а final shutdown отменяет пересекающийся restart.
+5. Schema v1 имеет один канонический version-specific contract, из которого создаются и проверяются таблицы/триггеры. Read-only probe, write-open до WAL и post-migration validation проверяют точный набор user objects, migration ledger и согласованность metadata с append-only audit chain; неизвестные user schema objects отклоняются.
 
 Исправления публикуются отдельным commit, каждый review thread получает ссылку на commit и regression test и разрешается только после push. Затем запрашивается повторный Codex review. Squash merge допустим только при отсутствии открытых P1/P2, зелёных Quality/package gates, совпадающем SHA и конечном дереве без Etelka; M02.2 в этом цикле не начинается.
 

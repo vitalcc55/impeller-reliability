@@ -16,7 +16,7 @@ from uuid import uuid4
 import pytest
 
 from impeller_reliability.application.project_service import ProjectService
-from impeller_reliability.persistence import project_database, project_session
+from impeller_reliability.persistence import project_database, project_schema, project_session
 from impeller_reliability.persistence.project_database import (
     MIGRATIONS,
     Migration,
@@ -452,6 +452,146 @@ def test_newer_schema_is_not_modified(tmp_path: Path) -> None:
     assert list((project_path / "backups").iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    "schema_mutation",
+    [
+        "DROP TABLE project_audit_events",
+        "DROP TRIGGER project_audit_events_no_update",
+        "DROP TRIGGER project_audit_events_no_delete",
+        "DROP TRIGGER project_audit_events_no_update; CREATE TRIGGER project_audit_events_no_update BEFORE UPDATE ON project_audit_events BEGIN SELECT 1; END;",
+        "DELETE FROM schema_migrations",
+        "ALTER TABLE project_metadata ADD COLUMN unexpected TEXT",
+        "CREATE TABLE unrecognized_project_data (value TEXT)",
+    ],
+)
+def test_schema_v1_contract_is_rejected_without_mutation(
+    tmp_path: Path,
+    schema_mutation: str,
+) -> None:
+    project_path = tmp_path / "invalid-schema-v1.irproj"
+    service = _create_project(project_path)
+    service.close()
+    with _database(project_path) as connection:
+        connection.executescript(schema_mutation)
+    database_path = project_path / "project.sqlite"
+    lock_path = project_path / ".project.lock"
+    before_hash = _sha256(database_path)
+    before_mtime = database_path.stat().st_mtime_ns
+    before_lock = lock_path.read_bytes()
+    before_lock_mtime = lock_path.stat().st_mtime_ns
+
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+
+    assert raised.value.code == "corrupt_project"
+    assert _sha256(database_path) == before_hash
+    assert database_path.stat().st_mtime_ns == before_mtime
+    assert lock_path.read_bytes() == before_lock
+    assert lock_path.stat().st_mtime_ns == before_lock_mtime
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
+
+
+def test_schema_change_between_probe_and_write_open_is_rejected_before_wal(tmp_path: Path) -> None:
+    project_path = tmp_path / "schema-swap.irproj"
+    service = _create_project(project_path)
+    service.close()
+    database_path = project_path / "project.sqlite"
+    manifest = read_manifest(project_path / "project-manifest.json")
+    database_identity = project_database.probe_project_database_identity(
+        database_path,
+        manifest,
+        project_schema.PROJECT_SCHEMA_VERSION,
+    )
+    with _database(project_path) as connection:
+        connection.execute("DROP TRIGGER project_audit_events_no_update")
+        assert str(connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0]).lower() == "delete"
+    path_identity = inspect_reserved_file(database_path, database_path.name)
+    assert path_identity is not None
+    before_hash = _sha256(database_path)
+    before_mtime = database_path.stat().st_mtime_ns
+
+    with pytest.raises(ProjectOperationError) as raised:
+        project_database.open_project_database(
+            database_path,
+            path_identity,
+            database_identity,
+            manifest,
+        )
+
+    assert raised.value.code == "corrupt_project"
+    assert _sha256(database_path) == before_hash
+    assert database_path.stat().st_mtime_ns == before_mtime
+    assert _read_journal_mode_without_writes(database_path) == "delete"
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
+
+
+@pytest.mark.parametrize("audit_corruption", ["missing_history", "mismatched_entity"])
+def test_audit_evidence_contract_is_rejected_without_mutation(
+    tmp_path: Path,
+    audit_corruption: str,
+) -> None:
+    project_path = tmp_path / "invalid-audit-evidence.irproj"
+    service = _create_project(project_path)
+    service.close()
+    with _database(project_path) as connection:
+        if audit_corruption == "missing_history":
+            connection.execute("DROP TRIGGER project_audit_events_no_delete")
+            connection.execute("DELETE FROM project_audit_events")
+            connection.execute(project_schema.PROJECT_AUDIT_NO_DELETE_TRIGGER_SQL)
+        else:
+            connection.execute("DROP TRIGGER project_audit_events_no_update")
+            connection.execute(
+                "UPDATE project_audit_events SET payload_json = ? WHERE sequence = 1",
+                ('{"entityId":"another-project","entityType":"project","toRevision":1}',),
+            )
+            connection.execute(project_schema.PROJECT_AUDIT_NO_UPDATE_TRIGGER_SQL)
+        connection.commit()
+    database_path = project_path / "project.sqlite"
+    lock_path = project_path / ".project.lock"
+    before_hash = _sha256(database_path)
+    before_lock = lock_path.read_bytes()
+
+    candidate = ProjectService()
+    with pytest.raises(ProjectOperationError) as raised:
+        candidate.open(path=str(project_path), application_instance_id=str(uuid4()))
+
+    assert raised.value.code == "corrupt_project"
+    assert _sha256(database_path) == before_hash
+    assert lock_path.read_bytes() == before_lock
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
+
+
+def test_null_sqlite_schema_object_is_rejected_by_read_only_probe(tmp_path: Path) -> None:
+    project_path = tmp_path / "null-schema-object.irproj"
+    service = _create_project(project_path)
+    service.close()
+    database_path = project_path / "project.sqlite"
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute("CREATE TABLE extra_object (value TEXT)")
+        connection.execute("PRAGMA writable_schema = ON")
+        connection.execute("UPDATE sqlite_schema SET sql = NULL WHERE name = 'extra_object'")
+        schema_version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
+        connection.execute(f"PRAGMA schema_version = {schema_version + 1}")
+        connection.commit()
+    lock_path = project_path / ".project.lock"
+    before_hash = _sha256(database_path)
+    before_mtime = database_path.stat().st_mtime_ns
+    before_lock = lock_path.read_bytes()
+
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+
+    assert raised.value.code == "corrupt_project"
+    assert _sha256(database_path) == before_hash
+    assert database_path.stat().st_mtime_ns == before_mtime
+    assert lock_path.read_bytes() == before_lock
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
+
+
 def test_backup_precedes_forward_migration(tmp_path: Path) -> None:
     project_path = tmp_path / "migration.irproj"
     service = _create_project(project_path)
@@ -706,7 +846,7 @@ def test_open_database_closes_connection_when_wal_configuration_fails(
     expected_database_identity = project_database.probe_project_database_identity(
         database_path,
         manifest,
-        project_database.PROJECT_SCHEMA_VERSION,
+        project_schema.PROJECT_SCHEMA_VERSION,
     )
 
     def capture_connection(database_uri: str) -> sqlite3.Connection:
@@ -742,7 +882,7 @@ def test_write_connection_factory_cannot_redirect_to_external_database(tmp_path:
     expected_database_identity = project_database.probe_project_database_identity(
         database_path,
         manifest,
-        project_database.PROJECT_SCHEMA_VERSION,
+        project_schema.PROJECT_SCHEMA_VERSION,
     )
     external_database = tmp_path / "external-connection.sqlite"
     shutil.copy2(database_path, external_database)

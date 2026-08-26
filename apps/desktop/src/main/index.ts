@@ -322,6 +322,15 @@ async function runProjectOperation<TResult>(
     const response = await operation(client);
     return response.ok ? { ok: true, result: response.result } : fromWorkerError(response);
   } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message === 'worker_queue_full' || error.message === 'worker_stopping')
+    ) {
+      return failureResult(
+        'operation_in_progress',
+        'Дождитесь завершения текущей операции с проектом.',
+      );
+    }
     return failureResult(
       'worker_unavailable',
       `Операция с проектом не выполнена: ${String(error)}`,
