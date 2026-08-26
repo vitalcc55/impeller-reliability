@@ -10,6 +10,7 @@ import {
   workerResponseIdentitySchema,
 } from '@impeller-reliability/contracts';
 import type {
+  WorkerOperationMap,
   WorkerLifecycleState,
   WorkerOperation,
   WorkerResponse,
@@ -29,27 +30,97 @@ interface PendingRequest {
   readonly timeout: NodeJS.Timeout;
 }
 
+export interface WorkerOperationPolicy {
+  readonly domainDeadlineMs: number;
+  readonly transportTimeoutMs: number;
+  readonly terminateWorkerOnTimeout: boolean;
+}
+
+export const WORKER_OPERATION_POLICIES = {
+  'system.handshake': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'system.ping': {
+    domainDeadlineMs: 3_000,
+    transportTimeoutMs: 5_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'system.shutdown': {
+    domainDeadlineMs: 2_000,
+    transportTimeoutMs: 3_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'storage.health': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'project.create': {
+    domainDeadlineMs: 15_000,
+    transportTimeoutMs: 18_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'project.open': {
+    domainDeadlineMs: 15_000,
+    transportTimeoutMs: 18_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'project.close': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'project.getOverview': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'project.updateMetadata': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'project.createBackup': {
+    domainDeadlineMs: 25_000,
+    transportTimeoutMs: 28_000,
+    terminateWorkerOnTimeout: true,
+  },
+} as const satisfies Readonly<Record<WorkerOperation, WorkerOperationPolicy>>;
+
 export interface WorkerLifecycleEvent {
   readonly state: WorkerLifecycleState;
   readonly reason: string | null;
 }
 
 const MAX_MESSAGE_BYTES = 1_048_576;
+const MAX_ACCEPTED_REQUESTS = 2;
 
 export class WorkerClient {
   readonly #pending = new Map<string, PendingRequest>();
   readonly #expectedStops = new WeakSet<ChildProcessWithoutNullStreams>();
+  readonly #idleWaiters = new Set<() => void>();
   #process: ChildProcessWithoutNullStreams | null = null;
+  #requestQueue: Promise<void> = Promise.resolve();
+  #queuedRequestCount = 0;
+  #workerGeneration = 0;
   #revision = 0;
   #state: WorkerLifecycleState = 'stopped';
+  #acceptingRequests = false;
+  #finalShutdownRequested = false;
   #startPromise: Promise<void> | null = null;
   #restartPromise: Promise<void> | null = null;
+  #shutdownPromise: Promise<void> | null = null;
 
   public constructor(
     private readonly location: WorkerLocation,
     private readonly stateDirectory: string,
     private readonly logger: JsonlLogger,
     private readonly onLifecycleChange: (event: WorkerLifecycleEvent) => void,
+    private readonly operationPolicies: Readonly<
+      Record<WorkerOperation, WorkerOperationPolicy>
+    > = WORKER_OPERATION_POLICIES,
   ) {}
 
   public get processId(): number | null {
@@ -77,52 +148,115 @@ export class WorkerClient {
 
   public request(
     operation: 'system.handshake',
-    deadlineMs?: number,
+    payload: WorkerOperationMap['system.handshake']['request'],
   ): Promise<WorkerResponseFor<'system.handshake'>>;
   public request(
     operation: 'system.ping',
-    deadlineMs?: number,
+    payload: WorkerOperationMap['system.ping']['request'],
   ): Promise<WorkerResponseFor<'system.ping'>>;
   public request(
     operation: 'system.shutdown',
-    deadlineMs?: number,
+    payload: WorkerOperationMap['system.shutdown']['request'],
   ): Promise<WorkerResponseFor<'system.shutdown'>>;
   public request(
     operation: 'storage.health',
-    deadlineMs?: number,
+    payload: WorkerOperationMap['storage.health']['request'],
   ): Promise<WorkerResponseFor<'storage.health'>>;
-  public request(operation: WorkerOperation, deadlineMs = 5_000): Promise<WorkerResponse> {
+  public request(
+    operation: 'project.create',
+    payload: WorkerOperationMap['project.create']['request'],
+  ): Promise<WorkerResponseFor<'project.create'>>;
+  public request(
+    operation: 'project.open',
+    payload: WorkerOperationMap['project.open']['request'],
+  ): Promise<WorkerResponseFor<'project.open'>>;
+  public request(
+    operation: 'project.close',
+    payload: WorkerOperationMap['project.close']['request'],
+  ): Promise<WorkerResponseFor<'project.close'>>;
+  public request(
+    operation: 'project.getOverview',
+    payload: WorkerOperationMap['project.getOverview']['request'],
+  ): Promise<WorkerResponseFor<'project.getOverview'>>;
+  public request(
+    operation: 'project.updateMetadata',
+    payload: WorkerOperationMap['project.updateMetadata']['request'],
+  ): Promise<WorkerResponseFor<'project.updateMetadata'>>;
+  public request(
+    operation: 'project.createBackup',
+    payload: WorkerOperationMap['project.createBackup']['request'],
+  ): Promise<WorkerResponseFor<'project.createBackup'>>;
+  public request(
+    operation: WorkerOperation,
+    payload: WorkerOperationMap[WorkerOperation]['request'],
+  ): Promise<WorkerResponse> {
     const child = this.#process;
     if (child === null) return Promise.reject(new Error('worker_unavailable'));
+    if (!this.#acceptingRequests && operation !== 'system.shutdown') {
+      return Promise.reject(new Error('worker_stopping'));
+    }
+    if (this.#queuedRequestCount >= MAX_ACCEPTED_REQUESTS) {
+      return Promise.reject(new Error('worker_queue_full'));
+    }
+    const generation = this.#workerGeneration;
+    this.#queuedRequestCount += 1;
+    const execute = async (): Promise<WorkerResponse> => {
+      try {
+        if (this.#process !== child || this.#workerGeneration !== generation) {
+          throw new Error('worker_unavailable');
+        }
+        return await this.#dispatchRequest(child, operation, payload);
+      } finally {
+        this.#queuedRequestCount -= 1;
+        this.#notifyIdle();
+      }
+    };
+    const result = this.#requestQueue.then(execute, execute);
+    this.#requestQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  #dispatchRequest(
+    child: ChildProcessWithoutNullStreams,
+    operation: WorkerOperation,
+    payload: WorkerOperationMap[WorkerOperation]['request'],
+  ): Promise<WorkerResponse> {
     const requestId = randomUUID();
     const revision = this.#revision++;
+    const policy = this.operationPolicies[operation];
     const request = workerRequestSchema.parse({
       protocolVersion: IPC_PROTOCOL_VERSION,
       requestId,
       kind: 'request',
       operation,
       revision,
-      deadlineMs,
-      payload: {},
+      deadlineMs: policy.domainDeadlineMs,
+      payload,
     });
     return new Promise<WorkerResponse>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.#pending.delete(requestId);
-        reject(new Error('worker_timeout'));
-      }, deadlineMs);
+        const pending = this.#removePending(requestId);
+        if (pending === undefined) return;
+        const error = new Error(`worker_transport_timeout:${operation}`);
+        pending.reject(error);
+        if (policy.terminateWorkerOnTimeout) this.#terminateAfterTimeout(child, error);
+      }, policy.transportTimeoutMs);
       this.#pending.set(requestId, { operation, revision, resolve, reject, timeout });
       child.stdin.write(`${JSON.stringify(request)}\n`, 'utf8', (error) => {
         if (error === null || error === undefined) return;
-        const pending = this.#pending.get(requestId);
+        const pending = this.#removePending(requestId);
         if (pending === undefined) return;
         clearTimeout(pending.timeout);
-        this.#pending.delete(requestId);
         pending.reject(error);
       });
     });
   }
 
   public restart(): Promise<void> {
+    if (this.#finalShutdownRequested) return Promise.reject(new Error('worker_stopping'));
     if (this.#restartPromise !== null) return this.#restartPromise;
     const restartPromise = this.#restartInternal().finally(() => {
       if (this.#restartPromise === restartPromise) this.#restartPromise = null;
@@ -131,17 +265,35 @@ export class WorkerClient {
     return restartPromise;
   }
 
-  public async shutdown(timeoutMs = 3_000): Promise<void> {
+  public shutdown(exitTimeoutMs = 3_000): Promise<void> {
+    this.#finalShutdownRequested = true;
+    return this.#beginShutdown(exitTimeoutMs);
+  }
+
+  #beginShutdown(exitTimeoutMs: number): Promise<void> {
+    if (this.#shutdownPromise !== null) return this.#shutdownPromise;
+    const shutdownPromise = this.#shutdownInternal(exitTimeoutMs).finally(() => {
+      if (this.#shutdownPromise === shutdownPromise) this.#shutdownPromise = null;
+    });
+    this.#shutdownPromise = shutdownPromise;
+    return shutdownPromise;
+  }
+
+  async #shutdownInternal(exitTimeoutMs: number): Promise<void> {
     const child = this.#process;
     if (child === null) {
+      this.#acceptingRequests = false;
       this.#emitLifecycle('stopped', null);
       return;
     }
+    this.#acceptingRequests = false;
     this.#expectedStops.add(child);
     this.#emitLifecycle('stopping', null);
+    await this.#waitForIdle();
+    if (this.#process !== child) return;
     const closePromise = new Promise<void>((resolve) => child.once('close', () => resolve()));
     try {
-      await this.request('system.shutdown', timeoutMs);
+      await this.request('system.shutdown', {});
     } catch (error) {
       await this.logger.write({
         severity: 'warning',
@@ -152,7 +304,7 @@ export class WorkerClient {
     }
     await Promise.race([
       closePromise,
-      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+      new Promise<void>((resolve) => setTimeout(resolve, exitTimeoutMs)),
     ]);
     if (this.#process === child) {
       child.kill('SIGKILL');
@@ -177,6 +329,7 @@ export class WorkerClient {
       windowsHide: true,
     });
     this.#process = child;
+    this.#workerGeneration += 1;
     createInterface({ input: child.stdout, crlfDelay: Infinity }).on('line', (line) => {
       this.#handleLine(line);
     });
@@ -204,10 +357,14 @@ export class WorkerClient {
       child.once('spawn', onSpawn);
       child.once('error', onError);
     });
+    if (this.#process === child && this.#shutdownPromise === null) {
+      this.#acceptingRequests = true;
+    }
   }
 
   async #restartInternal(): Promise<void> {
-    await this.shutdown();
+    await this.#beginShutdown(3_000);
+    if (this.#finalShutdownRequested) return;
     await this.start();
   }
 
@@ -239,25 +396,39 @@ export class WorkerClient {
     }
     if (!createRevisionGate(pending.revision).accepts(response.revision)) {
       clearTimeout(pending.timeout);
-      this.#pending.delete(identity.data.requestId);
+      this.#removePending(identity.data.requestId);
       pending.reject(new Error('worker_stale_revision'));
       return;
     }
     clearTimeout(pending.timeout);
-    this.#pending.delete(identity.data.requestId);
+    this.#removePending(identity.data.requestId);
     pending.resolve(response);
   }
 
   #failProtocol(error: Error): void {
+    this.#acceptingRequests = false;
+    this.#workerGeneration += 1;
     this.#failAll(error);
     const child = this.#process;
     if (child !== null) child.kill('SIGKILL');
     this.#emitLifecycle('unavailable', error.message);
   }
 
+  #terminateAfterTimeout(child: ChildProcessWithoutNullStreams, error: Error): void {
+    this.#acceptingRequests = false;
+    this.#workerGeneration += 1;
+    this.#failAll(error);
+    if (this.#process === child) child.kill('SIGKILL');
+    this.#emitLifecycle('unavailable', error.message);
+  }
+
   #handleTermination(child: ChildProcessWithoutNullStreams, error: Error): void {
     const expected = this.#expectedStops.has(child);
-    if (this.#process === child) this.#process = null;
+    if (this.#process === child) {
+      this.#process = null;
+      this.#acceptingRequests = false;
+      this.#workerGeneration += 1;
+    }
     this.#failAll(error);
     this.#emitLifecycle(expected ? 'stopped' : 'unavailable', expected ? null : error.message);
   }
@@ -268,6 +439,26 @@ export class WorkerClient {
       pending.reject(error);
     }
     this.#pending.clear();
+    this.#notifyIdle();
+  }
+
+  #waitForIdle(): Promise<void> {
+    if (this.#pending.size === 0 && this.#queuedRequestCount === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => this.#idleWaiters.add(resolve));
+  }
+
+  #removePending(requestId: string): PendingRequest | undefined {
+    const pending = this.#pending.get(requestId);
+    if (pending === undefined) return undefined;
+    this.#pending.delete(requestId);
+    this.#notifyIdle();
+    return pending;
+  }
+
+  #notifyIdle(): void {
+    if (this.#pending.size !== 0 || this.#queuedRequestCount !== 0) return;
+    for (const resolve of this.#idleWaiters) resolve();
+    this.#idleWaiters.clear();
   }
 
   #emitLifecycle(state: WorkerLifecycleState, reason: string | null): void {

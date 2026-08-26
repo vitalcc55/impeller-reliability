@@ -1,6 +1,6 @@
 # Electron Security
 
-Required window flags: `nodeIntegration=false`, `contextIsolation=true`, `sandbox=true`, `webSecurity=true`, `allowRunningInsecureContent=false`. External navigation, `window.open` и permissions запрещены. Preload exposes only typed system methods/events.
+Required window flags: `nodeIntegration=false`, `contextIsolation=true`, `sandbox=true`, `webSecurity=true`, `allowRunningInsecureContent=false`. External navigation, `window.open` и permissions запрещены. Preload exposes only typed system/project methods/events; generic channel и передача произвольного project path запрещены. Запрос закрытия окна является отдельным Main → Renderer event: dirty draft требует явного решения, а Renderer может подтвердить только закрытие приложения, не произвольную системную операцию.
 
 Development HTML разрешает Vite WebSocket только на `127.0.0.1:5173`. Packaged renderer обслуживается только из `app.asar` через ограниченный `impeller://app/` handler; path traversal и другой host отклоняются. Production build проверяет отдельную CSP с `connect-src 'none'` и без network origin, а renderer не получает расширенных привилегий `file://`.
 

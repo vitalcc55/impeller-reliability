@@ -11,6 +11,7 @@ $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."
 $desktopDist = Join-Path $repositoryRoot "apps\desktop\dist"
 $smokeDirectory = Join-Path $repositoryRoot ".tmp\.codex\evidence\$($Target.ToLowerInvariant())"
 $summaryPath = Join-Path $smokeDirectory "summary.json"
+$projectPath = Join-Path $smokeDirectory "Packaged smoke project.irproj"
 $packageMetadata = Get-Content -LiteralPath (Join-Path $repositoryRoot "apps\desktop\package.json") -Raw | ConvertFrom-Json
 $applicationExecutable = Join-Path $desktopDist "win-unpacked\ImpellerReliabilityCalc.exe"
 
@@ -46,6 +47,14 @@ function Stop-OwnedProcesses {
 
 New-Item -ItemType Directory -Force -Path $smokeDirectory | Out-Null
 Remove-Item -LiteralPath $summaryPath -Force -ErrorAction SilentlyContinue
+if (Test-Path -LiteralPath $projectPath) {
+    $resolvedProjectPath = [System.IO.Path]::GetFullPath($projectPath)
+    $resolvedSmokeDirectory = [System.IO.Path]::GetFullPath($smokeDirectory).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedProjectPath.StartsWith($resolvedSmokeDirectory, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove project outside smoke directory."
+    }
+    Remove-Item -LiteralPath $resolvedProjectPath -Recurse -Force
+}
 
 if ($Target -eq "WinUnpacked") {
     $executablePath = $applicationExecutable
@@ -62,6 +71,7 @@ if ($LASTEXITCODE -ne 0) { throw "Electron fuse verification failed." }
 
 $env:IMPELLER_SMOKE_OUTPUT = $summaryPath
 $env:IMPELLER_SMOKE_HOLD_MS = "1500"
+$env:IMPELLER_AUTOMATED_PROJECT_PATH = $projectPath
 $launchStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $ownedProcessIds = [System.Collections.Generic.HashSet[int]]::new()
 $networkObserved = $false
@@ -97,6 +107,7 @@ try {
 finally {
     Remove-Item Env:IMPELLER_SMOKE_OUTPUT -ErrorAction SilentlyContinue
     Remove-Item Env:IMPELLER_SMOKE_HOLD_MS -ErrorAction SilentlyContinue
+    Remove-Item Env:IMPELLER_AUTOMATED_PROJECT_PATH -ErrorAction SilentlyContinue
 }
 
 $launchStopwatch.Stop()
@@ -104,6 +115,7 @@ $summary | Add-Member -NotePropertyName launcherElapsedMs -NotePropertyValue $la
 $summary | Add-Member -NotePropertyName observedProcessIds -NotePropertyValue @($ownedProcessIds)
 $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $summaryPath -Encoding utf8
 if ($summary.passed -ne $true) { throw "Desktop smoke returned failure." }
+if ($summary.projectScenarioPassed -ne $true) { throw "Desktop smoke project create/update/close/reopen failed." }
 if ($networkObserved) { throw "Desktop smoke observed a TCP connection in its process tree." }
 
 $shutdownDeadline = [DateTime]::UtcNow.AddSeconds(5)
