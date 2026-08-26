@@ -15,9 +15,20 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
+  customerUpsertPayloadSchema,
   projectDraftSchema,
   projectUpdateMetadataPayloadSchema,
   runtimeStatusSchema,
+  specimenCreatePayloadSchema,
+  specimenIdPayloadSchema,
+  specimenListPayloadSchema,
+  specimenRevisionPayloadSchema,
+  specimenUpdatePayloadSchema,
+  wheelModelCreatePayloadSchema,
+  wheelModelIdPayloadSchema,
+  wheelModelListPayloadSchema,
+  wheelModelRevisionPayloadSchema,
+  wheelModelUpdatePayloadSchema,
   type DesktopError,
   type DesktopResult,
   type ProjectDraft,
@@ -283,6 +294,100 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       }
     },
   );
+  ipcMain.handle(IPC_CHANNELS.customerGet, () =>
+    runProjectOperation(workerClient, async (client) => client.request('caseCustomer.get', {})),
+  );
+  ipcMain.handle(IPC_CHANNELS.customerUpsert, (_event, raw: unknown) => {
+    const parsed = customerUpsertPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('caseCustomer.upsert', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.wheelModelCreate, (_event, raw: unknown) => {
+    const parsed = wheelModelCreatePayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('wheelModel.create', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.wheelModelList, (_event, raw: unknown) => {
+    const parsed = wheelModelListPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('wheelModel.list', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.wheelModelGet, (_event, raw: unknown) => {
+    const parsed = wheelModelIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('wheelModel.get', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.wheelModelUpdate, (_event, raw: unknown) => {
+    const parsed = wheelModelUpdatePayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('wheelModel.update', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.wheelModelArchive, (_event, raw: unknown) => {
+    const parsed = wheelModelRevisionPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('wheelModel.archive', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.wheelModelRestore, (_event, raw: unknown) => {
+    const parsed = wheelModelRevisionPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('wheelModel.restore', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.specimenCreate, (_event, raw: unknown) => {
+    const parsed = specimenCreatePayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('specimen.create', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.specimenList, (_event, raw: unknown) => {
+    const parsed = specimenListPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('specimen.list', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.specimenGet, (_event, raw: unknown) => {
+    const parsed = specimenIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('specimen.get', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.specimenUpdate, (_event, raw: unknown) => {
+    const parsed = specimenUpdatePayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('specimen.update', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.specimenArchive, (_event, raw: unknown) => {
+    const parsed = specimenRevisionPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('specimen.archive', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.specimenRestore, (_event, raw: unknown) => {
+    const parsed = specimenRevisionPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('specimen.restore', parsed.data),
+    );
+  });
 }
 
 function approvedAutomatedProjectPath(): string | null {
@@ -418,6 +523,10 @@ function failureResult<TResult>(
   return { ok: false, error: { code, message, details: {}, retryable: false } };
 }
 
+function validationFailure<TResult>(): DesktopResult<TResult> {
+  return failureResult('validation_error', 'Проверьте заполненные значения.');
+}
+
 function registerRendererProtocol(): void {
   const rendererRoot = resolve(__dirname, '../renderer');
   protocol.handle('impeller', (request) => {
@@ -547,15 +656,89 @@ async function runSmokeIfRequested(): Promise<void> {
         path: automatedProjectPath,
         applicationInstanceId,
       });
-      projectScenarioPassed =
-        updated.ok &&
-        updated.result.recordRevision === 2 &&
-        closed.ok &&
-        reopened.ok &&
-        reopened.result.name === 'Packaged smoke project updated' &&
-        reopened.result.projectNumber === 'SMOKE-002' &&
-        reopened.result.recordRevision === 2;
-      await workerClient.request('project.close', {});
+      if (updated.ok && closed.ok && reopened.ok) {
+        const customer = await workerClient.request('caseCustomer.upsert', {
+          expectedRevision: null,
+          customer: {
+            fullName: 'Smoke customer',
+            legalAddress: '',
+            actualAddress: '',
+            notes: '',
+          },
+        });
+        const smokeWheelId = randomUUID();
+        const smokeSpecimenId = randomUUID();
+        const wheel = await workerClient.request('wheelModel.create', {
+          wheelModelId: smokeWheelId,
+          fullName: 'Smoke wheel',
+          designation: 'SM-W',
+          nominalDiameterMm: '500',
+          nominalSpeedRpm: 1500,
+          bladeCount: 12,
+          geometryDescription: '',
+          compositionDescription: '',
+          materialDescription: '',
+          notes: '',
+        });
+        const specimen = wheel.ok
+          ? await workerClient.request('specimen.create', {
+              specimenId: smokeSpecimenId,
+              wheelModelId: wheel.result.wheelModelId,
+              identificationNumber: 'SMOKE-SN-1',
+              batchNumber: '',
+              marking: '',
+              manufacturedOn: null,
+              receivedOn: null,
+              workingDiameterMm: '499.5',
+              initialConditionNotes: '',
+              notes: '',
+            })
+          : null;
+        const dossierClosed = await workerClient.request('project.close', {});
+        const dossierReopened = await workerClient.request('project.open', {
+          path: automatedProjectPath,
+          applicationInstanceId,
+        });
+        const customerAfter = await workerClient.request('caseCustomer.get', {});
+        const wheelsAfter = await workerClient.request('wheelModel.list', {
+          includeArchived: false,
+        });
+        const specimensAfter = await workerClient.request('specimen.list', {
+          includeArchived: false,
+        });
+        const wheelAfter = await workerClient.request('wheelModel.get', {
+          wheelModelId: smokeWheelId,
+        });
+        const specimenAfter = await workerClient.request('specimen.get', {
+          specimenId: smokeSpecimenId,
+        });
+        projectScenarioPassed =
+          updated.result.recordRevision === 2 &&
+          reopened.result.name === 'Packaged smoke project updated' &&
+          reopened.result.projectNumber === 'SMOKE-002' &&
+          reopened.result.recordRevision === 2 &&
+          customer.ok &&
+          wheel.ok &&
+          specimen?.ok === true &&
+          dossierClosed.ok &&
+          dossierReopened.ok &&
+          customerAfter.ok &&
+          customerAfter.result.customer?.fullName === 'Smoke customer' &&
+          wheelsAfter.ok &&
+          wheelsAfter.result.items.length === 1 &&
+          specimensAfter.ok &&
+          specimensAfter.result.items.length === 1 &&
+          wheelAfter.ok &&
+          wheelAfter.result.designation === 'SM-W' &&
+          wheelAfter.result.nominalDiameterMm === '500' &&
+          wheelAfter.result.recordRevision === 1 &&
+          specimenAfter.ok &&
+          specimenAfter.result.identificationNumber === 'SMOKE-SN-1' &&
+          specimenAfter.result.wheelModelId === smokeWheelId &&
+          specimenAfter.result.workingDiameterMm === '499.5' &&
+          specimenAfter.result.recordRevision === 1;
+        await workerClient.request('project.close', {});
+      }
     }
   }
   await mkdir(dirname(smokeOutput), { recursive: true });

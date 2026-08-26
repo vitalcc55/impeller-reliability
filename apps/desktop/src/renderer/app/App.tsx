@@ -142,18 +142,19 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
     }
     await restartWorker();
   };
-  const cancelManagedAction = async (): Promise<void> => {
+  const cancelManagedAction = (): void => {
     const action = managedAction;
-    if (action === 'close-application' && desktopApi !== null)
-      await desktopApi.system.cancelClose();
     setManagedAction(null);
+    if (action === 'close-application' && desktopApi !== null) {
+      void desktopApi.system.cancelClose().catch(showConnectionError);
+    }
   };
 
   return (
     <div className="desktop-shell">
       <Modal
         opened={managedAction !== null}
-        onClose={() => void cancelManagedAction()}
+        onClose={cancelManagedAction}
         title="Есть несохранённые изменения"
         centered
       >
@@ -163,7 +164,7 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
             : 'Закрыть приложение без сохранения изменений в проекте? Это действие удалит только локальный черновик формы.'}
         </Text>
         <Group mt="lg" justify="flex-end">
-          <Button variant="default" onClick={() => void cancelManagedAction()}>
+          <Button variant="default" onClick={cancelManagedAction}>
             Продолжить редактирование
           </Button>
           <Button

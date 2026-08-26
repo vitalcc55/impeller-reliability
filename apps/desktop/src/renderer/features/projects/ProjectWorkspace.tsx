@@ -9,6 +9,8 @@ import type {
   RecentProject,
 } from '@impeller-reliability/contracts';
 
+import { AnalystDossier, type AnalystDossierHandle, type DossierSection } from './AnalystDossier';
+
 const newProjectDraft: ProjectDraft = {
   name: 'Новый проект',
   projectNumber: '',
@@ -26,6 +28,8 @@ interface ProjectWorkspaceProps {
   readonly desktopApi: ImpellerApi | null;
   readonly workerReady: boolean;
 }
+
+type WorkspaceSection = 'overview' | DossierSection;
 
 export interface ProjectWorkspaceHandle {
   hasDirtyDraft(): boolean;
@@ -45,9 +49,17 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     const [reattachBlocked, setReattachBlocked] = useState(false);
     const [confirmReload, setConfirmReload] = useState(false);
     const [confirmDiscardLocal, setConfirmDiscardLocal] = useState(false);
-    const dirty = isDraftDirty(project, draft);
+    const [section, setSection] = useState<WorkspaceSection>('overview');
+    const [dossierDirty, setDossierDirty] = useState(false);
+    const [pendingTransition, setPendingTransition] = useState<{
+      readonly action: () => void;
+      readonly discard: () => void;
+    } | null>(null);
+    const metadataDirty = isDraftDirty(project, draft);
+    const dirty = section === 'overview' ? metadataDirty : dossierDirty;
     const dirtyRef = useRef(dirty);
     const pendingSaveRef = useRef<Promise<void> | null>(null);
+    const dossierRef = useRef<AnalystDossierHandle>(null);
     const detached = project !== null && (!workerReady || reattachBlocked);
     useEffect(() => {
       dirtyRef.current = dirty;
@@ -96,6 +108,9 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
       setReattachBlocked(false);
       setConfirmReload(false);
       setConfirmDiscardLocal(false);
+      setSection('overview');
+      setDossierDirty(false);
+      setPendingTransition(null);
       setMessage(notice);
       void refreshRecent();
     };
@@ -217,6 +232,18 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           });
           return false;
         }
+        if (section !== 'overview' && !(await dossierRef.current?.verifyAfterReattach())) {
+          await desktopApi.project.close();
+          setReattachBlocked(true);
+          setError({
+            code: 'revision_conflict',
+            message:
+              'Сведения дела изменились после потери worker. Локальный черновик сохранён; перечитайте запись и перенесите изменения явно.',
+            details: {},
+            retryable: false,
+          });
+          return false;
+        }
         setProject(result.result);
         setReattachBlocked(false);
         setConfirmReload(false);
@@ -234,7 +261,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
         setError(unavailableError());
         return false;
       }
-    }, [desktopApi, dirty, project, refreshRecent]);
+    }, [desktopApi, dirty, project, refreshRecent, section]);
 
     useImperativeHandle(
       ref,
@@ -243,6 +270,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
         waitForPendingSave: async () => {
           const pendingSave = pendingSaveRef.current;
           if (pendingSave !== null) await pendingSave;
+          await dossierRef.current?.waitForPendingSave();
           return dirtyRef.current;
         },
         reattachAfterWorkerRestart,
@@ -292,6 +320,9 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
       setReattachBlocked(false);
       setConfirmReload(false);
       setConfirmDiscardLocal(false);
+      setSection('overview');
+      setDossierDirty(false);
+      setPendingTransition(null);
       setMessage('Локальный черновик удалён. Файлы проекта не изменялись.');
       void refreshRecent();
     };
@@ -302,11 +333,11 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           <section className="start-intro" aria-labelledby="start-title">
             <div>
               <Title id="start-title" order={1}>
-                Проект объединяет испытания, анализ и доказательства
+                Дело объединяет результаты испытаний, сведения и анализ
               </Title>
               <Text>
-                Начните с отдельного контейнера проекта. Сейчас приложение сохраняет его
-                идентичность, метаданные и неизменяемую историю действий.
+                Создайте аналитическое дело до или после независимого испытания R130SH. Оно не
+                передаёт задания стенду и хранит только вашу последующую работу.
               </Text>
             </div>
             <Group className="start-actions">
@@ -471,95 +502,167 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           </div>
         ) : null}
         <Feedback message={message} error={error} />
-        <section className="project-surface" aria-labelledby="metadata-title">
-          <div className="section-heading">
-            <Title id="metadata-title" order={2}>
-              Основные сведения
-            </Title>
-            <Text>Изменение создаёт новую редакцию и запись в истории в одной транзакции.</Text>
-          </div>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void saveProject();
-            }}
-          >
-            <div className="metadata-form">
-              <TextInput
-                label="Название проекта"
-                required
-                maxLength={200}
-                value={draft.name}
-                disabled={detached || busy !== null}
-                onChange={(event) => changeDraft({ ...draft, name: event.currentTarget.value })}
-              />
-              <TextInput
-                label="Номер проекта"
-                maxLength={100}
-                value={draft.projectNumber}
-                disabled={detached || busy !== null}
-                onChange={(event) =>
-                  changeDraft({ ...draft, projectNumber: event.currentTarget.value })
-                }
-              />
-              <Select
-                label="Статус"
-                data={statusOptions}
-                allowDeselect={false}
-                value={draft.status}
-                disabled={detached || busy !== null}
-                onChange={(value) => {
-                  if (
-                    value === 'draft' ||
-                    value === 'active' ||
-                    value === 'completed' ||
-                    value === 'archived'
-                  )
-                    changeDraft({ ...draft, status: value });
-                }}
-              />
-              <Textarea
-                className="description-field"
-                label="Описание"
-                minRows={5}
-                maxLength={4000}
-                value={draft.description}
-                disabled={detached || busy !== null}
-                onChange={(event) =>
-                  changeDraft({ ...draft, description: event.currentTarget.value })
-                }
-              />
-            </div>
-            <div className="container-details">
-              <div>
-                <span>Контейнер</span>
-                <strong>{project.path}</strong>
-              </div>
-              <div>
-                <span>Идентификатор проекта</span>
-                <strong>{project.projectId}</strong>
-              </div>
-              <div>
-                <span>Схема БД</span>
-                <strong>v{project.schemaVersion}</strong>
-              </div>
-              <div>
-                <span>Обновлён</span>
-                <strong>{formatDate(project.updatedAtUtc)}</strong>
-              </div>
-            </div>
-            <Group className="form-actions">
+        <nav className="project-sections" aria-label="Разделы аналитического дела">
+          {(
+            [
+              ['overview', 'Обзор'],
+              ['customer', 'Заказчик'],
+              ['wheels', 'Модели колёс'],
+              ['specimens', 'Образцы'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-current={section === value ? 'page' : undefined}
+              onClick={() => {
+                if (value === section) return;
+                const action = (): void => setSection(value);
+                const discard = (): void => {
+                  if (section === 'overview' && project !== null) {
+                    setDraft({
+                      name: project.name,
+                      projectNumber: project.projectNumber,
+                      description: project.description,
+                      status: project.status,
+                    });
+                  } else dossierRef.current?.discardActiveDraft();
+                };
+                if (dirty) setPendingTransition({ action, discard });
+                else action();
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+        {pendingTransition !== null ? (
+          <div className="feedback feedback--warning" role="alert">
+            <strong>Сначала решите, что делать с черновиком</strong>
+            <span>Переход удалит только несохранённые значения текущей формы.</span>
+            <Group>
               <Button
-                type="submit"
-                loading={busy === 'save'}
-                disabled={detached || busy !== null || draft.name.trim() === ''}
+                size="compact-sm"
+                color="red"
+                onClick={() => {
+                  pendingTransition.discard();
+                  pendingTransition.action();
+                  setPendingTransition(null);
+                }}
               >
-                Сохранить изменения
+                Удалить черновик и перейти
               </Button>
-              <Text size="sm">Ожидаемая редакция: {project.recordRevision}</Text>
+              <Button size="compact-sm" variant="subtle" onClick={() => setPendingTransition(null)}>
+                Остаться здесь
+              </Button>
             </Group>
-          </form>
-        </section>
+          </div>
+        ) : null}
+        {section === 'overview' ? (
+          <section className="project-surface" aria-labelledby="metadata-title">
+            <div className="section-heading">
+              <Title id="metadata-title" order={2}>
+                Основные сведения
+              </Title>
+              <Text>Изменение создаёт новую редакцию и запись в истории в одной транзакции.</Text>
+            </div>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveProject();
+              }}
+            >
+              <div className="metadata-form">
+                <TextInput
+                  label="Название проекта"
+                  required
+                  maxLength={200}
+                  value={draft.name}
+                  disabled={detached || busy !== null}
+                  onChange={(event) => changeDraft({ ...draft, name: event.currentTarget.value })}
+                />
+                <TextInput
+                  label="Номер проекта"
+                  maxLength={100}
+                  value={draft.projectNumber}
+                  disabled={detached || busy !== null}
+                  onChange={(event) =>
+                    changeDraft({ ...draft, projectNumber: event.currentTarget.value })
+                  }
+                />
+                <Select
+                  label="Статус"
+                  data={statusOptions}
+                  allowDeselect={false}
+                  value={draft.status}
+                  disabled={detached || busy !== null}
+                  onChange={(value) => {
+                    if (
+                      value === 'draft' ||
+                      value === 'active' ||
+                      value === 'completed' ||
+                      value === 'archived'
+                    )
+                      changeDraft({ ...draft, status: value });
+                  }}
+                />
+                <Textarea
+                  className="description-field"
+                  label="Описание"
+                  minRows={5}
+                  maxLength={4000}
+                  value={draft.description}
+                  disabled={detached || busy !== null}
+                  onChange={(event) =>
+                    changeDraft({ ...draft, description: event.currentTarget.value })
+                  }
+                />
+              </div>
+              <div className="container-details">
+                <div>
+                  <span>Контейнер</span>
+                  <strong>{project.path}</strong>
+                </div>
+                <div>
+                  <span>Идентификатор проекта</span>
+                  <strong>{project.projectId}</strong>
+                </div>
+                <div>
+                  <span>Схема БД</span>
+                  <strong>v{project.schemaVersion}</strong>
+                </div>
+                <div>
+                  <span>Обновлён</span>
+                  <strong>{formatDate(project.updatedAtUtc)}</strong>
+                </div>
+              </div>
+              <Group className="form-actions">
+                <Button
+                  type="submit"
+                  loading={busy === 'save'}
+                  disabled={detached || busy !== null || draft.name.trim() === ''}
+                >
+                  Сохранить изменения
+                </Button>
+                <Text size="sm">Ожидаемая редакция: {project.recordRevision}</Text>
+              </Group>
+            </form>
+          </section>
+        ) : desktopApi === null ? null : (
+          <AnalystDossier
+            key={`${project.projectId}:${section}`}
+            ref={dossierRef}
+            desktopApi={desktopApi}
+            projectId={project.projectId}
+            section={section}
+            disabled={detached || busy !== null}
+            onDirtyChange={setDossierDirty}
+            requestTransition={(hasDirty, action, discard) => {
+              if (hasDirty) setPendingTransition({ action, discard });
+              else action();
+            }}
+          />
+        )}
       </div>
     );
   },

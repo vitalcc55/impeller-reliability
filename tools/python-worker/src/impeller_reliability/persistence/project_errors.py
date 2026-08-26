@@ -8,6 +8,11 @@ ProjectErrorCode = Literal[
     "corrupt_project",
     "incompatible_schema",
     "revision_conflict",
+    "entity_not_found",
+    "entity_archived",
+    "entity_in_use",
+    "duplicate_entity",
+    "validation_error",
     "storage_error",
 ]
 

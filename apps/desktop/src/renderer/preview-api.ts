@@ -1,9 +1,16 @@
 import type {
   DesktopResult,
+  CustomerProfile,
   ImpellerApi,
   ProjectOverview,
   RecentProject,
   RuntimeStatus,
+  Specimen,
+  SpecimenDraft,
+  SpecimenSummary,
+  WheelModel,
+  WheelModelDraft,
+  WheelModelSummary,
 } from '@impeller-reliability/contracts';
 
 export type PreviewMode = 'ready' | 'unavailable';
@@ -34,6 +41,9 @@ const previewStatuses: Readonly<Record<PreviewMode, RuntimeStatus>> = {
 export function createPreviewApi(mode: PreviewMode): ImpellerApi {
   let status = previewStatuses[mode];
   let activeProject: ProjectOverview | null = null;
+  let customer: CustomerProfile | null = null;
+  const wheels = new Map<string, WheelModel>();
+  const specimens = new Map<string, Specimen>();
   const recentProject: RecentProject = {
     path: 'C:\\Проекты\\Надёжность рабочего колеса.irproj',
     name: 'Надёжность рабочего колеса',
@@ -129,6 +139,128 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
         ),
       listRecent: () => Promise.resolve(success([recentProject])),
     },
+    caseCustomer: {
+      get: () => Promise.resolve(success(customer)),
+      upsert: ({ expectedRevision, customer: draft }) => {
+        const revision = customer === null ? 1 : customer.recordRevision + 1;
+        if (customer !== null && expectedRevision !== customer.recordRevision)
+          return Promise.resolve(conflict());
+        customer = {
+          projectId: activeProject?.projectId ?? '019d2ca4-b4e6-7e18-8f5e-36ce99ab87da',
+          ...draft,
+          recordRevision: revision,
+          createdAtUtc: customer?.createdAtUtc ?? '2026-08-25T15:00:00.000Z',
+          updatedAtUtc: '2026-08-26T12:00:00.000Z',
+          warnings:
+            draft.legalAddress === '' || draft.actualAddress === ''
+              ? ['customer_address_missing']
+              : [],
+        };
+        return Promise.resolve(success(customer));
+      },
+    },
+    wheelModel: {
+      create: (command) => {
+        const existing = wheels.get(command.wheelModelId);
+        if (existing !== undefined) return Promise.resolve(success(existing));
+        const wheel = previewWheel(command.wheelModelId, command);
+        wheels.set(wheel.wheelModelId, wheel);
+        return Promise.resolve(success(wheel));
+      },
+      list: (includeArchived) =>
+        Promise.resolve(
+          success(
+            [...wheels.values()]
+              .filter((item) => includeArchived || item.archivedAtUtc === null)
+              .map<WheelModelSummary>((item) => ({
+                wheelModelId: item.wheelModelId,
+                fullName: item.fullName,
+                designation: item.designation,
+                recordRevision: item.recordRevision,
+                archivedAtUtc: item.archivedAtUtc,
+                warnings: item.warnings,
+              })),
+          ),
+        ),
+      get: (wheelModelId) => Promise.resolve(entityResult(wheels.get(wheelModelId))),
+      update: ({ wheelModelId, expectedRevision, wheelModel: draft }) => {
+        const current = wheels.get(wheelModelId);
+        if (current === undefined) return Promise.resolve(notFound());
+        if (current.recordRevision !== expectedRevision) return Promise.resolve(conflict());
+        const updated = previewWheel(
+          wheelModelId,
+          draft,
+          expectedRevision + 1,
+          current.archivedAtUtc,
+        );
+        wheels.set(wheelModelId, updated);
+        return Promise.resolve(success(updated));
+      },
+      archive: (command) =>
+        Promise.resolve(
+          setPreviewWheelArchived(wheels, command.wheelModelId, command.expectedRevision, true),
+        ),
+      restore: (command) =>
+        Promise.resolve(
+          setPreviewWheelArchived(wheels, command.wheelModelId, command.expectedRevision, false),
+        ),
+    },
+    specimen: {
+      create: (command) => {
+        const existing = specimens.get(command.specimenId);
+        if (existing !== undefined) return Promise.resolve(success(existing));
+        const wheel = wheels.get(command.wheelModelId);
+        if (wheel === undefined) return Promise.resolve(notFound());
+        const specimen = previewSpecimen(command.specimenId, command, wheel.fullName);
+        specimens.set(specimen.specimenId, specimen);
+        return Promise.resolve(success(specimen));
+      },
+      list: (includeArchived) =>
+        Promise.resolve(
+          success(
+            [...specimens.values()]
+              .filter((item) => includeArchived || item.archivedAtUtc === null)
+              .map<SpecimenSummary>((item) => ({
+                specimenId: item.specimenId,
+                wheelModelId: item.wheelModelId,
+                wheelModelName: item.wheelModelName,
+                identificationNumber: item.identificationNumber,
+                recordRevision: item.recordRevision,
+                archivedAtUtc: item.archivedAtUtc,
+                warnings: item.warnings,
+              })),
+          ),
+        ),
+      get: (specimenId) => Promise.resolve(entityResult(specimens.get(specimenId))),
+      update: ({ specimenId, expectedRevision, specimen: draft }) => {
+        const current = specimens.get(specimenId);
+        const wheel = wheels.get(draft.wheelModelId);
+        if (current === undefined || wheel === undefined) return Promise.resolve(notFound());
+        if (current.recordRevision !== expectedRevision) return Promise.resolve(conflict());
+        const updated = previewSpecimen(
+          specimenId,
+          draft,
+          wheel.fullName,
+          expectedRevision + 1,
+          current.archivedAtUtc,
+        );
+        specimens.set(specimenId, updated);
+        return Promise.resolve(success(updated));
+      },
+      archive: (command) =>
+        Promise.resolve(
+          setPreviewSpecimenArchived(specimens, command.specimenId, command.expectedRevision, true),
+        ),
+      restore: (command) =>
+        Promise.resolve(
+          setPreviewSpecimenArchived(
+            specimens,
+            command.specimenId,
+            command.expectedRevision,
+            false,
+          ),
+        ),
+    },
   };
 }
 
@@ -149,8 +281,113 @@ function projectOverview(
     createdAtUtc: '2026-08-25T15:00:00.000Z',
     updatedAtUtc: '2026-08-25T15:00:00.000Z',
     createdWithApplicationVersion: '0.1.0',
-    schemaVersion: 1,
+    schemaVersion: 2,
   };
+}
+
+function previewWheel(
+  wheelModelId: string,
+  draft: WheelModelDraft,
+  recordRevision = 1,
+  archivedAtUtc: string | null = null,
+): WheelModel {
+  return {
+    wheelModelId,
+    ...draft,
+    recordRevision,
+    archivedAtUtc,
+    createdAtUtc: '2026-08-25T15:00:00.000Z',
+    updatedAtUtc: '2026-08-26T12:00:00.000Z',
+    warnings: [
+      ...(draft.nominalDiameterMm === null ? (['wheel_nominal_diameter_missing'] as const) : []),
+      ...(draft.nominalSpeedRpm === null ? (['wheel_nominal_speed_missing'] as const) : []),
+    ],
+  };
+}
+
+function previewSpecimen(
+  specimenId: string,
+  draft: SpecimenDraft,
+  wheelModelName: string,
+  recordRevision = 1,
+  archivedAtUtc: string | null = null,
+): Specimen {
+  return {
+    specimenId,
+    ...draft,
+    wheelModelName,
+    recordRevision,
+    archivedAtUtc,
+    createdAtUtc: '2026-08-25T15:00:00.000Z',
+    updatedAtUtc: '2026-08-26T12:00:00.000Z',
+    warnings: draft.workingDiameterMm === null ? ['specimen_working_diameter_missing'] : [],
+  };
+}
+
+function entityResult<TResult>(value: TResult | undefined): DesktopResult<TResult> {
+  return value === undefined ? notFound() : success(value);
+}
+
+function notFound<TResult>(): DesktopResult<TResult> {
+  return {
+    ok: false,
+    error: {
+      code: 'entity_not_found',
+      message: 'Запись не найдена.',
+      details: {},
+      retryable: false,
+    },
+  };
+}
+
+function conflict<TResult>(): DesktopResult<TResult> {
+  return {
+    ok: false,
+    error: {
+      code: 'revision_conflict',
+      message: 'Синтетический конфликт редакции.',
+      details: {},
+      retryable: false,
+    },
+  };
+}
+
+function setPreviewWheelArchived(
+  items: Map<string, WheelModel>,
+  id: string,
+  expectedRevision: number,
+  archived: boolean,
+): DesktopResult<WheelModel> {
+  const current = items.get(id);
+  if (current === undefined) return notFound();
+  if (current.recordRevision !== expectedRevision) return conflict();
+  const updated = {
+    ...current,
+    recordRevision: expectedRevision + 1,
+    archivedAtUtc: archived ? '2026-08-26T12:00:00.000Z' : null,
+    updatedAtUtc: '2026-08-26T12:00:00.000Z',
+  };
+  items.set(id, updated);
+  return success(updated);
+}
+
+function setPreviewSpecimenArchived(
+  items: Map<string, Specimen>,
+  id: string,
+  expectedRevision: number,
+  archived: boolean,
+): DesktopResult<Specimen> {
+  const current = items.get(id);
+  if (current === undefined) return notFound();
+  if (current.recordRevision !== expectedRevision) return conflict();
+  const updated = {
+    ...current,
+    recordRevision: expectedRevision + 1,
+    archivedAtUtc: archived ? '2026-08-26T12:00:00.000Z' : null,
+    updatedAtUtc: '2026-08-26T12:00:00.000Z',
+  };
+  items.set(id, updated);
+  return success(updated);
 }
 
 function success<TResult>(result: TResult): DesktopResult<TResult> {

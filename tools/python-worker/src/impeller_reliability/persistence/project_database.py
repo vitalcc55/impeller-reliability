@@ -4,19 +4,20 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
-import json
 import os
 from pathlib import Path
 import sqlite3
 from typing import Final
 from urllib.parse import quote
-from uuid import uuid4
 
+from impeller_reliability.persistence.analyst_dossier import validate_dossier_evidence
+from impeller_reliability.persistence.audit import insert_audit
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_manifest import ProjectManifest
 from impeller_reliability.persistence.project_schema import (
     PROJECT_SCHEMA_VERSION,
     create_schema_v1_objects,
+    create_schema_v2_objects,
     validate_project_evidence,
     validate_published_schema,
 )
@@ -51,7 +52,9 @@ def probe_project_database_identity(
 ) -> ProjectDatabaseIdentity:
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(_sqlite_uri(database_path, "mode=ro&immutable=1"), uri=True)
+        wal_path = database_path.with_name(f"{database_path.name}-wal")
+        read_only_mode = "mode=ro" if wal_path.is_file() and wal_path.stat().st_size > 0 else "mode=ro&immutable=1"
+        connection = sqlite3.connect(_sqlite_uri(database_path, read_only_mode), uri=True)
         application_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
         schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if application_id != PROJECT_APPLICATION_ID:
@@ -68,14 +71,15 @@ def probe_project_database_identity(
                 },
             )
         validate_published_schema(connection, schema_version, deadline)
-        if schema_version == PROJECT_SCHEMA_VERSION:
-            validate_project_evidence(
-                connection,
-                manifest.projectId,
-                manifest.createdAtUtc,
-                manifest.createdWithApplicationVersion,
-                deadline,
-            )
+        validate_project_evidence(
+            connection,
+            manifest.projectId,
+            manifest.createdAtUtc,
+            manifest.createdWithApplicationVersion,
+            deadline,
+        )
+        if schema_version == 2:
+            validate_dossier_evidence(connection, manifest.projectId, deadline)
         return ProjectDatabaseIdentity(
             application_id=application_id,
             schema_version=schema_version,
@@ -143,9 +147,17 @@ def _migration_0001(
                 "description": metadata.description,
                 "status": metadata.status,
             },
-            "schemaVersion": PROJECT_SCHEMA_VERSION,
+            "schemaVersion": 1,
         },
     )
+
+
+def _migration_0002(
+    connection: sqlite3.Connection,
+    _manifest: ProjectManifest,
+    _initial_metadata: ProjectMetadataSeed | None,
+) -> None:
+    create_schema_v2_objects(connection)
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,7 +167,10 @@ class Migration:
     apply: Callable[[sqlite3.Connection, ProjectManifest, ProjectMetadataSeed | None], None]
 
 
-MIGRATIONS: tuple[Migration, ...] = (Migration(1, "create_project_container", _migration_0001),)
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration(1, "create_project_container", _migration_0001),
+    Migration(2, "create_analyst_dossier", _migration_0002),
+)
 
 
 class ProjectMigrator:
@@ -363,14 +378,15 @@ def _validate_open_connection_identity(
     if application_id != expected_identity.application_id or schema_version != expected_identity.schema_version:
         raise ProjectOperationError("corrupt_project", "SQLite identity изменился между read-only probe и write open.")
     validate_published_schema(connection, schema_version, deadline)
-    if schema_version == PROJECT_SCHEMA_VERSION:
-        validate_project_evidence(
-            connection,
-            manifest.projectId,
-            manifest.createdAtUtc,
-            manifest.createdWithApplicationVersion,
-            deadline,
-        )
+    validate_project_evidence(
+        connection,
+        manifest.projectId,
+        manifest.createdAtUtc,
+        manifest.createdWithApplicationVersion,
+        deadline,
+    )
+    if schema_version == 2:
+        validate_dossier_evidence(connection, manifest.projectId, deadline)
 
 
 def validate_project_database(
@@ -398,26 +414,7 @@ def validate_project_database(
         manifest.createdWithApplicationVersion,
         deadline,
     )
-
-
-def insert_audit(
-    connection: sqlite3.Connection,
-    *,
-    event_type: str,
-    actor_kind: str,
-    occurred_at_utc: str,
-    payload: dict[str, object],
-) -> None:
-    connection.execute(
-        "INSERT INTO project_audit_events (event_id, event_type, occurred_at_utc, actor_kind, payload_json) VALUES (?, ?, ?, ?, ?)",
-        (
-            str(uuid4()),
-            event_type,
-            occurred_at_utc,
-            actor_kind,
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-        ),
-    )
+    validate_dossier_evidence(connection, manifest.projectId, deadline)
 
 
 def quick_check_with_deadline(

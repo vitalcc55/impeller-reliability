@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
+from impeller_reliability.persistence.analyst_dossier import canonical_date, canonical_decimal, canonical_uuid4
 from impeller_reliability.persistence.project_values import (
     require_application_version,
     require_canonical_project_id,
@@ -21,12 +22,29 @@ Operation = Literal[
     "project.getOverview",
     "project.updateMetadata",
     "project.createBackup",
+    "caseCustomer.get",
+    "caseCustomer.upsert",
+    "wheelModel.create",
+    "wheelModel.list",
+    "wheelModel.get",
+    "wheelModel.update",
+    "wheelModel.archive",
+    "wheelModel.restore",
+    "specimen.create",
+    "specimen.list",
+    "specimen.get",
+    "specimen.update",
+    "specimen.archive",
+    "specimen.restore",
 ]
 
 ProjectStatus = Literal["draft", "active", "completed", "archived"]
 CanonicalUtcTimestamp = Annotated[str, AfterValidator(require_canonical_utc_timestamp)]
 ApplicationVersion = Annotated[str, AfterValidator(require_application_version)]
 ProjectId = Annotated[str, AfterValidator(require_canonical_project_id)]
+EntityId = Annotated[str, AfterValidator(canonical_uuid4)]
+CanonicalDecimal = Annotated[str | None, AfterValidator(canonical_decimal)]
+CanonicalDate = Annotated[str | None, AfterValidator(canonical_date)]
 
 
 class EmptyPayload(BaseModel):
@@ -138,6 +156,210 @@ class ProjectCreateBackupRequest(RequestBase):
     payload: EmptyPayload
 
 
+class CustomerDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    fullName: str = Field(min_length=1, max_length=300)
+    legalAddress: str = Field(max_length=1_000)
+    actualAddress: str = Field(max_length=1_000)
+    notes: str = Field(max_length=4_000)
+
+    @field_validator("fullName")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized == "":
+            raise ValueError("customer_name_blank")
+        return normalized
+
+    @field_validator("legalAddress", "actualAddress", "notes")
+    @classmethod
+    def normalize_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class CustomerUpsertPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expectedRevision: int | None = Field(default=None, ge=1)
+    customer: CustomerDraft
+
+
+class WheelModelDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    fullName: str = Field(min_length=1, max_length=300)
+    designation: str = Field(max_length=200)
+    nominalDiameterMm: CanonicalDecimal = None
+    nominalSpeedRpm: int | None = Field(default=None, gt=0, le=9_007_199_254_740_991)
+    bladeCount: int | None = Field(default=None, gt=0, le=9_007_199_254_740_991)
+    geometryDescription: str = Field(max_length=4_000)
+    compositionDescription: str = Field(max_length=4_000)
+    materialDescription: str = Field(max_length=4_000)
+    notes: str = Field(max_length=4_000)
+
+    @field_validator("fullName")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized == "":
+            raise ValueError("wheel_name_blank")
+        return normalized
+
+    @field_validator("designation", "geometryDescription", "compositionDescription", "materialDescription", "notes")
+    @classmethod
+    def normalize_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class WheelModelCreatePayload(WheelModelDraft):
+    wheelModelId: EntityId
+
+
+class WheelModelIdPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    wheelModelId: EntityId
+
+
+class WheelModelListPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    includeArchived: bool = False
+
+
+class WheelModelUpdatePayload(WheelModelIdPayload):
+    expectedRevision: int = Field(ge=1)
+    wheelModel: WheelModelDraft
+
+
+class EntityRevisionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    expectedRevision: int = Field(ge=1)
+
+
+class WheelModelRevisionPayload(WheelModelIdPayload, EntityRevisionPayload):
+    pass
+
+
+class SpecimenDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    wheelModelId: EntityId
+    identificationNumber: str = Field(min_length=1, max_length=200)
+    batchNumber: str = Field(max_length=200)
+    marking: str = Field(max_length=500)
+    manufacturedOn: CanonicalDate = None
+    receivedOn: CanonicalDate = None
+    workingDiameterMm: CanonicalDecimal = None
+    initialConditionNotes: str = Field(max_length=4_000)
+    notes: str = Field(max_length=4_000)
+
+    @field_validator("identificationNumber")
+    @classmethod
+    def normalize_identifier(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized == "":
+            raise ValueError("specimen_identifier_blank")
+        return normalized
+
+    @field_validator("batchNumber", "marking", "initialConditionNotes", "notes")
+    @classmethod
+    def normalize_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class SpecimenCreatePayload(SpecimenDraft):
+    specimenId: EntityId
+
+
+class SpecimenIdPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    specimenId: EntityId
+
+
+class SpecimenListPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    includeArchived: bool = False
+
+
+class SpecimenUpdatePayload(SpecimenIdPayload):
+    expectedRevision: int = Field(ge=1)
+    specimen: SpecimenDraft
+
+
+class SpecimenRevisionPayload(SpecimenIdPayload, EntityRevisionPayload):
+    pass
+
+
+class CustomerGetRequest(RequestBase):
+    operation: Literal["caseCustomer.get"]
+    payload: EmptyPayload
+
+
+class CustomerUpsertRequest(RequestBase):
+    operation: Literal["caseCustomer.upsert"]
+    payload: CustomerUpsertPayload
+
+
+class WheelModelCreateRequest(RequestBase):
+    operation: Literal["wheelModel.create"]
+    payload: WheelModelCreatePayload
+
+
+class WheelModelListRequest(RequestBase):
+    operation: Literal["wheelModel.list"]
+    payload: WheelModelListPayload
+
+
+class WheelModelGetRequest(RequestBase):
+    operation: Literal["wheelModel.get"]
+    payload: WheelModelIdPayload
+
+
+class WheelModelUpdateRequest(RequestBase):
+    operation: Literal["wheelModel.update"]
+    payload: WheelModelUpdatePayload
+
+
+class WheelModelArchiveRequest(RequestBase):
+    operation: Literal["wheelModel.archive"]
+    payload: WheelModelRevisionPayload
+
+
+class WheelModelRestoreRequest(RequestBase):
+    operation: Literal["wheelModel.restore"]
+    payload: WheelModelRevisionPayload
+
+
+class SpecimenCreateRequest(RequestBase):
+    operation: Literal["specimen.create"]
+    payload: SpecimenCreatePayload
+
+
+class SpecimenListRequest(RequestBase):
+    operation: Literal["specimen.list"]
+    payload: SpecimenListPayload
+
+
+class SpecimenGetRequest(RequestBase):
+    operation: Literal["specimen.get"]
+    payload: SpecimenIdPayload
+
+
+class SpecimenUpdateRequest(RequestBase):
+    operation: Literal["specimen.update"]
+    payload: SpecimenUpdatePayload
+
+
+class SpecimenArchiveRequest(RequestBase):
+    operation: Literal["specimen.archive"]
+    payload: SpecimenRevisionPayload
+
+
+class SpecimenRestoreRequest(RequestBase):
+    operation: Literal["specimen.restore"]
+    payload: SpecimenRevisionPayload
+
+
 type RequestEnvelope = Annotated[
     HandshakeRequest
     | PingRequest
@@ -148,7 +370,21 @@ type RequestEnvelope = Annotated[
     | ProjectCloseRequest
     | ProjectGetOverviewRequest
     | ProjectUpdateMetadataRequest
-    | ProjectCreateBackupRequest,
+    | ProjectCreateBackupRequest
+    | CustomerGetRequest
+    | CustomerUpsertRequest
+    | WheelModelCreateRequest
+    | WheelModelListRequest
+    | WheelModelGetRequest
+    | WheelModelUpdateRequest
+    | WheelModelArchiveRequest
+    | WheelModelRestoreRequest
+    | SpecimenCreateRequest
+    | SpecimenListRequest
+    | SpecimenGetRequest
+    | SpecimenUpdateRequest
+    | SpecimenArchiveRequest
+    | SpecimenRestoreRequest,
     Field(discriminator="operation"),
 ]
 REQUEST_ENVELOPE_ADAPTER: TypeAdapter[RequestEnvelope] = TypeAdapter(RequestEnvelope)
@@ -221,6 +457,102 @@ class ProjectBackupResult(BaseModel):
     createdAtUtc: CanonicalUtcTimestamp
 
 
+CompletenessWarningCode = Literal[
+    "customer_address_missing",
+    "wheel_nominal_diameter_missing",
+    "wheel_nominal_speed_missing",
+    "specimen_working_diameter_missing",
+]
+
+
+class CustomerProfileResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    projectId: ProjectId
+    fullName: str
+    legalAddress: str
+    actualAddress: str
+    notes: str
+    recordRevision: int = Field(ge=1)
+    createdAtUtc: CanonicalUtcTimestamp
+    updatedAtUtc: CanonicalUtcTimestamp
+    warnings: list[CompletenessWarningCode]
+
+
+class CustomerGetResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    customer: CustomerProfileResult | None
+
+
+class WheelModelResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    wheelModelId: EntityId
+    fullName: str
+    designation: str
+    nominalDiameterMm: str | None
+    nominalSpeedRpm: int | None
+    bladeCount: int | None
+    geometryDescription: str
+    compositionDescription: str
+    materialDescription: str
+    notes: str
+    recordRevision: int = Field(ge=1)
+    archivedAtUtc: CanonicalUtcTimestamp | None
+    createdAtUtc: CanonicalUtcTimestamp
+    updatedAtUtc: CanonicalUtcTimestamp
+    warnings: list[CompletenessWarningCode]
+
+
+class WheelModelSummaryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    wheelModelId: EntityId
+    fullName: str
+    designation: str
+    recordRevision: int = Field(ge=1)
+    archivedAtUtc: CanonicalUtcTimestamp | None
+    warnings: list[CompletenessWarningCode]
+
+
+class WheelModelListResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    items: list[WheelModelSummaryResult]
+
+
+class SpecimenResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    specimenId: EntityId
+    wheelModelId: EntityId
+    wheelModelName: str
+    identificationNumber: str
+    batchNumber: str
+    marking: str
+    manufacturedOn: str | None
+    receivedOn: str | None
+    workingDiameterMm: str | None
+    initialConditionNotes: str
+    notes: str
+    recordRevision: int = Field(ge=1)
+    archivedAtUtc: CanonicalUtcTimestamp | None
+    createdAtUtc: CanonicalUtcTimestamp
+    updatedAtUtc: CanonicalUtcTimestamp
+    warnings: list[CompletenessWarningCode]
+
+
+class SpecimenSummaryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    specimenId: EntityId
+    wheelModelId: EntityId
+    wheelModelName: str
+    identificationNumber: str
+    recordRevision: int = Field(ge=1)
+    archivedAtUtc: CanonicalUtcTimestamp | None
+    warnings: list[CompletenessWarningCode]
+
+
+class SpecimenListResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    items: list[SpecimenSummaryResult]
+
+
 class ErrorPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -236,6 +568,10 @@ class ErrorPayload(BaseModel):
         "corrupt_project",
         "incompatible_schema",
         "revision_conflict",
+        "entity_not_found",
+        "entity_archived",
+        "entity_in_use",
+        "duplicate_entity",
         "internal_error",
     ]
     message: str
@@ -264,6 +600,12 @@ type SuccessResponseType = (
     | SuccessResponse[ProjectOverviewResult]
     | SuccessResponse[ProjectCloseResult]
     | SuccessResponse[ProjectBackupResult]
+    | SuccessResponse[CustomerGetResult]
+    | SuccessResponse[CustomerProfileResult]
+    | SuccessResponse[WheelModelResult]
+    | SuccessResponse[WheelModelListResult]
+    | SuccessResponse[SpecimenResult]
+    | SuccessResponse[SpecimenListResult]
 )
 
 

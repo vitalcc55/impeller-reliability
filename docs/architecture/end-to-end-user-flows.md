@@ -46,14 +46,19 @@ User -> Renderer: "Закрыть и открыть повторно"
 Worker -> Project: "release/reacquire OS lock"
 Project -> Renderer: "persisted revision and values"
 
+User -> Renderer: "Заполнить сведения дела (M02.2A)"
+Renderer -> Worker: "CustomerProfile / WheelModel / Specimen + expected revision"
+Worker -> Project: "analyst_enrichment + changed-fields audit, one transaction"
+Project -> Renderer: "detail/list DTO + completeness warnings"
+
 R130SH -> Main: "result package после независимого испытания (M03)"
 Main -> Worker: "staged package after path/size gate"
 Worker -> Project: "checksums, validation, immutable import revision"
 Worker -> Renderer: "receipt, differences, completeness/classification"
 
-User -> Renderer: "Дополнить дело и выполнить расчёты (M04+)"
-Renderer -> Worker: "project data + selected immutable run inputs"
-Worker -> Project: "validated data + versioned calculation evidence"
+User -> Renderer: "Выбрать значения и выполнить расчёты (M04+)"
+Renderer -> Worker: "r130sh_source + analyst_enrichment selection"
+Worker -> Project: "AnalysisInputSnapshot + CalculationSnapshot"
 
 User -> Renderer: "Запустить анализ/выпустить отчёт (M05+)"
 Renderer -> Worker: "selected immutable inputs"

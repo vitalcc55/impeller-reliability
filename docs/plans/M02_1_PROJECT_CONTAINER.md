@@ -121,7 +121,7 @@ payload_json TEXT NOT NULL
 1. проверить абсолютный путь, расширение и сам каталог `.irproj`;
 2. проверить `project-manifest.json` как отдельный regular file, ограничить чтение 4 KiB и только затем разобрать strict manifest;
 3. проверить topology зарезервированных `project.sqlite`, optional `.project.lock`, `backups/` и SQLite sidecars; symlink/junction/reparse и hard-linked files запрещены;
-4. открыть `project.sqlite` через immutable read-only URI и проверить `application_id`, `user_version`, точный version-specific schema contract, migration ledger, `projectId` и согласованную цепочку metadata/audit для schema v1 без WAL/lock/backup;
+4. открыть `project.sqlite` через immutable read-only URI для чисто закрытой базы либо через обычный read-only URI при наличии непустого WAL после аварийного завершения; проверить `application_id`, `user_version`, точный version-specific schema contract, migration ledger, `projectId` и согласованную цепочку metadata/audit;
 5. захватить OS lock;
 6. открыть подтверждённый SQLite в `mode=rw` и применить WAL/FK/FULL/busy timeout;
 7. при `current < supported` создать SQLite Backup API snapshot в проверенном `backups/`, выполнить его `quick_check`, затем применить forward-only migrations;

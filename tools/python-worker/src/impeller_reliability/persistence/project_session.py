@@ -5,9 +5,15 @@ from pathlib import Path
 import sqlite3
 from typing import Literal, Self
 
+from impeller_reliability.persistence.analyst_dossier import (
+    AnalystDossierRepository,
+    CustomerProfile,
+    Specimen,
+    WheelModel,
+)
+from impeller_reliability.persistence.audit import audit_now, insert_audit
 from impeller_reliability.persistence.project_database import (
     create_verified_backup,
-    insert_audit,
     remove_backup,
     sha256_file,
     validate_project_database,
@@ -53,6 +59,7 @@ class ProjectSession:
         self._connection = connection
         self._lock = project_lock
         self._closed = False
+        self._dossier = AnalystDossierRepository(connection, manifest.projectId)
 
     def overview(self) -> ProjectOverview:
         row = self._connection.execute(
@@ -114,7 +121,7 @@ class ProjectSession:
         changed_fields = [field for field in before if before[field] != normalized[field]]
         if not changed_fields:
             return current
-        now = max(current.updated_at_utc, utc_now())
+        now = audit_now(self._connection)
         new_revision = current.record_revision + 1
         try:
             self._connection.execute("BEGIN IMMEDIATE")
@@ -181,6 +188,55 @@ class ProjectSession:
         except Exception:
             remove_backup(backup)
             raise
+
+    def get_customer(self, deadline: RequestDeadline | None = None) -> CustomerProfile | None:
+        return self._dossier.get_customer(deadline)
+
+    def upsert_customer(
+        self,
+        *,
+        expected_revision: int | None,
+        values: dict[str, object],
+        deadline: RequestDeadline | None,
+    ) -> CustomerProfile:
+        return self._dossier.upsert_customer(
+            expected_revision=expected_revision,
+            full_name=str(values["fullName"]),
+            legal_address=str(values["legalAddress"]),
+            actual_address=str(values["actualAddress"]),
+            notes=str(values["notes"]),
+            deadline=deadline,
+        )
+
+    def create_wheel(self, values: dict[str, object], deadline: RequestDeadline | None) -> WheelModel:
+        return self._dossier.create_wheel(values, deadline)
+
+    def list_wheels(self, include_archived: bool, deadline: RequestDeadline | None = None) -> tuple[WheelModel, ...]:
+        return self._dossier.list_wheels(include_archived, deadline)
+
+    def get_wheel(self, wheel_id: str, deadline: RequestDeadline | None = None) -> WheelModel:
+        return self._dossier.get_wheel(wheel_id, deadline)
+
+    def update_wheel(self, wheel_id: str, expected_revision: int, values: dict[str, object], deadline: RequestDeadline | None) -> WheelModel:
+        return self._dossier.update_wheel(wheel_id, expected_revision, values, deadline)
+
+    def set_wheel_archived(self, wheel_id: str, expected_revision: int, archived: bool, deadline: RequestDeadline | None) -> WheelModel:
+        return self._dossier.set_wheel_archived(wheel_id, expected_revision, archived, deadline)
+
+    def create_specimen(self, values: dict[str, object], deadline: RequestDeadline | None) -> Specimen:
+        return self._dossier.create_specimen(values, deadline)
+
+    def list_specimens(self, include_archived: bool, deadline: RequestDeadline | None = None) -> tuple[Specimen, ...]:
+        return self._dossier.list_specimens(include_archived, deadline)
+
+    def get_specimen(self, specimen_id: str, deadline: RequestDeadline | None = None) -> Specimen:
+        return self._dossier.get_specimen(specimen_id, deadline)
+
+    def update_specimen(self, specimen_id: str, expected_revision: int, values: dict[str, object], deadline: RequestDeadline | None) -> Specimen:
+        return self._dossier.update_specimen(specimen_id, expected_revision, values, deadline)
+
+    def set_specimen_archived(self, specimen_id: str, expected_revision: int, archived: bool, deadline: RequestDeadline | None) -> Specimen:
+        return self._dossier.set_specimen_archived(specimen_id, expected_revision, archived, deadline)
 
     def validate(self, deadline: RequestDeadline | None = None) -> None:
         validate_project_database(self._connection, self.manifest, deadline)

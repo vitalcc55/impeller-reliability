@@ -1,7 +1,11 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import type { ZodType } from 'zod';
 
 import {
   createDesktopResultSchema,
+  customerGetResultSchema,
+  customerProfileSchema,
+  customerUpsertPayloadSchema,
   projectBackupResultSchema,
   projectCloseResultSchema,
   projectDraftSchema,
@@ -9,10 +13,42 @@ import {
   projectUpdateMetadataPayloadSchema,
   recentProjectsSchema,
   runtimeStatusSchema,
+  specimenCreatePayloadSchema,
+  specimenListResultSchema,
+  specimenRevisionPayloadSchema,
+  specimenSchema,
+  specimenUpdatePayloadSchema,
+  wheelModelCreatePayloadSchema,
+  wheelModelListResultSchema,
+  wheelModelRevisionPayloadSchema,
+  wheelModelSchema,
+  wheelModelUpdatePayloadSchema,
+  type DesktopResult,
   type ImpellerApi,
 } from '@impeller-reliability/contracts';
 
 import { IPC_CHANNELS } from '../main/channels';
+
+async function invokeValidated<TPayload, TResult>(
+  channel: string,
+  payloadSchema: ZodType<TPayload>,
+  payload: unknown,
+  resultSchema: ZodType<DesktopResult<TResult>>,
+): Promise<DesktopResult<TResult>> {
+  const parsed = payloadSchema.safeParse(payload);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: {
+        code: 'validation_error',
+        message: 'Проверьте заполненные поля.',
+        details: {},
+        retryable: false,
+      },
+    };
+  }
+  return resultSchema.parse(await ipcRenderer.invoke(channel, parsed.data));
+}
 
 const api: ImpellerApi = {
   system: {
@@ -46,8 +82,11 @@ const api: ImpellerApi = {
   },
   project: {
     create: async (draft) =>
-      createDesktopResultSchema(projectOverviewSchema).parse(
-        await ipcRenderer.invoke(IPC_CHANNELS.projectCreate, projectDraftSchema.parse(draft)),
+      invokeValidated(
+        IPC_CHANNELS.projectCreate,
+        projectDraftSchema,
+        draft,
+        createDesktopResultSchema(projectOverviewSchema),
       ),
     open: async () =>
       createDesktopResultSchema(projectOverviewSchema).parse(
@@ -69,11 +108,11 @@ const api: ImpellerApi = {
         await ipcRenderer.invoke(IPC_CHANNELS.projectGetOverview),
       ),
     updateMetadata: async (command) =>
-      createDesktopResultSchema(projectOverviewSchema).parse(
-        await ipcRenderer.invoke(
-          IPC_CHANNELS.projectUpdateMetadata,
-          projectUpdateMetadataPayloadSchema.parse(command),
-        ),
+      invokeValidated(
+        IPC_CHANNELS.projectUpdateMetadata,
+        projectUpdateMetadataPayloadSchema,
+        command,
+        createDesktopResultSchema(projectOverviewSchema),
       ),
     createBackup: async () =>
       createDesktopResultSchema(projectBackupResultSchema).parse(
@@ -82,6 +121,101 @@ const api: ImpellerApi = {
     listRecent: async () =>
       createDesktopResultSchema(recentProjectsSchema).parse(
         await ipcRenderer.invoke(IPC_CHANNELS.projectListRecent),
+      ),
+  },
+  caseCustomer: {
+    get: async () => {
+      const result = createDesktopResultSchema(customerGetResultSchema).parse(
+        await ipcRenderer.invoke(IPC_CHANNELS.customerGet),
+      );
+      return result.ok ? { ok: true, result: result.result.customer } : result;
+    },
+    upsert: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.customerUpsert,
+        customerUpsertPayloadSchema,
+        command,
+        createDesktopResultSchema(customerProfileSchema),
+      ),
+  },
+  wheelModel: {
+    create: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.wheelModelCreate,
+        wheelModelCreatePayloadSchema,
+        command,
+        createDesktopResultSchema(wheelModelSchema),
+      ),
+    list: async (includeArchived) => {
+      const result = createDesktopResultSchema(wheelModelListResultSchema).parse(
+        await ipcRenderer.invoke(IPC_CHANNELS.wheelModelList, { includeArchived }),
+      );
+      return result.ok ? { ok: true, result: result.result.items } : result;
+    },
+    get: async (wheelModelId) =>
+      createDesktopResultSchema(wheelModelSchema).parse(
+        await ipcRenderer.invoke(IPC_CHANNELS.wheelModelGet, { wheelModelId }),
+      ),
+    update: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.wheelModelUpdate,
+        wheelModelUpdatePayloadSchema,
+        command,
+        createDesktopResultSchema(wheelModelSchema),
+      ),
+    archive: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.wheelModelArchive,
+        wheelModelRevisionPayloadSchema,
+        command,
+        createDesktopResultSchema(wheelModelSchema),
+      ),
+    restore: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.wheelModelRestore,
+        wheelModelRevisionPayloadSchema,
+        command,
+        createDesktopResultSchema(wheelModelSchema),
+      ),
+  },
+  specimen: {
+    create: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.specimenCreate,
+        specimenCreatePayloadSchema,
+        command,
+        createDesktopResultSchema(specimenSchema),
+      ),
+    list: async (includeArchived) => {
+      const result = createDesktopResultSchema(specimenListResultSchema).parse(
+        await ipcRenderer.invoke(IPC_CHANNELS.specimenList, { includeArchived }),
+      );
+      return result.ok ? { ok: true, result: result.result.items } : result;
+    },
+    get: async (specimenId) =>
+      createDesktopResultSchema(specimenSchema).parse(
+        await ipcRenderer.invoke(IPC_CHANNELS.specimenGet, { specimenId }),
+      ),
+    update: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.specimenUpdate,
+        specimenUpdatePayloadSchema,
+        command,
+        createDesktopResultSchema(specimenSchema),
+      ),
+    archive: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.specimenArchive,
+        specimenRevisionPayloadSchema,
+        command,
+        createDesktopResultSchema(specimenSchema),
+      ),
+    restore: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.specimenRestore,
+        specimenRevisionPayloadSchema,
+        command,
+        createDesktopResultSchema(specimenSchema),
       ),
   },
 };

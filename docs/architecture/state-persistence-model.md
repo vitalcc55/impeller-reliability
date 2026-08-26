@@ -6,7 +6,7 @@
 direction: down
 
 Persisted: "M02.1 project source of truth" {
-  Sqlite: "project.sqlite: metadata, record_revision, audit" { shape: cylinder }
+  Sqlite: "project.sqlite: metadata, analyst_enrichment, record revisions, audit" { shape: cylinder }
   Manifest: "project-manifest.json: container identity"
   Backups: "verified migration/manual SQLite backups"
   Assets: "assets/documents: reserved for M02.2 sources"
@@ -59,4 +59,4 @@ Persisted.Assets -> Derived.Exports
 RendererRuntime.Preview -> RendererRuntime.QueryCache: "synthetic DEV state only"
 ```
 
-App-level `health.sqlite` остаётся отдельной инфраструктурной диагностикой. M02.1 project truth находится только в `.irproj`; Renderer хранит draft, Main — allowlist недавних путей, close state и последовательную очередь, Python — активную ProjectSession. Existing project становится writable только после bounded read-only structure/schema/evidence validation и OS lock. Stateful domain timeout проверяется до commit; graceful lifecycle сначала дренирует принятую bounded-очередь, а indeterminate transport timeout завершает worker и снимает ProjectSession/OS lock. Потеря worker не размонтирует форму: повторное присоединение возможно только при совпадении `projectId` и `record_revision`; permanently detached draft можно удалить локально без изменения project truth или recent list. Browser preview ничего не сохраняет и не является evidence persistence.
+App-level `health.sqlite` остаётся отдельной инфраструктурной диагностикой. Project truth находится только в `.irproj`: schema v2 хранит metadata и редактируемый `analyst_enrichment`; будущие `r130sh_source` и `derived_analysis` будут отдельными владельцами. Renderer хранит общий активный draft, Main — разрешённые пути, lifecycle и очередь, Python — активную ProjectSession. Потеря worker не размонтирует форму; permanently detached draft можно удалить локально без изменения project truth или recent list. Browser preview ничего не сохраняет и не является evidence persistence.

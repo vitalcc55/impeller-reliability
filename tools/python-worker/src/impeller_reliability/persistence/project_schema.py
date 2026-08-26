@@ -24,14 +24,14 @@ from impeller_reliability.persistence.sqlite_deadline import (
 from impeller_reliability.persistence.timestamps import parse_canonical_utc_timestamp
 from impeller_reliability.worker.deadline import RequestDeadline
 
-PROJECT_SCHEMA_VERSION: Final = 1
+PROJECT_SCHEMA_VERSION: Final = 2
 PROJECT_METADATA_FIELDS: Final = ("name", "projectNumber", "description", "status")
 MAX_SCHEMA_SCALAR_BYTES: Final = 4_096
 MAX_PROJECT_ID_BYTES: Final = 36
 MAX_TIMESTAMP_BYTES: Final = 24
 MAX_APPLICATION_VERSION_BYTES: Final = 64
 # Update evidence holds before+after; escaped control characters may occupy six UTF-8 bytes per input character.
-MAX_AUDIT_PAYLOAD_BYTES: Final = 2 * 6 * (200 + 100 + 4_000 + 9) + 4_096
+MAX_AUDIT_PAYLOAD_BYTES: Final = 250_000
 JSON_OBJECT_ADAPTER: Final = TypeAdapter(dict[str, JsonValue])
 STRING_LIST_ADAPTER: Final = TypeAdapter(list[str])
 METADATA_VALUES_ADAPTER: Final = TypeAdapter(dict[str, str])
@@ -62,6 +62,60 @@ CREATE TABLE project_audit_events (
 """
 PROJECT_AUDIT_NO_UPDATE_TRIGGER_SQL: Final = "CREATE TRIGGER project_audit_events_no_update BEFORE UPDATE ON project_audit_events BEGIN SELECT RAISE(ABORT, 'project_audit_append_only'); END"
 PROJECT_AUDIT_NO_DELETE_TRIGGER_SQL: Final = "CREATE TRIGGER project_audit_events_no_delete BEFORE DELETE ON project_audit_events BEGIN SELECT RAISE(ABORT, 'project_audit_append_only'); END"
+CUSTOMER_PROFILE_TABLE_SQL: Final = """
+CREATE TABLE customer_profile (
+    project_id TEXT PRIMARY KEY REFERENCES project_metadata(project_id),
+    full_name TEXT NOT NULL CHECK (length(trim(full_name)) BETWEEN 1 AND 300),
+    legal_address TEXT NOT NULL DEFAULT '' CHECK (length(legal_address) <= 1000),
+    actual_address TEXT NOT NULL DEFAULT '' CHECK (length(actual_address) <= 1000),
+    notes TEXT NOT NULL DEFAULT '' CHECK (length(notes) <= 4000),
+    record_revision INTEGER NOT NULL CHECK (record_revision >= 1),
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+)
+"""
+WHEEL_MODELS_TABLE_SQL: Final = """
+CREATE TABLE wheel_models (
+    wheel_model_id TEXT PRIMARY KEY,
+    full_name TEXT NOT NULL CHECK (length(trim(full_name)) BETWEEN 1 AND 300),
+    designation TEXT NOT NULL DEFAULT '' CHECK (length(designation) <= 200),
+    nominal_diameter_mm TEXT NULL CHECK (nominal_diameter_mm IS NULL OR length(nominal_diameter_mm) <= 64),
+    nominal_speed_rpm INTEGER NULL CHECK (nominal_speed_rpm IS NULL OR nominal_speed_rpm > 0),
+    blade_count INTEGER NULL CHECK (blade_count IS NULL OR blade_count > 0),
+    geometry_description TEXT NOT NULL DEFAULT '' CHECK (length(geometry_description) <= 4000),
+    composition_description TEXT NOT NULL DEFAULT '' CHECK (length(composition_description) <= 4000),
+    material_description TEXT NOT NULL DEFAULT '' CHECK (length(material_description) <= 4000),
+    notes TEXT NOT NULL DEFAULT '' CHECK (length(notes) <= 4000),
+    record_revision INTEGER NOT NULL CHECK (record_revision >= 1),
+    archived_at_utc TEXT NULL,
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+)
+"""
+SPECIMENS_TABLE_SQL: Final = """
+CREATE TABLE specimens (
+    specimen_id TEXT PRIMARY KEY,
+    wheel_model_id TEXT NOT NULL REFERENCES wheel_models(wheel_model_id),
+    identification_number TEXT NOT NULL CHECK (length(trim(identification_number)) BETWEEN 1 AND 200),
+    batch_number TEXT NOT NULL DEFAULT '' CHECK (length(batch_number) <= 200),
+    marking TEXT NOT NULL DEFAULT '' CHECK (length(marking) <= 500),
+    manufactured_on TEXT NULL,
+    received_on TEXT NULL,
+    working_diameter_mm TEXT NULL CHECK (working_diameter_mm IS NULL OR length(working_diameter_mm) <= 64),
+    initial_condition_notes TEXT NOT NULL DEFAULT '' CHECK (length(initial_condition_notes) <= 4000),
+    notes TEXT NOT NULL DEFAULT '' CHECK (length(notes) <= 4000),
+    record_revision INTEGER NOT NULL CHECK (record_revision >= 1),
+    archived_at_utc TEXT NULL,
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL,
+    UNIQUE(wheel_model_id, identification_number)
+)
+"""
+WHEEL_MODELS_ARCHIVED_INDEX_SQL: Final = "CREATE INDEX wheel_models_archived_idx ON wheel_models(archived_at_utc)"
+WHEEL_MODELS_NAME_INDEX_SQL: Final = "CREATE INDEX wheel_models_name_idx ON wheel_models(full_name, designation)"
+SPECIMENS_ARCHIVED_INDEX_SQL: Final = "CREATE INDEX specimens_archived_idx ON specimens(archived_at_utc)"
+SPECIMENS_MODEL_INDEX_SQL: Final = "CREATE INDEX specimens_model_idx ON specimens(wheel_model_id)"
+SPECIMENS_IDENTIFICATION_INDEX_SQL: Final = "CREATE INDEX specimens_identification_idx ON specimens(identification_number)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +133,7 @@ class PublishedSchemaContract:
 
 
 SCHEMA_V1_CONTRACT: Final = PublishedSchemaContract(
-    version=PROJECT_SCHEMA_VERSION,
+    version=1,
     objects=(
         SchemaObject("table", "schema_migrations", SCHEMA_MIGRATIONS_TABLE_SQL),
         SchemaObject("table", "project_metadata", PROJECT_METADATA_TABLE_SQL),
@@ -90,9 +144,30 @@ SCHEMA_V1_CONTRACT: Final = PublishedSchemaContract(
     migrations=((1, "create_project_container"),),
 )
 
+SCHEMA_V2_ADDITIONAL_OBJECTS: Final = (
+    SchemaObject("table", "customer_profile", CUSTOMER_PROFILE_TABLE_SQL),
+    SchemaObject("table", "wheel_models", WHEEL_MODELS_TABLE_SQL),
+    SchemaObject("table", "specimens", SPECIMENS_TABLE_SQL),
+    SchemaObject("index", "wheel_models_archived_idx", WHEEL_MODELS_ARCHIVED_INDEX_SQL),
+    SchemaObject("index", "wheel_models_name_idx", WHEEL_MODELS_NAME_INDEX_SQL),
+    SchemaObject("index", "specimens_archived_idx", SPECIMENS_ARCHIVED_INDEX_SQL),
+    SchemaObject("index", "specimens_model_idx", SPECIMENS_MODEL_INDEX_SQL),
+    SchemaObject("index", "specimens_identification_idx", SPECIMENS_IDENTIFICATION_INDEX_SQL),
+)
+SCHEMA_V2_CONTRACT: Final = PublishedSchemaContract(
+    version=2,
+    objects=SCHEMA_V1_CONTRACT.objects + SCHEMA_V2_ADDITIONAL_OBJECTS,
+    migrations=((1, "create_project_container"), (2, "create_analyst_dossier")),
+)
+
 
 def create_schema_v1_objects(connection: sqlite3.Connection) -> None:
     for schema_object in SCHEMA_V1_CONTRACT.objects:
+        connection.execute(schema_object.sql)
+
+
+def create_schema_v2_objects(connection: sqlite3.Connection) -> None:
+    for schema_object in SCHEMA_V2_ADDITIONAL_OBJECTS:
         connection.execute(schema_object.sql)
 
 
@@ -159,6 +234,7 @@ def validate_project_evidence(
     deadline: RequestDeadline | None = None,
 ) -> None:
     _check_deadline(deadline, "project_evidence_start")
+    _validate_audit_stream(connection, deadline)
     with sqlite_deadline_guard(connection, deadline, "project_evidence_metadata"):
         metadata_rows = connection.execute(
             """
@@ -207,7 +283,7 @@ def validate_project_evidence(
     event_rows = sqlite_query_rows_with_deadline(
         connection,
         """
-            SELECT sequence,
+        SELECT sequence,
                    CASE
                        WHEN typeof(event_id) = 'text'
                         AND length(CAST(event_id AS BLOB)) <= 36
@@ -234,6 +310,7 @@ def validate_project_evidence(
                        THEN payload_json
                    END
             FROM project_audit_events
+            WHERE event_type IN ('project.created', 'project.metadata_updated')
             ORDER BY sequence
             """,
         (MAX_TIMESTAMP_BYTES, MAX_AUDIT_PAYLOAD_BYTES),
@@ -255,6 +332,53 @@ def validate_project_evidence(
         raise _evidence_error()
 
 
+def _validate_audit_stream(connection: sqlite3.Connection, deadline: RequestDeadline | None) -> None:
+    allowed_events = {
+        "project.created",
+        "project.metadata_updated",
+        "customer_profile.created",
+        "customer_profile.updated",
+        "wheel_model.created",
+        "wheel_model.updated",
+        "wheel_model.archived",
+        "wheel_model.restored",
+        "specimen.created",
+        "specimen.updated",
+        "specimen.archived",
+        "specimen.restored",
+    }
+    rows = sqlite_query_rows_with_deadline(
+        connection,
+        """
+        SELECT sequence,
+               CASE WHEN typeof(event_id)='text' AND length(CAST(event_id AS BLOB)) <= 36 THEN event_id END,
+               CASE WHEN typeof(event_type)='text' AND length(CAST(event_type AS BLOB)) <= 64 THEN event_type END,
+               CASE WHEN typeof(occurred_at_utc)='text' AND length(CAST(occurred_at_utc AS BLOB)) <= ? THEN occurred_at_utc END,
+               CASE WHEN typeof(actor_kind)='text' AND length(CAST(actor_kind AS BLOB)) <= 16 THEN actor_kind END,
+               CASE WHEN typeof(payload_json)='text' AND length(CAST(payload_json AS BLOB)) <= ? THEN payload_json END
+        FROM project_audit_events ORDER BY sequence
+        """,
+        (MAX_TIMESTAMP_BYTES, MAX_AUDIT_PAYLOAD_BYTES),
+        deadline,
+        "project_audit_stream",
+    )
+    previous_at: datetime | None = None
+    with closing(rows):
+        for expected_sequence, row in enumerate(rows, start=1):
+            if _require_int(row[0]) != expected_sequence:
+                raise _evidence_error()
+            _require_event_id(row[1])
+            if str(row[2]) not in allowed_events or str(row[4]) not in {"application", "user"}:
+                raise _evidence_error()
+            event_at = _require_timestamp(str(row[3]))
+            if previous_at is not None and event_at < previous_at:
+                raise _evidence_error()
+            previous_at = event_at
+            if not isinstance(row[5], str) or len(row[5].encode("utf-8")) > MAX_AUDIT_PAYLOAD_BYTES:
+                raise _evidence_error()
+            _parse_json_object(row[5])
+
+
 def _validate_audit_rows(
     event_rows: Iterable[Sequence[object]],
     project_id: str,
@@ -265,11 +389,13 @@ def _validate_audit_rows(
     expected_revision = 0
     previous_event_at = metadata_created_at
     event_count = 0
-    for expected_sequence, row in enumerate(event_rows, start=1):
-        event_count = expected_sequence
+    previous_sequence = 0
+    for event_count, row in enumerate(event_rows, start=1):
         _check_deadline(deadline, "project_evidence_audit")
-        if _require_int(row[0]) != expected_sequence:
+        sequence = _require_int(row[0])
+        if sequence <= previous_sequence:
             raise _evidence_error()
+        previous_sequence = sequence
         _require_event_id(row[1])
         event_at = _require_timestamp(str(row[4]))
         if event_at < previous_event_at:
@@ -277,14 +403,14 @@ def _validate_audit_rows(
         if not isinstance(row[5], str):
             raise _evidence_error()
         payload = _parse_json_object(row[5])
-        if expected_sequence == 1:
+        if event_count == 1:
             if str(row[2]) != "project.created" or str(row[3]) != "application":
                 raise _evidence_error()
             if (
                 payload.get("entityType") != "project"
                 or payload.get("entityId") != project_id
                 or _require_int(payload.get("toRevision")) != 1
-                or _require_int(payload.get("schemaVersion")) != PROJECT_SCHEMA_VERSION
+                or _require_int(payload.get("schemaVersion")) != 1
                 or _require_string_list(payload.get("changedFields")) != list(PROJECT_METADATA_FIELDS)
             ):
                 raise _evidence_error()
@@ -328,6 +454,8 @@ def _validate_audit_rows(
 def _contract_for(schema_version: int) -> PublishedSchemaContract:
     if schema_version == SCHEMA_V1_CONTRACT.version:
         return SCHEMA_V1_CONTRACT
+    if schema_version == SCHEMA_V2_CONTRACT.version:
+        return SCHEMA_V2_CONTRACT
     raise ProjectOperationError(
         "corrupt_project",
         "Для версии project.sqlite отсутствует опубликованный schema contract.",
