@@ -15,6 +15,20 @@ export const workerOperationSchema = z.enum([
   'project.getOverview',
   'project.updateMetadata',
   'project.createBackup',
+  'caseCustomer.get',
+  'caseCustomer.upsert',
+  'wheelModel.create',
+  'wheelModel.list',
+  'wheelModel.get',
+  'wheelModel.update',
+  'wheelModel.archive',
+  'wheelModel.restore',
+  'specimen.create',
+  'specimen.list',
+  'specimen.get',
+  'specimen.update',
+  'specimen.archive',
+  'specimen.restore',
 ]);
 
 export type WorkerOperation = z.infer<typeof workerOperationSchema>;
@@ -107,6 +121,177 @@ export const projectBackupResultSchema = z
   })
   .strict();
 
+export const completenessWarningSchema = z.enum([
+  'customer_address_missing',
+  'wheel_nominal_diameter_missing',
+  'wheel_nominal_speed_missing',
+  'specimen_working_diameter_missing',
+]);
+const entityIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+const optionalCanonicalDecimalSchema = z
+  .union([z.string(), z.null()])
+  .transform((value, context): string | null => {
+    if (value === null || value.trim() === '') return null;
+    const normalizedInput = value.trim().replace(',', '.');
+    if (
+      normalizedInput.length > 64 ||
+      !/^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/u.test(normalizedInput) ||
+      !/[1-9]/u.test(normalizedInput)
+    ) {
+      context.addIssue({ code: 'custom', message: 'Введите положительное число.' });
+      return z.NEVER;
+    }
+    const [integer = '', fraction] = normalizedInput.split('.');
+    const normalizedInteger = integer.replace(/^0+(?=\d)/u, '') || '0';
+    const normalizedFraction = fraction?.replace(/0+$/u, '');
+    return normalizedFraction === undefined || normalizedFraction === ''
+      ? normalizedInteger
+      : `${normalizedInteger}.${normalizedFraction}`;
+  });
+const optionalDateSchema = z
+  .union([z.string(), z.null()])
+  .transform((value): string | null =>
+    value === null || value.trim() === '' ? null : value.trim(),
+  )
+  .pipe(
+    z
+      .string()
+      .regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u)
+      .refine((value) => {
+        if (value.startsWith('0000-')) return false;
+        const parsed = new Date(`${value}T00:00:00.000Z`);
+        return Number.isFinite(parsed.getTime()) && parsed.toISOString().startsWith(value);
+      })
+      .nullable(),
+  );
+
+export const customerDraftSchema = z
+  .object({
+    fullName: z.string().trim().min(1).max(300),
+    legalAddress: z.string().trim().max(1_000),
+    actualAddress: z.string().trim().max(1_000),
+    notes: z.string().trim().max(4_000),
+  })
+  .strict();
+export const customerUpsertPayloadSchema = z
+  .object({
+    expectedRevision: z.number().int().positive().nullable(),
+    customer: customerDraftSchema,
+  })
+  .strict();
+export const customerProfileSchema = customerDraftSchema
+  .extend({
+    projectId: entityIdSchema,
+    recordRevision: z.number().int().positive(),
+    createdAtUtc: canonicalUtcTimestampSchema,
+    updatedAtUtc: canonicalUtcTimestampSchema,
+    warnings: z.array(completenessWarningSchema),
+  })
+  .strict();
+export const customerGetResultSchema = z
+  .object({ customer: customerProfileSchema.nullable() })
+  .strict();
+
+export const wheelModelDraftSchema = z
+  .object({
+    fullName: z.string().trim().min(1).max(300),
+    designation: z.string().trim().max(200),
+    nominalDiameterMm: optionalCanonicalDecimalSchema,
+    nominalSpeedRpm: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
+    bladeCount: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
+    geometryDescription: z.string().trim().max(4_000),
+    compositionDescription: z.string().trim().max(4_000),
+    materialDescription: z.string().trim().max(4_000),
+    notes: z.string().trim().max(4_000),
+  })
+  .strict();
+export const wheelModelCreatePayloadSchema = wheelModelDraftSchema
+  .extend({ wheelModelId: entityIdSchema })
+  .strict();
+export const wheelModelSchema = wheelModelDraftSchema
+  .extend({
+    wheelModelId: entityIdSchema,
+    recordRevision: z.number().int().positive(),
+    archivedAtUtc: canonicalUtcTimestampSchema.nullable(),
+    createdAtUtc: canonicalUtcTimestampSchema,
+    updatedAtUtc: canonicalUtcTimestampSchema,
+    warnings: z.array(completenessWarningSchema),
+  })
+  .strict();
+export const wheelModelSummarySchema = z
+  .object({
+    wheelModelId: entityIdSchema,
+    fullName: z.string(),
+    designation: z.string(),
+    recordRevision: z.number().int().positive(),
+    archivedAtUtc: canonicalUtcTimestampSchema.nullable(),
+    warnings: z.array(completenessWarningSchema),
+  })
+  .strict();
+export const wheelModelListResultSchema = z
+  .object({ items: z.array(wheelModelSummarySchema) })
+  .strict();
+export const wheelModelListPayloadSchema = z.object({ includeArchived: z.boolean() }).strict();
+export const wheelModelIdPayloadSchema = z.object({ wheelModelId: entityIdSchema }).strict();
+export const wheelModelUpdatePayloadSchema = wheelModelIdPayloadSchema
+  .extend({ expectedRevision: z.number().int().positive(), wheelModel: wheelModelDraftSchema })
+  .strict();
+export const wheelModelRevisionPayloadSchema = wheelModelIdPayloadSchema
+  .extend({ expectedRevision: z.number().int().positive() })
+  .strict();
+
+export const specimenDraftSchema = z
+  .object({
+    wheelModelId: entityIdSchema,
+    identificationNumber: z.string().trim().min(1).max(200),
+    batchNumber: z.string().trim().max(200),
+    marking: z.string().trim().max(500),
+    manufacturedOn: optionalDateSchema,
+    receivedOn: optionalDateSchema,
+    workingDiameterMm: optionalCanonicalDecimalSchema,
+    initialConditionNotes: z.string().trim().max(4_000),
+    notes: z.string().trim().max(4_000),
+  })
+  .strict();
+export const specimenCreatePayloadSchema = specimenDraftSchema
+  .extend({ specimenId: entityIdSchema })
+  .strict();
+export const specimenSchema = specimenDraftSchema
+  .extend({
+    specimenId: entityIdSchema,
+    wheelModelName: z.string(),
+    recordRevision: z.number().int().positive(),
+    archivedAtUtc: canonicalUtcTimestampSchema.nullable(),
+    createdAtUtc: canonicalUtcTimestampSchema,
+    updatedAtUtc: canonicalUtcTimestampSchema,
+    warnings: z.array(completenessWarningSchema),
+  })
+  .strict();
+export const specimenSummarySchema = z
+  .object({
+    specimenId: entityIdSchema,
+    wheelModelId: entityIdSchema,
+    wheelModelName: z.string(),
+    identificationNumber: z.string(),
+    recordRevision: z.number().int().positive(),
+    archivedAtUtc: canonicalUtcTimestampSchema.nullable(),
+    warnings: z.array(completenessWarningSchema),
+  })
+  .strict();
+export const specimenListResultSchema = z
+  .object({ items: z.array(specimenSummarySchema) })
+  .strict();
+export const specimenListPayloadSchema = z.object({ includeArchived: z.boolean() }).strict();
+export const specimenIdPayloadSchema = z.object({ specimenId: entityIdSchema }).strict();
+export const specimenUpdatePayloadSchema = specimenIdPayloadSchema
+  .extend({ expectedRevision: z.number().int().positive(), specimen: specimenDraftSchema })
+  .strict();
+export const specimenRevisionPayloadSchema = specimenIdPayloadSchema
+  .extend({ expectedRevision: z.number().int().positive() })
+  .strict();
+
 export type EmptyWorkerPayload = z.infer<typeof emptyPayloadSchema>;
 export type HandshakeResult = z.infer<typeof handshakeResultSchema>;
 export type PingResult = z.infer<typeof pingResultSchema>;
@@ -116,6 +301,17 @@ export type ProjectStatus = z.infer<typeof projectStatusSchema>;
 export type ProjectDraft = z.infer<typeof projectDraftSchema>;
 export type ProjectOverview = z.infer<typeof projectOverviewSchema>;
 export type ProjectBackupResult = z.infer<typeof projectBackupResultSchema>;
+export type CompletenessWarning = z.infer<typeof completenessWarningSchema>;
+export type CustomerDraft = z.infer<typeof customerDraftSchema>;
+export type CustomerProfile = z.infer<typeof customerProfileSchema>;
+export type WheelModelDraft = z.infer<typeof wheelModelDraftSchema>;
+export type WheelModelCreateCommand = z.infer<typeof wheelModelCreatePayloadSchema>;
+export type WheelModel = z.infer<typeof wheelModelSchema>;
+export type WheelModelSummary = z.infer<typeof wheelModelSummarySchema>;
+export type SpecimenDraft = z.infer<typeof specimenDraftSchema>;
+export type SpecimenCreateCommand = z.infer<typeof specimenCreatePayloadSchema>;
+export type Specimen = z.infer<typeof specimenSchema>;
+export type SpecimenSummary = z.infer<typeof specimenSummarySchema>;
 
 export interface WorkerOperationMap {
   readonly 'system.handshake': {
@@ -157,6 +353,62 @@ export interface WorkerOperationMap {
   readonly 'project.createBackup': {
     readonly request: EmptyWorkerPayload;
     readonly result: ProjectBackupResult;
+  };
+  readonly 'caseCustomer.get': {
+    readonly request: EmptyWorkerPayload;
+    readonly result: z.infer<typeof customerGetResultSchema>;
+  };
+  readonly 'caseCustomer.upsert': {
+    readonly request: z.infer<typeof customerUpsertPayloadSchema>;
+    readonly result: CustomerProfile;
+  };
+  readonly 'wheelModel.create': {
+    readonly request: WheelModelCreateCommand;
+    readonly result: WheelModel;
+  };
+  readonly 'wheelModel.list': {
+    readonly request: z.infer<typeof wheelModelListPayloadSchema>;
+    readonly result: z.infer<typeof wheelModelListResultSchema>;
+  };
+  readonly 'wheelModel.get': {
+    readonly request: z.infer<typeof wheelModelIdPayloadSchema>;
+    readonly result: WheelModel;
+  };
+  readonly 'wheelModel.update': {
+    readonly request: z.infer<typeof wheelModelUpdatePayloadSchema>;
+    readonly result: WheelModel;
+  };
+  readonly 'wheelModel.archive': {
+    readonly request: z.infer<typeof wheelModelRevisionPayloadSchema>;
+    readonly result: WheelModel;
+  };
+  readonly 'wheelModel.restore': {
+    readonly request: z.infer<typeof wheelModelRevisionPayloadSchema>;
+    readonly result: WheelModel;
+  };
+  readonly 'specimen.create': {
+    readonly request: SpecimenCreateCommand;
+    readonly result: Specimen;
+  };
+  readonly 'specimen.list': {
+    readonly request: z.infer<typeof specimenListPayloadSchema>;
+    readonly result: z.infer<typeof specimenListResultSchema>;
+  };
+  readonly 'specimen.get': {
+    readonly request: z.infer<typeof specimenIdPayloadSchema>;
+    readonly result: Specimen;
+  };
+  readonly 'specimen.update': {
+    readonly request: z.infer<typeof specimenUpdatePayloadSchema>;
+    readonly result: Specimen;
+  };
+  readonly 'specimen.archive': {
+    readonly request: z.infer<typeof specimenRevisionPayloadSchema>;
+    readonly result: Specimen;
+  };
+  readonly 'specimen.restore': {
+    readonly request: z.infer<typeof specimenRevisionPayloadSchema>;
+    readonly result: Specimen;
   };
 }
 
@@ -208,6 +460,54 @@ export const workerRequestSchema = z.discriminatedUnion('operation', [
   requestBaseSchema
     .extend({ operation: z.literal('project.createBackup'), payload: emptyPayloadSchema })
     .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('caseCustomer.get'), payload: emptyPayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('caseCustomer.upsert'), payload: customerUpsertPayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('wheelModel.create'), payload: wheelModelCreatePayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('wheelModel.list'), payload: wheelModelListPayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('wheelModel.get'), payload: wheelModelIdPayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('wheelModel.update'), payload: wheelModelUpdatePayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('wheelModel.archive'),
+      payload: wheelModelRevisionPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('wheelModel.restore'),
+      payload: wheelModelRevisionPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('specimen.create'), payload: specimenCreatePayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('specimen.list'), payload: specimenListPayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('specimen.get'), payload: specimenIdPayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('specimen.update'), payload: specimenUpdatePayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('specimen.archive'), payload: specimenRevisionPayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('specimen.restore'), payload: specimenRevisionPayloadSchema })
+    .strict(),
 ]);
 
 export const workerErrorSchema = z
@@ -224,6 +524,10 @@ export const workerErrorSchema = z
       'corrupt_project',
       'incompatible_schema',
       'revision_conflict',
+      'entity_not_found',
+      'entity_archived',
+      'entity_in_use',
+      'duplicate_entity',
       'internal_error',
     ]),
     message: z.string(),
@@ -262,6 +566,16 @@ export const projectCloseSuccessResponseSchema =
   createSuccessResponseSchema(projectCloseResultSchema);
 export const projectBackupSuccessResponseSchema =
   createSuccessResponseSchema(projectBackupResultSchema);
+export const customerGetSuccessResponseSchema =
+  createSuccessResponseSchema(customerGetResultSchema);
+export const customerSuccessResponseSchema = createSuccessResponseSchema(customerProfileSchema);
+export const wheelModelSuccessResponseSchema = createSuccessResponseSchema(wheelModelSchema);
+export const wheelModelListSuccessResponseSchema = createSuccessResponseSchema(
+  wheelModelListResultSchema,
+);
+export const specimenSuccessResponseSchema = createSuccessResponseSchema(specimenSchema);
+export const specimenListSuccessResponseSchema =
+  createSuccessResponseSchema(specimenListResultSchema);
 export const workerErrorResponseSchema = responseBaseSchema
   .extend({
     ok: z.literal(false),
@@ -291,6 +605,24 @@ const projectBackupResponseSchema = z.union([
   projectBackupSuccessResponseSchema,
   workerErrorResponseSchema,
 ]);
+const customerGetResponseSchema = z.union([
+  customerGetSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const customerResponseSchema = z.union([customerSuccessResponseSchema, workerErrorResponseSchema]);
+const wheelModelResponseSchema = z.union([
+  wheelModelSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const wheelModelListResponseSchema = z.union([
+  wheelModelListSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const specimenResponseSchema = z.union([specimenSuccessResponseSchema, workerErrorResponseSchema]);
+const specimenListResponseSchema = z.union([
+  specimenListSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
 
 export type WorkerRequest = z.infer<typeof workerRequestSchema>;
 export type WorkerErrorResponse = z.infer<typeof workerErrorResponseSchema>;
@@ -306,6 +638,20 @@ export interface WorkerResponseMap {
   readonly 'project.getOverview': z.infer<typeof projectOverviewResponseSchema>;
   readonly 'project.updateMetadata': z.infer<typeof projectOverviewResponseSchema>;
   readonly 'project.createBackup': z.infer<typeof projectBackupResponseSchema>;
+  readonly 'caseCustomer.get': z.infer<typeof customerGetResponseSchema>;
+  readonly 'caseCustomer.upsert': z.infer<typeof customerResponseSchema>;
+  readonly 'wheelModel.create': z.infer<typeof wheelModelResponseSchema>;
+  readonly 'wheelModel.list': z.infer<typeof wheelModelListResponseSchema>;
+  readonly 'wheelModel.get': z.infer<typeof wheelModelResponseSchema>;
+  readonly 'wheelModel.update': z.infer<typeof wheelModelResponseSchema>;
+  readonly 'wheelModel.archive': z.infer<typeof wheelModelResponseSchema>;
+  readonly 'wheelModel.restore': z.infer<typeof wheelModelResponseSchema>;
+  readonly 'specimen.create': z.infer<typeof specimenResponseSchema>;
+  readonly 'specimen.list': z.infer<typeof specimenListResponseSchema>;
+  readonly 'specimen.get': z.infer<typeof specimenResponseSchema>;
+  readonly 'specimen.update': z.infer<typeof specimenResponseSchema>;
+  readonly 'specimen.archive': z.infer<typeof specimenResponseSchema>;
+  readonly 'specimen.restore': z.infer<typeof specimenResponseSchema>;
 }
 
 export type WorkerResponseFor<TOperation extends WorkerOperation> = WorkerResponseMap[TOperation];
@@ -371,6 +717,26 @@ export function parseWorkerResponse(operation: WorkerOperation, input: unknown):
       return projectCloseResponseSchema.parse(input);
     case 'project.createBackup':
       return projectBackupResponseSchema.parse(input);
+    case 'caseCustomer.get':
+      return customerGetResponseSchema.parse(input);
+    case 'caseCustomer.upsert':
+      return customerResponseSchema.parse(input);
+    case 'wheelModel.create':
+    case 'wheelModel.get':
+    case 'wheelModel.update':
+    case 'wheelModel.archive':
+    case 'wheelModel.restore':
+      return wheelModelResponseSchema.parse(input);
+    case 'wheelModel.list':
+      return wheelModelListResponseSchema.parse(input);
+    case 'specimen.create':
+    case 'specimen.get':
+    case 'specimen.update':
+    case 'specimen.archive':
+    case 'specimen.restore':
+      return specimenResponseSchema.parse(input);
+    case 'specimen.list':
+      return specimenListResponseSchema.parse(input);
   }
 }
 
@@ -402,6 +768,10 @@ export const desktopErrorSchema = z
       'corrupt_project',
       'incompatible_schema',
       'revision_conflict',
+      'entity_not_found',
+      'entity_archived',
+      'entity_in_use',
+      'duplicate_entity',
       'operation_in_progress',
       'storage_error',
       'worker_unavailable',
@@ -440,6 +810,11 @@ export type ProjectMetadataCommand = {
   readonly expectedRevision: number;
   readonly metadata: ProjectDraft;
 };
+export type CustomerUpsertCommand = z.infer<typeof customerUpsertPayloadSchema>;
+export type WheelModelUpdateCommand = z.infer<typeof wheelModelUpdatePayloadSchema>;
+export type WheelModelRevisionCommand = z.infer<typeof wheelModelRevisionPayloadSchema>;
+export type SpecimenUpdateCommand = z.infer<typeof specimenUpdatePayloadSchema>;
+export type SpecimenRevisionCommand = z.infer<typeof specimenRevisionPayloadSchema>;
 
 export interface ImpellerApi {
   readonly system: {
@@ -462,5 +837,25 @@ export interface ImpellerApi {
     updateMetadata(command: ProjectMetadataCommand): Promise<DesktopResult<ProjectOverview>>;
     createBackup(): Promise<DesktopResult<ProjectBackupResult>>;
     listRecent(): Promise<DesktopResult<readonly RecentProject[]>>;
+  };
+  readonly caseCustomer: {
+    get(): Promise<DesktopResult<CustomerProfile | null>>;
+    upsert(command: CustomerUpsertCommand): Promise<DesktopResult<CustomerProfile>>;
+  };
+  readonly wheelModel: {
+    create(command: WheelModelCreateCommand): Promise<DesktopResult<WheelModel>>;
+    list(includeArchived: boolean): Promise<DesktopResult<readonly WheelModelSummary[]>>;
+    get(wheelModelId: string): Promise<DesktopResult<WheelModel>>;
+    update(command: WheelModelUpdateCommand): Promise<DesktopResult<WheelModel>>;
+    archive(command: WheelModelRevisionCommand): Promise<DesktopResult<WheelModel>>;
+    restore(command: WheelModelRevisionCommand): Promise<DesktopResult<WheelModel>>;
+  };
+  readonly specimen: {
+    create(command: SpecimenCreateCommand): Promise<DesktopResult<Specimen>>;
+    list(includeArchived: boolean): Promise<DesktopResult<readonly SpecimenSummary[]>>;
+    get(specimenId: string): Promise<DesktopResult<Specimen>>;
+    update(command: SpecimenUpdateCommand): Promise<DesktopResult<Specimen>>;
+    archive(command: SpecimenRevisionCommand): Promise<DesktopResult<Specimen>>;
+    restore(command: SpecimenRevisionCommand): Promise<DesktopResult<Specimen>>;
   };
 }

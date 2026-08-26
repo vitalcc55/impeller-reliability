@@ -665,7 +665,7 @@ def test_oversized_audit_payload_is_rejected_before_json_materialization(
     service.close()
     with _database(project_path) as connection:
         payload = json.loads(str(connection.execute("SELECT payload_json FROM project_audit_events WHERE sequence = 1").fetchone()[0]))
-        payload["padding"] = "A" * 100_000
+        payload["padding"] = "A" * 300_000
         connection.execute("DROP TRIGGER project_audit_events_no_update")
         connection.execute(
             "UPDATE project_audit_events SET payload_json = ? WHERE sequence = 1",
@@ -999,7 +999,7 @@ def test_backup_precedes_forward_migration(tmp_path: Path) -> None:
     service.close()
     manifest = json.loads((project_path / "project-manifest.json").read_text(encoding="utf-8"))
 
-    def migration_0002(
+    def migration_0003(
         connection: sqlite3.Connection,
         _manifest: object,
         _initial_metadata: object,
@@ -1009,14 +1009,14 @@ def test_backup_precedes_forward_migration(tmp_path: Path) -> None:
     from impeller_reliability.persistence.project_manifest import ProjectManifest
 
     parsed_manifest = ProjectManifest.model_validate(manifest)
-    migrator = ProjectMigrator((*MIGRATIONS, Migration(2, "marker", migration_0002)))
+    migrator = ProjectMigrator((*MIGRATIONS, Migration(3, "marker", migration_0003)))
     with _database(project_path) as connection:
         backup_path = migrator.migrate_existing(connection, project_path / "project.sqlite", project_path / "backups", parsed_manifest)
-        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == 2
+        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == 3
         assert connection.execute("SELECT name FROM sqlite_master WHERE name = 'migration_marker'").fetchone() is not None
     assert backup_path is not None and backup_path.is_file()
     with closing(sqlite3.connect(backup_path)) as backup:
-        assert int(backup.execute("PRAGMA user_version").fetchone()[0]) == 1
+        assert int(backup.execute("PRAGMA user_version").fetchone()[0]) == 2
         assert str(backup.execute("PRAGMA quick_check").fetchone()[0]) == "ok"
 
 
@@ -1034,7 +1034,7 @@ def test_failed_migration_rolls_back_and_keeps_verified_backup(tmp_path: Path) -
         connection.execute("CREATE TABLE should_rollback (value TEXT NOT NULL)")
         raise RuntimeError("migration failed")
 
-    migrator = ProjectMigrator((*MIGRATIONS, Migration(2, "broken", broken_migration)))
+    migrator = ProjectMigrator((*MIGRATIONS, Migration(3, "broken", broken_migration)))
     with _database(project_path) as connection, pytest.raises(RuntimeError, match="migration failed"):
         migrator.migrate_existing(
             connection,
@@ -1043,7 +1043,7 @@ def test_failed_migration_rolls_back_and_keeps_verified_backup(tmp_path: Path) -
             read_manifest(project_path / "project-manifest.json"),
         )
     with _database(project_path) as connection:
-        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == 1
+        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == 2
         assert connection.execute("SELECT name FROM sqlite_master WHERE name = 'should_rollback'").fetchone() is None
     assert len(list((project_path / "backups").glob("*.sqlite"))) == 1
 

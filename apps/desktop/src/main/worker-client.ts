@@ -87,6 +87,76 @@ export const WORKER_OPERATION_POLICIES = {
     transportTimeoutMs: 28_000,
     terminateWorkerOnTimeout: true,
   },
+  'caseCustomer.get': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'caseCustomer.upsert': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'wheelModel.create': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'wheelModel.list': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'wheelModel.get': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'wheelModel.update': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'wheelModel.archive': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'wheelModel.restore': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'specimen.create': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'specimen.list': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'specimen.get': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'specimen.update': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'specimen.archive': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'specimen.restore': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
 } as const satisfies Readonly<Record<WorkerOperation, WorkerOperationPolicy>>;
 
 export interface WorkerLifecycleEvent {
@@ -186,6 +256,10 @@ export class WorkerClient {
     operation: 'project.createBackup',
     payload: WorkerOperationMap['project.createBackup']['request'],
   ): Promise<WorkerResponseFor<'project.createBackup'>>;
+  public request<TOperation extends WorkerOperation>(
+    operation: TOperation,
+    payload: WorkerOperationMap[TOperation]['request'],
+  ): Promise<WorkerResponseFor<TOperation>>;
   public request(
     operation: WorkerOperation,
     payload: WorkerOperationMap[WorkerOperation]['request'],

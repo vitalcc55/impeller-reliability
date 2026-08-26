@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   parseWorkerResponse,
+  customerUpsertPayloadSchema,
   projectBackupResultSchema,
   projectOverviewSchema,
   runtimeStatusSchema,
+  specimenDraftSchema,
+  wheelModelDraftSchema,
   workerRequestSchema,
 } from './index';
 
@@ -146,6 +149,102 @@ describe('worker contracts', () => {
       projectOverviewSchema.safeParse({
         ...overview,
         createdWithApplicationVersion: '🚀'.repeat(33),
+      }).success,
+    ).toBe(false);
+  });
+
+  it('normalizes analyst dossier values and keeps incomplete fields optional', () => {
+    expect(
+      wheelModelDraftSchema.parse({
+        fullName: ' Модель ',
+        designation: '',
+        nominalDiameterMm: '0500,5000',
+        nominalSpeedRpm: null,
+        bladeCount: null,
+        geometryDescription: '',
+        compositionDescription: '',
+        materialDescription: '',
+        notes: '',
+      }).nominalDiameterMm,
+    ).toBe('500.5');
+    expect(
+      specimenDraftSchema.parse({
+        wheelModelId: '113ec2c8-9439-4ce8-823d-3e2b0de8f001',
+        identificationNumber: ' SN-1 ',
+        batchNumber: '',
+        marking: '',
+        manufacturedOn: '',
+        receivedOn: null,
+        workingDiameterMm: '',
+        initialConditionNotes: '',
+        notes: '',
+      }),
+    ).toMatchObject({
+      identificationNumber: 'SN-1',
+      manufacturedOn: null,
+      workingDiameterMm: null,
+    });
+    expect(
+      customerUpsertPayloadSchema.parse({
+        expectedRevision: null,
+        customer: { fullName: ' Заказчик ', legalAddress: '', actualAddress: '', notes: '' },
+      }).customer.fullName,
+    ).toBe('Заказчик');
+  });
+
+  it('rejects invalid dossier dates and entity-specific response shapes', () => {
+    expect(
+      specimenDraftSchema.safeParse({
+        wheelModelId: '113ec2c8-9439-4ce8-823d-3e2b0de8f001',
+        identificationNumber: 'SN-1',
+        batchNumber: '',
+        marking: '',
+        manufacturedOn: '2026-02-30',
+        receivedOn: null,
+        workingDiameterMm: null,
+        initialConditionNotes: '',
+        notes: '',
+      }).success,
+    ).toBe(false);
+    expect(() =>
+      parseWorkerResponse('wheelModel.create', {
+        protocolVersion: 1,
+        requestId: 'wheel-1',
+        revision: 1,
+        kind: 'response',
+        ok: true,
+        result: { specimenId: 'wrong-result' },
+        evidence: {},
+        warnings: [],
+      }),
+    ).toThrow();
+  });
+
+  it('uses the same exact dossier scalar contract as the Python boundary', () => {
+    expect(
+      wheelModelDraftSchema.safeParse({
+        fullName: 'Модель',
+        designation: '',
+        nominalDiameterMm: '1e100',
+        nominalSpeedRpm: null,
+        bladeCount: null,
+        geometryDescription: '',
+        compositionDescription: '',
+        materialDescription: '',
+        notes: '',
+      }).success,
+    ).toBe(false);
+    expect(
+      specimenDraftSchema.safeParse({
+        wheelModelId: '113ec2c8-9439-7ce8-823d-3e2b0de8f001',
+        identificationNumber: 'SN-1',
+        batchNumber: '',
+        marking: '',
+        manufacturedOn: '0000-01-01',
+        receivedOn: null,
+        workingDiameterMm: null,
+        initialConditionNotes: '',
+        notes: '',
       }).success,
     ).toBe(false);
   });

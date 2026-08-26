@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 from uuid import uuid4
 
+from impeller_reliability.persistence.analyst_dossier import CustomerProfile, Specimen, WheelModel
 from impeller_reliability.persistence.project_database import (
     ProjectMetadataSeed,
     ProjectMigrator,
@@ -190,6 +191,42 @@ class ProjectService:
         deadline: RequestDeadline | None = None,
     ) -> tuple[Path, str, str]:
         return self._require_session().create_backup(deadline=deadline)
+
+    def get_customer(self, deadline: RequestDeadline | None = None) -> CustomerProfile | None:
+        return self._require_session().get_customer(deadline)
+
+    def upsert_customer(self, *, expected_revision: int | None, values: dict[str, object], deadline: RequestDeadline | None) -> CustomerProfile:
+        return self._require_session().upsert_customer(expected_revision=expected_revision, values=values, deadline=deadline)
+
+    def create_wheel(self, values: dict[str, object], deadline: RequestDeadline | None) -> WheelModel:
+        return self._require_session().create_wheel(values, deadline)
+
+    def list_wheels(self, include_archived: bool, deadline: RequestDeadline | None = None) -> tuple[WheelModel, ...]:
+        return self._require_session().list_wheels(include_archived, deadline)
+
+    def get_wheel(self, wheel_id: str, deadline: RequestDeadline | None = None) -> WheelModel:
+        return self._require_session().get_wheel(wheel_id, deadline)
+
+    def update_wheel(self, wheel_id: str, expected_revision: int, values: dict[str, object], deadline: RequestDeadline | None) -> WheelModel:
+        return self._require_session().update_wheel(wheel_id, expected_revision, values, deadline)
+
+    def set_wheel_archived(self, wheel_id: str, expected_revision: int, archived: bool, deadline: RequestDeadline | None) -> WheelModel:
+        return self._require_session().set_wheel_archived(wheel_id, expected_revision, archived, deadline)
+
+    def create_specimen(self, values: dict[str, object], deadline: RequestDeadline | None) -> Specimen:
+        return self._require_session().create_specimen(values, deadline)
+
+    def list_specimens(self, include_archived: bool, deadline: RequestDeadline | None = None) -> tuple[Specimen, ...]:
+        return self._require_session().list_specimens(include_archived, deadline)
+
+    def get_specimen(self, specimen_id: str, deadline: RequestDeadline | None = None) -> Specimen:
+        return self._require_session().get_specimen(specimen_id, deadline)
+
+    def update_specimen(self, specimen_id: str, expected_revision: int, values: dict[str, object], deadline: RequestDeadline | None) -> Specimen:
+        return self._require_session().update_specimen(specimen_id, expected_revision, values, deadline)
+
+    def set_specimen_archived(self, specimen_id: str, expected_revision: int, archived: bool, deadline: RequestDeadline | None) -> Specimen:
+        return self._require_session().set_specimen_archived(specimen_id, expected_revision, archived, deadline)
 
     def close(self, *, deadline: RequestDeadline | None = None) -> bool:
         _check_deadline(deadline, "project_close")

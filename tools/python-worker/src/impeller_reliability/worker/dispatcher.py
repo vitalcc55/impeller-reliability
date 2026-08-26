@@ -6,6 +6,10 @@ from impeller_reliability import __version__
 from impeller_reliability.application.project_service import ProjectService
 from impeller_reliability.persistence.sqlite_health import SCHEMA_VERSION, check_storage
 from impeller_reliability.protocol.envelopes import (
+    CustomerGetRequest,
+    CustomerGetResult,
+    CustomerProfileResult,
+    CustomerUpsertRequest,
     HandshakeRequest,
     HandshakeResult,
     Operation,
@@ -23,10 +27,28 @@ from impeller_reliability.protocol.envelopes import (
     RequestEnvelope,
     ShutdownRequest,
     ShutdownResult,
+    SpecimenArchiveRequest,
+    SpecimenCreateRequest,
+    SpecimenGetRequest,
+    SpecimenListRequest,
+    SpecimenListResult,
+    SpecimenRestoreRequest,
+    SpecimenResult,
+    SpecimenSummaryResult,
+    SpecimenUpdateRequest,
     StorageHealthRequest,
     StorageHealthResult,
     SuccessResponse,
     SuccessResponseType,
+    WheelModelArchiveRequest,
+    WheelModelCreateRequest,
+    WheelModelGetRequest,
+    WheelModelListRequest,
+    WheelModelListResult,
+    WheelModelRestoreRequest,
+    WheelModelResult,
+    WheelModelSummaryResult,
+    WheelModelUpdateRequest,
 )
 from impeller_reliability.worker.deadline import RequestDeadline
 
@@ -41,6 +63,20 @@ CAPABILITIES: list[Operation] = [
     "project.getOverview",
     "project.updateMetadata",
     "project.createBackup",
+    "caseCustomer.get",
+    "caseCustomer.upsert",
+    "wheelModel.create",
+    "wheelModel.list",
+    "wheelModel.get",
+    "wheelModel.update",
+    "wheelModel.archive",
+    "wheelModel.restore",
+    "specimen.create",
+    "specimen.list",
+    "specimen.get",
+    "specimen.update",
+    "specimen.archive",
+    "specimen.restore",
 ]
 
 
@@ -144,6 +180,54 @@ class Dispatcher:
                     revision=request.revision,
                     result=ProjectBackupResult(fileName=backup_path.name, sha256=sha256, createdAtUtc=created_at),
                 )
+            case CustomerGetRequest():
+                customer = self._projects.get_customer(active_deadline)
+                return SuccessResponse[CustomerGetResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=CustomerGetResult(customer=None if customer is None else self._customer_result(customer)),
+                )
+            case CustomerUpsertRequest():
+                customer = self._projects.upsert_customer(
+                    expected_revision=request.payload.expectedRevision,
+                    values=request.payload.customer.model_dump(mode="python"),
+                    deadline=active_deadline,
+                )
+                return SuccessResponse[CustomerProfileResult](requestId=request.requestId, revision=request.revision, result=self._customer_result(customer))
+            case WheelModelCreateRequest():
+                wheel = self._projects.create_wheel(request.payload.model_dump(mode="python"), active_deadline)
+                return SuccessResponse[WheelModelResult](requestId=request.requestId, revision=request.revision, result=self._wheel_result(wheel))
+            case WheelModelListRequest():
+                wheels = self._projects.list_wheels(request.payload.includeArchived, active_deadline)
+                return SuccessResponse[WheelModelListResult](requestId=request.requestId, revision=request.revision, result=WheelModelListResult(items=[self._wheel_summary(item) for item in wheels]))
+            case WheelModelGetRequest():
+                return SuccessResponse[WheelModelResult](
+                    requestId=request.requestId, revision=request.revision, result=self._wheel_result(self._projects.get_wheel(request.payload.wheelModelId, active_deadline))
+                )
+            case WheelModelUpdateRequest():
+                wheel = self._projects.update_wheel(request.payload.wheelModelId, request.payload.expectedRevision, request.payload.wheelModel.model_dump(mode="python"), active_deadline)
+                return SuccessResponse[WheelModelResult](requestId=request.requestId, revision=request.revision, result=self._wheel_result(wheel))
+            case WheelModelArchiveRequest() | WheelModelRestoreRequest():
+                wheel = self._projects.set_wheel_archived(request.payload.wheelModelId, request.payload.expectedRevision, isinstance(request, WheelModelArchiveRequest), active_deadline)
+                return SuccessResponse[WheelModelResult](requestId=request.requestId, revision=request.revision, result=self._wheel_result(wheel))
+            case SpecimenCreateRequest():
+                specimen = self._projects.create_specimen(request.payload.model_dump(mode="python"), active_deadline)
+                return SuccessResponse[SpecimenResult](requestId=request.requestId, revision=request.revision, result=self._specimen_result(specimen))
+            case SpecimenListRequest():
+                specimens = self._projects.list_specimens(request.payload.includeArchived, active_deadline)
+                return SuccessResponse[SpecimenListResult](
+                    requestId=request.requestId, revision=request.revision, result=SpecimenListResult(items=[self._specimen_summary(item) for item in specimens])
+                )
+            case SpecimenGetRequest():
+                return SuccessResponse[SpecimenResult](
+                    requestId=request.requestId, revision=request.revision, result=self._specimen_result(self._projects.get_specimen(request.payload.specimenId, active_deadline))
+                )
+            case SpecimenUpdateRequest():
+                specimen = self._projects.update_specimen(request.payload.specimenId, request.payload.expectedRevision, request.payload.specimen.model_dump(mode="python"), active_deadline)
+                return SuccessResponse[SpecimenResult](requestId=request.requestId, revision=request.revision, result=self._specimen_result(specimen))
+            case SpecimenArchiveRequest() | SpecimenRestoreRequest():
+                specimen = self._projects.set_specimen_archived(request.payload.specimenId, request.payload.expectedRevision, isinstance(request, SpecimenArchiveRequest), active_deadline)
+                return SuccessResponse[SpecimenResult](requestId=request.requestId, revision=request.revision, result=self._specimen_result(specimen))
 
     def close(self) -> None:
         self._projects.close()
@@ -170,4 +254,102 @@ class Dispatcher:
                 createdWithApplicationVersion=overview.created_with_application_version,
                 schemaVersion=overview.schema_version,
             ),
+        )
+
+    @staticmethod
+    def _customer_result(customer: object) -> CustomerProfileResult:
+        from impeller_reliability.persistence.analyst_dossier import CustomerProfile
+
+        if not isinstance(customer, CustomerProfile):
+            raise AssertionError("invalid_customer")
+        return CustomerProfileResult(
+            projectId=customer.project_id,
+            fullName=customer.full_name,
+            legalAddress=customer.legal_address,
+            actualAddress=customer.actual_address,
+            notes=customer.notes,
+            recordRevision=customer.record_revision,
+            createdAtUtc=customer.created_at_utc,
+            updatedAtUtc=customer.updated_at_utc,
+            warnings=list(customer.warnings),
+        )
+
+    @staticmethod
+    def _wheel_result(wheel: object) -> WheelModelResult:
+        from impeller_reliability.persistence.analyst_dossier import WheelModel
+
+        if not isinstance(wheel, WheelModel):
+            raise AssertionError("invalid_wheel")
+        return WheelModelResult(
+            wheelModelId=wheel.wheel_model_id,
+            fullName=wheel.full_name,
+            designation=wheel.designation,
+            nominalDiameterMm=wheel.nominal_diameter_mm,
+            nominalSpeedRpm=wheel.nominal_speed_rpm,
+            bladeCount=wheel.blade_count,
+            geometryDescription=wheel.geometry_description,
+            compositionDescription=wheel.composition_description,
+            materialDescription=wheel.material_description,
+            notes=wheel.notes,
+            recordRevision=wheel.record_revision,
+            archivedAtUtc=wheel.archived_at_utc,
+            createdAtUtc=wheel.created_at_utc,
+            updatedAtUtc=wheel.updated_at_utc,
+            warnings=list(wheel.warnings),
+        )
+
+    @staticmethod
+    def _wheel_summary(wheel: object) -> WheelModelSummaryResult:
+        from impeller_reliability.persistence.analyst_dossier import WheelModel
+
+        if not isinstance(wheel, WheelModel):
+            raise AssertionError("invalid_wheel")
+        return WheelModelSummaryResult(
+            wheelModelId=wheel.wheel_model_id,
+            fullName=wheel.full_name,
+            designation=wheel.designation,
+            recordRevision=wheel.record_revision,
+            archivedAtUtc=wheel.archived_at_utc,
+            warnings=list(wheel.warnings),
+        )
+
+    @staticmethod
+    def _specimen_result(specimen: object) -> SpecimenResult:
+        from impeller_reliability.persistence.analyst_dossier import Specimen
+
+        if not isinstance(specimen, Specimen):
+            raise AssertionError("invalid_specimen")
+        return SpecimenResult(
+            specimenId=specimen.specimen_id,
+            wheelModelId=specimen.wheel_model_id,
+            wheelModelName=specimen.wheel_model_name,
+            identificationNumber=specimen.identification_number,
+            batchNumber=specimen.batch_number,
+            marking=specimen.marking,
+            manufacturedOn=specimen.manufactured_on,
+            receivedOn=specimen.received_on,
+            workingDiameterMm=specimen.working_diameter_mm,
+            initialConditionNotes=specimen.initial_condition_notes,
+            notes=specimen.notes,
+            recordRevision=specimen.record_revision,
+            archivedAtUtc=specimen.archived_at_utc,
+            createdAtUtc=specimen.created_at_utc,
+            updatedAtUtc=specimen.updated_at_utc,
+            warnings=list(specimen.warnings),
+        )
+
+    @staticmethod
+    def _specimen_summary(specimen: object) -> SpecimenSummaryResult:
+        from impeller_reliability.persistence.analyst_dossier import Specimen
+
+        if not isinstance(specimen, Specimen):
+            raise AssertionError("invalid_specimen")
+        return SpecimenSummaryResult(
+            specimenId=specimen.specimen_id,
+            wheelModelId=specimen.wheel_model_id,
+            wheelModelName=specimen.wheel_model_name,
+            identificationNumber=specimen.identification_number,
+            recordRevision=specimen.record_revision,
+            archivedAtUtc=specimen.archived_at_utc,
+            warnings=list(specimen.warnings),
         )
