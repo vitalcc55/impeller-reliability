@@ -1,7 +1,9 @@
 # Domain Model
 
-`Project` агрегирует `Customer`, `WheelModel`, `Specimen`, `TestCampaign`, исследования и audit. Кампания содержит `TestPlan`/revisions, `ImportedTestRun`/revisions, `AnalysisSnapshot` и `ReportRelease`. Все основные сущности имеют UUID/ULID. Application, worker, protocol, database, algorithms, reference data и report templates версионируются независимо.
+`Project` — аналитическое дело Impeller Reliability. Оно агрегирует редактируемый `analyst_enrichment` (`CustomerProfile`, `WheelModel`, `Specimen`), будущий неизменяемый `r130sh_source`, производный `derived_analysis` и audit. `TestCampaign` в будущем будет только downstream-группировкой импортированных запусков. Impeller Reliability не имеет собственного исполняемого `TestPlan`.
 
-В M02.1 `Project` представлен контейнером `.irproj` и единственной строкой `project_metadata`: UUID, название, номер, описание, статус, `record_revision`, даты и версия создавшего приложения. Начальные нормализованные metadata и `project.created` создаются атомарно. Реальное изменение metadata и `project.metadata_updated` также атомарны; audit перечисляет только изменённые поля и их `before`/`after`, а no-op не создаёт новую ревизию. `project_audit_events` append-only и не заменяет текущее состояние `project_metadata`; Customer, WheelModel, Specimen, TestCampaign и SourceDocument появляются только в M02.2.
+`ImportedRunPlanSnapshot` — неизменяемый original/effective plan из будущего `.r130run`; его владельцем остаётся R130SH. `AnalysisInputSnapshot` фиксирует выбранные source/enrichment values конкретного анализа. `CalculationSnapshot` фиксирует входной hash, алгоритм, evidence, warnings и результат вычисления.
+
+В M02.1 `Project` представлен контейнером `.irproj` и строкой `project_metadata`. M02.2A расширяет `analyst_enrichment` одной карточкой `customer_profile`, каталогом `wheel_models` и каталогом физических `specimens`. Все изменяемые записи используют optimistic revision; реальное изменение и append-only audit атомарны, no-op не создаёт revision или event.
 
 App-level `health.sqlite` продолжает содержать только инфраструктурную `schema_info` и не является частью Project.

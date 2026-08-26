@@ -32,3 +32,10 @@
 | Permanently detached workspace exit | confirmed Renderer-only local discard | Electron E2E moved-project recovery |
 | Published project schema integrity | exact schema objects/triggers/migration ledger before lock and WAL | pytest mutation integration |
 | Canonical UTC project timestamps | Python manifest/schema/evidence validation + Zod/Pydantic boundary | pytest mutation + Vitest contract |
+| Analyst dossier separation | `analyst_enrichment` Customer/WheelModel/Specimen; no R130SH plan owner | owner-doc review + schema/IPC tests |
+| Schema v1 → v2 | verified backup + forward migration `0002` + semantic validation | pytest migration/rollback/reopen |
+| Optimistic dossier revisions | expected revision; no-op leaves revision/audit unchanged | pytest + Electron E2E |
+| Reversible archive invariants | archived model/specimen rules without hard delete | pytest domain/integration |
+| Incomplete dossier warnings | non-blocking entity warnings without readiness score | pytest + UI/E2E |
+| Shared draft lifecycle | one draft-owner contract across metadata/customer/model/specimen | Vitest + Electron E2E |
+| Dossier persistence packaged | customer/model/specimen close/reopen | win-unpacked + portable smoke |

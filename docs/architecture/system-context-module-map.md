@@ -23,14 +23,14 @@ TypeScript: "TypeScript packages" {
 
 Worker: "tools/python-worker" {
   Protocol: "operation-specific Pydantic JSONL envelopes"
-  Domain: "Future domain rules and calculations"
+  Domain: "M02.2A analyst enrichment; future calculations"
   Persistence: "sqlite3, migrations, repositories"
   Integration: "Future R130SH result import"
 }
 
 Project: "*.irproj — M02.1 container" {
   Manifest: "project-manifest.json: container identity"
-  Database: "project.sqlite: metadata, migrations, audit" { shape: cylinder }
+  Database: "project.sqlite: metadata, analyst enrichment, migrations, audit" { shape: cylinder }
   Lock: ".project.lock: OS-held session lock"
   Assets: "assets/documents (empty until M02.2)"
   Backups: "verified SQLite backups"
@@ -56,4 +56,4 @@ R130SH -> RunPackage
 RunPackage -> Desktop.Main
 ```
 
-M02.1 реализует container/manifest, ProjectSession, OS lock, schema v1, migration backup, metadata revision и append-only audit. Customer/WheelModel/Specimen/TestCampaign/SourceDocument, предметные модули и входной пакет результата R130SH остаются будущими границами, а не заглушками.
+M02.2A добавляет только редактируемые CustomerProfile/WheelModel/Specimen в `analyst_enrichment` schema v2. R130SH остаётся владельцем будущей package schema, первичных фактов и `ImportedRunPlanSnapshot`; `TestCampaign` будет downstream-группировкой импортов. SourceDocument, importer и расчётные модули остаются будущими границами, а не заглушками.

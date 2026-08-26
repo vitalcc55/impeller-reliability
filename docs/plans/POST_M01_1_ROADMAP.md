@@ -6,17 +6,21 @@
 
 M02.1 создаёт устойчивый контейнер и сессию проекта: `.irproj`, manifest, `project.sqlite`, OS-held lock, forward-only migrations с backup, Project metadata и append-only audit. Точный текущий контракт принадлежит `M02_1_PROJECT_CONTAINER.md`; `health.sqlite` остаётся отдельной app-level диагностикой.
 
-M02.2 отдельной вертикалью добавляет Customer, WheelModel, Specimen, TestCampaign и SourceDocument. Эти сущности и их каталоги не создаются заранее в M02.1.
+M02.2A добавляет только analyst dossier: CustomerProfile, WheelModel и Specimen в редактируемом `analyst_enrichment`. M02.2B отдельно добавляет нормативные источники и project documents. `TestCampaign` появляется позднее только как downstream-группировка импортированных запусков.
 
 Одновременно расширяются существующие owners требований, domain model, glossary и traceability. Новые параллельные спецификации не создаются.
 
-## M03 — входной результат R130SH
+## R130SH M0/M1 — frozen vocabulary и examples
 
-После получения реального обезличенного экспорта R130SH фиксируются входная schema, positive/negative fixtures, canonical hashing и importer Impeller Reliability. Вертикаль: независимый результат R130SH → безопасный staging → immutable import → привязка к проекту/образцу → повторное открытие. Прямое чтение SQLite R130SH, исходящий план и управление стендом запрещены.
+R130SH владеет package schema и замораживает vocabulary/examples. До этого Impeller Reliability не объявляет production importer готовым.
+
+## M03A/M03B — входной результат R130SH
+
+M03A создаёт contract/import foundation по frozen examples. После R130SH M8 exporter и M9a independent golden matrix M03B реализует полный импорт: staging → immutable `r130sh_source` → source/enrichment resolution → повторное открытие. Прямое чтение SQLite R130SH, исходящий план и управление стендом запрещены.
 
 ## M04 — расчёты испытаний
 
-Сначала один полный РБД vertical slice на импортированных и дополненных данных: Project → Specimen → Campaign → Python validation/calculation → evidence → immutable revision → повторное открытие. Только после утверждённого математического контракта и golden fixtures добавляются РПТ и ПМН. ECharts и KaTeX появляются вместе с реальной потребностью этой вертикали. Расчёты не формируют задание для R130SH.
+Сначала один полный РБД vertical slice на импортированных и дополненных данных: `ImportedRunPlanSnapshot` + explicit source/enrichment selection → `AnalysisInputSnapshot` → Python validation/calculation → `CalculationSnapshot`. Только после утверждённого математического контракта и golden fixtures добавляются РПТ и ПМН. Расчёты не формируют задание для R130SH.
 
 ## M05 и последующие предметные этапы
 
@@ -34,11 +38,10 @@ TypeScript 7/Vite 8 переходят только цельной совмес�
 
 ## Последовательность веток
 
-1. `codex/m01-closure-hardening`
-2. `codex/m02-project-storage`
-3. `codex/m03-r130sh-run-import`
-4. `codex/m04-rbd-analysis`
-5. `codex/m04-rpt-pmn-analysis`
-6. `codex/m05-run-analysis`
+1. `codex/m02-2a-analyst-dossier`
+2. M02.2B normative sources
+3. M03A import contract foundation после frozen R130SH examples
+4. M03B production importer после R130SH M9a golden packages
+5. M04 RBD/RPT/PMN analysis
 
 Каждая ветка заканчивается наблюдаемым вертикальным результатом и собственным verification gate; M02 не начинается из M01.1 автоматически.
