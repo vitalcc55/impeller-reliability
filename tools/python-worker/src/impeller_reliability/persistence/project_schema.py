@@ -7,8 +7,13 @@ from typing import Final
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
-from impeller_reliability.persistence.application_versions import require_application_version
 from impeller_reliability.persistence.project_errors import ProjectOperationError
+from impeller_reliability.persistence.project_values import (
+    ProjectMetadataField,
+    require_application_version,
+    require_canonical_project_id,
+    require_project_metadata_value,
+)
 from impeller_reliability.persistence.timestamps import parse_canonical_utc_timestamp
 
 PROJECT_SCHEMA_VERSION: Final = 1
@@ -107,14 +112,16 @@ def validate_project_evidence(
     metadata_rows = connection.execute(
         "SELECT project_id, name, project_number, description, status, record_revision, created_at_utc, updated_at_utc, created_with_application_version FROM project_metadata"
     ).fetchall()
-    if len(metadata_rows) != 1 or str(metadata_rows[0][0]) != project_id:
+    if len(metadata_rows) != 1:
         raise _evidence_error()
     metadata = metadata_rows[0]
+    if _require_project_id(metadata[0]) != project_id:
+        raise _evidence_error()
     expected_current = {
-        "name": str(metadata[1]),
-        "projectNumber": str(metadata[2]),
-        "description": str(metadata[3]),
-        "status": str(metadata[4]),
+        "name": _require_metadata_value("name", metadata[1]),
+        "projectNumber": _require_metadata_value("projectNumber", metadata[2]),
+        "description": _require_metadata_value("description", metadata[3]),
+        "status": _require_metadata_value("status", metadata[4]),
     }
     record_revision = _require_int(metadata[5])
     manifest_created_at = _require_timestamp(project_created_at_utc)
@@ -252,6 +259,22 @@ def _require_application_version(value: object) -> str:
         raise _evidence_error()
     try:
         return require_application_version(value)
+    except ValueError as error:
+        raise _evidence_error() from error
+
+
+def _require_project_id(value: object) -> str:
+    if not isinstance(value, str):
+        raise _evidence_error()
+    try:
+        return require_canonical_project_id(value)
+    except ValueError as error:
+        raise _evidence_error() from error
+
+
+def _require_metadata_value(field: ProjectMetadataField, value: object) -> str:
+    try:
+        return require_project_metadata_value(field, value)
     except ValueError as error:
         raise _evidence_error() from error
 

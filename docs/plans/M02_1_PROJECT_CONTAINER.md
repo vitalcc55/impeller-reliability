@@ -208,7 +208,7 @@ Review closure считается завершённым после Python timeo
 
 ## Final PR review closure
 
-Финальные итерации ревью PR #1 закрывают шесть P2 до слияния и не расширяют M02.1:
+Финальные итерации ревью PR #1 закрывают подтверждённые P2 до слияния и не расширяют M02.1:
 
 1. Существующий контейнер проходит structural preflight зарезервированных путей и read-only SQLite identity probe до создания lock, WAL или backup. После OS lock пути и file identity сверяются повторно; write connection открывается только для подтверждённых `application_id` и поддерживаемой schema. Файловые symlink/junction/reparse points и hard-linked reserved files отклоняются.
 2. Ручной backup принадлежит одному запросу до завершения SQLite copy, `quick_check`, SHA-256 и финальной deadline-проверки. Любая ошибка этой последовательности удаляет только новый файл текущего запроса; существующие manual/migration backups сохраняются.
@@ -217,6 +217,10 @@ Review closure считается завершённым после Python timeo
 5. Schema v1 имеет один канонический version-specific contract, из которого создаются и проверяются таблицы/триггеры. Read-only probe, write-open до WAL и post-migration validation проверяют точный набор user objects, migration ledger и согласованность metadata с append-only audit chain; неизвестные user schema objects отклоняются.
 6. Manifest, migration, metadata, audit, backup и desktop read models используют канонический UTC timestamp с миллисекундами. Невалидные календарные значения отклоняются как `corrupt_project` до lock/WAL, а Zod/Pydantic не пропускают их в Renderer.
 7. Версия приложения при создании имеет единый ASCII-token contract длиной до 64 символов. Manifest и `project_metadata` обязаны содержать одно текстовое значение; несогласованность, другой SQLite storage type или нарушение contract отклоняются read-only проверкой как `corrupt_project` до ProjectSession, lock и WAL. Pydantic/Zod повторно защищают IPC boundary.
+8. Все строковые `project_metadata` проверяются как SQLite TEXT с теми же длинами и значениями, что desktop contract; преобразование BLOB через `str()` отсутствует как в preflight evidence, так и в активной ProjectSession.
+9. `projectId` принимается только в канонической UUID-записи с поддерживаемыми version/variant; Python manifest/response и Zod используют один смысл, а старый permissive `UUID(...)`-путь удалён.
+10. Main хранит process-local authorization активного проекта отдельно от необязательного recent-projects read model. Повреждение recent-store остаётся наблюдаемой ошибкой списка, но не блокирует reattach ранее разрешённого пути; identity сверяется до возврата результата Renderer. Authorization отзывается при любом успешном close и отдельной локальной release-операцией после подтверждённого discard, которая не выдаётся за `project.close` и не изменяет `.irproj`.
+11. Обычное закрытие с исправным Renderer сохраняет dirty-draft prompt. Если Renderer не загрузился, завершился или не подтверждает close request за bounded timeout, Main завершает приложение без ожидания Renderer — это утверждённая владельцем fallback-политика для недоступного UI.
 
 Исправления публикуются отдельным commit, каждый review thread получает ссылку на commit и regression test и разрешается только после push. Затем запрашивается повторный Codex review. Squash merge допустим только при отсутствии открытых P1/P2, зелёных Quality/package gates, совпадающем SHA и конечном дереве без Etelka; M02.2 в этом цикле не начинается.
 

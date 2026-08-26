@@ -252,11 +252,24 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
         else handleFailure(result.error);
       });
 
-    const discardLocalWorkspace = (): void => {
+    const discardLocalWorkspace = async (): Promise<void> => {
       if (!confirmDiscardLocal) {
         setConfirmDiscardLocal(true);
         setMessage(null);
         return;
+      }
+      if (desktopApi !== null) {
+        try {
+          await desktopApi.project.releaseLocalWorkspace();
+        } catch {
+          setError({
+            code: 'storage_error',
+            message: 'Не удалось освободить локальное состояние проекта.',
+            details: {},
+            retryable: true,
+          });
+          return;
+        }
       }
       setProject(null);
       setDraft(newProjectDraft);
@@ -414,7 +427,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                     size="compact-sm"
                     variant={confirmDiscardLocal ? 'filled' : 'subtle'}
                     color="red"
-                    onClick={discardLocalWorkspace}
+                    onClick={() => void discardLocalWorkspace()}
                   >
                     {confirmDiscardLocal
                       ? 'Удалить только локальный черновик'

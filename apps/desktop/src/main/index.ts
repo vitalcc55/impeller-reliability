@@ -38,7 +38,12 @@ let workerClient: WorkerClient | null = null;
 let restartPromise: Promise<RuntimeStatus> | null = null;
 let quitting = false;
 let rendererCloseApproved = false;
+let rendererReady = false;
+let rendererUnavailable = false;
+let closeAcknowledgementTimer: ReturnType<typeof setTimeout> | null = null;
+let activeProjectAuthorization: { readonly path: string; readonly projectId: string } | null = null;
 const applicationInstanceId = randomUUID();
+const RENDERER_CLOSE_ACK_TIMEOUT_MS = 2_000;
 
 declare const __APPLICATION_VERSION__: string;
 
@@ -141,7 +146,11 @@ function restartWorker(): Promise<RuntimeStatus> {
 
 function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogger): void {
   const recentProjects = new RecentProjectsStore(join(stateDirectory, 'recent-projects.json'));
-  ipcMain.handle(IPC_CHANNELS.getStatus, () => snapshotStatus());
+  ipcMain.handle(IPC_CHANNELS.getStatus, () => {
+    rendererReady = true;
+    rendererUnavailable = false;
+    return snapshotStatus();
+  });
   ipcMain.handle(IPC_CHANNELS.ping, async () => {
     const client = workerClient;
     if (client === null) throw new Error('worker_unavailable');
@@ -150,7 +159,9 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
     return refreshStatus();
   });
   ipcMain.handle(IPC_CHANNELS.restart, () => restartWorker());
+  ipcMain.handle(IPC_CHANNELS.closeAcknowledged, () => clearCloseAcknowledgementTimer());
   ipcMain.handle(IPC_CHANNELS.confirmClose, () => {
+    clearCloseAcknowledgementTimer();
     rendererCloseApproved = true;
     app.quit();
   });
@@ -207,24 +218,40 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
         'Путь не входит в список недавних проектов.',
       );
     }
-    try {
-      if (!(await recentProjects.contains(rawPath))) {
+    const activeAuthorization = activeProjectAuthorization;
+    if (activeAuthorization?.path !== rawPath) {
+      try {
+        if (!(await recentProjects.contains(rawPath))) {
+          return failureResult<ProjectOverview>(
+            'validation_error',
+            'Путь не входит в список недавних проектов.',
+          );
+        }
+      } catch {
         return failureResult<ProjectOverview>(
-          'validation_error',
-          'Путь не входит в список недавних проектов.',
+          'storage_error',
+          'Не удалось проверить список недавних проектов.',
         );
       }
-    } catch {
-      return failureResult<ProjectOverview>(
-        'storage_error',
-        'Не удалось проверить список недавних проектов.',
-      );
     }
-    return openProject(workerClient, recentProjects, logger, rawPath);
+    return openProject(
+      workerClient,
+      recentProjects,
+      logger,
+      rawPath,
+      activeAuthorization?.path === rawPath ? activeAuthorization.projectId : undefined,
+    );
   });
-  ipcMain.handle(IPC_CHANNELS.projectClose, () =>
-    runProjectOperation(workerClient, async (client) => client.request('project.close', {})),
-  );
+  ipcMain.handle(IPC_CHANNELS.projectClose, async () => {
+    const result = await runProjectOperation(workerClient, async (client) =>
+      client.request('project.close', {}),
+    );
+    if (result.ok) activeProjectAuthorization = null;
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.projectReleaseLocalWorkspace, () => {
+    activeProjectAuthorization = null;
+  });
   ipcMain.handle(IPC_CHANNELS.projectGetOverview, () =>
     runProjectOperation(workerClient, async (client) => client.request('project.getOverview', {})),
   );
@@ -275,7 +302,13 @@ async function createProject(
       draft,
     }),
   );
-  if (result.ok) await touchRecentSafely(recentProjects, result.result, logger);
+  if (result.ok) {
+    activeProjectAuthorization = {
+      path: result.result.path,
+      projectId: result.result.projectId,
+    };
+    await touchRecentSafely(recentProjects, result.result, logger);
+  }
   return result;
 }
 
@@ -284,11 +317,28 @@ async function openProject(
   recentProjects: RecentProjectsStore,
   logger: JsonlLogger,
   path: string,
+  expectedProjectId?: string,
 ): Promise<DesktopResult<ProjectOverview>> {
   const result = await runProjectOperation(client, async (readyClient) =>
     readyClient.request('project.open', { path, applicationInstanceId }),
   );
-  if (result.ok) await touchRecentSafely(recentProjects, result.result, logger);
+  if (
+    result.ok &&
+    expectedProjectId !== undefined &&
+    result.result.projectId !== expectedProjectId
+  ) {
+    await runProjectOperation(client, async (readyClient) =>
+      readyClient.request('project.close', {}),
+    );
+    return failureResult('corrupt_project', 'По выбранному пути находится другой проект.');
+  }
+  if (result.ok) {
+    activeProjectAuthorization = {
+      path: result.result.path,
+      projectId: result.result.projectId,
+    };
+    await touchRecentSafely(recentProjects, result.result, logger);
+  }
   return result;
 }
 
@@ -380,6 +430,19 @@ function registerRendererProtocol(): void {
   });
 }
 
+function clearCloseAcknowledgementTimer(): void {
+  if (closeAcknowledgementTimer === null) return;
+  clearTimeout(closeAcknowledgementTimer);
+  closeAcknowledgementTimer = null;
+}
+
+function closeWithoutRendererIfPending(): void {
+  if (closeAcknowledgementTimer === null) return;
+  clearCloseAcknowledgementTimer();
+  rendererCloseApproved = true;
+  app.quit();
+}
+
 async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
     width: 960,
@@ -399,6 +462,21 @@ async function createWindow(): Promise<void> {
   });
   const rendererUrl = process.env['ELECTRON_RENDERER_URL'] ?? 'impeller://app/index.html';
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('did-start-loading', () => {
+    rendererReady = false;
+    rendererUnavailable = false;
+  });
+  mainWindow.webContents.on('render-process-gone', () => {
+    rendererUnavailable = true;
+    closeWithoutRendererIfPending();
+  });
+  mainWindow.webContents.on('unresponsive', () => {
+    rendererUnavailable = true;
+    closeWithoutRendererIfPending();
+  });
+  mainWindow.webContents.on('responsive', () => {
+    rendererUnavailable = false;
+  });
   mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
     if (targetUrl !== rendererUrl) event.preventDefault();
   });
@@ -408,8 +486,16 @@ async function createWindow(): Promise<void> {
   mainWindow.on('close', (event) => {
     if (quitting || rendererCloseApproved || process.env['IMPELLER_SMOKE_OUTPUT'] !== undefined)
       return;
+    if (!rendererReady || rendererUnavailable) return;
     event.preventDefault();
-    mainWindow?.webContents.send(IPC_CHANNELS.closeRequested);
+    if (closeAcknowledgementTimer === null) {
+      mainWindow?.webContents.send(IPC_CHANNELS.closeRequested);
+      closeAcknowledgementTimer = setTimeout(() => {
+        closeAcknowledgementTimer = null;
+        rendererCloseApproved = true;
+        app.quit();
+      }, RENDERER_CLOSE_ACK_TIMEOUT_MS);
+    }
   });
   mainWindow.once('ready-to-show', () => {
     if (process.env['IMPELLER_SMOKE_OUTPUT'] === undefined) mainWindow?.show();

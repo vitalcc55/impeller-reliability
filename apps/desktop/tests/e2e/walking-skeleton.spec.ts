@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { _electron as electron, expect, test } from '@playwright/test';
@@ -76,6 +76,7 @@ test('renderer reflects worker failure and controlled restart through the narrow
       'listRecent',
       'open',
       'openRecent',
+      'releaseLocalWorkspace',
       'updateMetadata',
     ]);
 
@@ -180,6 +181,174 @@ test('renderer reflects worker failure and controlled restart through the narrow
     });
   } finally {
     await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
+test('reattaches the active project when the optional recent-projects store is corrupt', async () => {
+  const evidenceRoot = resolve(
+    import.meta.dirname,
+    '../../../../.tmp/.codex/evidence/m02-e2e-recent',
+  );
+  const projectPath = join(evidenceRoot, 'Recovery project.irproj');
+  const userDataPath = join(evidenceRoot, 'user-data');
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(join(userDataPath, 'state'), { recursive: true });
+  writeFileSync(join(userDataPath, 'state', 'recent-projects.json'), '{broken', 'utf8');
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: resolve(import.meta.dirname, '../../../..'),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
+      IMPELLER_TEST_USER_DATA: userDataPath,
+    },
+  });
+  try {
+    const page = await app.firstWindow();
+    await page.getByRole('button', { name: 'Создать проект' }).click();
+    await expect(page.getByRole('heading', { name: 'Новый проект' })).toBeVisible();
+    await page.getByLabel('Название проекта').fill('Локальный черновик recovery');
+    const mainProcessId = app.process().pid;
+    if (mainProcessId === undefined) throw new Error('electron_main_process_missing');
+    const workerId = workerProcessIds(mainProcessId)[0];
+    if (workerId === undefined) throw new Error('worker_process_missing');
+    process.kill(workerId);
+    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
+    await page.getByRole('button', { name: 'Диагностика' }).click();
+    await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
+    await page.getByRole('button', { name: 'Перезапустить и сохранить черновик' }).click();
+    await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
+    await page.getByRole('button', { name: 'Проекты' }).click();
+    await expect(page.getByLabel('Название проекта')).toHaveValue('Локальный черновик recovery');
+    await expect(page.getByText('Проект отсоединён от worker')).not.toBeVisible();
+    await page.getByRole('button', { name: 'Сохранить изменения' }).click();
+    await expect(page.getByText('Номер проекта не задан · редакция 2')).toBeVisible();
+    const movedProjectPath = join(evidenceRoot, 'Moved recovery project.irproj');
+    const attachedWorkerId = workerProcessIds(mainProcessId)[0];
+    if (attachedWorkerId === undefined) throw new Error('reattached_worker_process_missing');
+    process.kill(attachedWorkerId);
+    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
+    renameSync(projectPath, movedProjectPath);
+    await page.getByRole('button', { name: 'Диагностика' }).click();
+    await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
+    await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
+    await page.getByRole('button', { name: 'Проекты' }).click();
+    await page.getByRole('button', { name: 'Отказаться от локального черновика' }).click();
+    await page.getByRole('button', { name: 'Удалить только локальный черновик' }).click();
+    const reopenErrorCode = await page.evaluate(async (path) => {
+      const api: unknown = Reflect.get(window, 'impeller');
+      if (typeof api !== 'object' || api === null) return 'api_missing';
+      const project: unknown = Reflect.get(api, 'project');
+      if (typeof project !== 'object' || project === null) return 'project_api_missing';
+      const openRecent: unknown = Reflect.get(project, 'openRecent');
+      if (typeof openRecent !== 'function') return 'open_recent_missing';
+      const result: unknown = await Reflect.apply(openRecent, project, [path]);
+      if (typeof result !== 'object' || result === null) return 'result_missing';
+      const error: unknown = Reflect.get(result, 'error');
+      if (typeof error !== 'object' || error === null) return 'error_missing';
+      const code: unknown = Reflect.get(error, 'code');
+      return typeof code === 'string' ? code : 'code_missing';
+    }, projectPath);
+    expect(reopenErrorCode).toBe('storage_error');
+  } finally {
+    await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
+test('closes immediately after the renderer process is gone', async () => {
+  const evidenceRoot = resolve(
+    import.meta.dirname,
+    '../../../../.tmp/.codex/evidence/m02-e2e-close',
+  );
+  const userDataPath = join(evidenceRoot, 'user-data');
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(evidenceRoot, { recursive: true });
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: resolve(import.meta.dirname, '../../../..'),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_TEST_USER_DATA: userDataPath,
+    },
+  });
+  let exited = false;
+  try {
+    await app.firstWindow();
+    const exitPromise = new Promise<void>((resolveExit) => {
+      app.process().once('exit', () => resolveExit());
+    });
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      if (window === undefined) throw new Error('browser_window_missing');
+      const rendererGone = new Promise<void>((resolveGone) => {
+        window.webContents.once('render-process-gone', () => resolveGone());
+      });
+      window.webContents.forcefullyCrashRenderer();
+      await rendererGone;
+    });
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.close();
+    });
+    await Promise.race([
+      exitPromise,
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error('renderer_crash_close_timeout')), 5_000),
+      ),
+    ]);
+    exited = true;
+  } finally {
+    if (!exited) await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
+test('closes within a bound when the renderer cannot acknowledge the close request', async () => {
+  const evidenceRoot = resolve(
+    import.meta.dirname,
+    '../../../../.tmp/.codex/evidence/m02-e2e-hang',
+  );
+  const userDataPath = join(evidenceRoot, 'user-data');
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(evidenceRoot, { recursive: true });
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: resolve(import.meta.dirname, '../../../..'),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_TEST_USER_DATA: userDataPath,
+    },
+  });
+  let exited = false;
+  try {
+    const page = await app.firstWindow();
+    await page.evaluate(() => {
+      setTimeout(() => {
+        for (;;) {
+          // Deliberately blocks the renderer to prove the Main-owned close fallback.
+        }
+      }, 0);
+    });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    const exitPromise = new Promise<void>((resolveExit) => {
+      app.process().once('exit', () => resolveExit());
+    });
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.close();
+    });
+    await Promise.race([
+      exitPromise,
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error('renderer_unresponsive_close_timeout')), 5_000),
+      ),
+    ]);
+    exited = true;
+  } finally {
+    if (!exited) await app.close();
     rmSync(evidenceRoot, { recursive: true, force: true });
   }
 });

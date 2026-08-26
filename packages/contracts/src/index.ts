@@ -456,6 +456,7 @@ export interface ImpellerApi {
     open(): Promise<DesktopResult<ProjectOverview>>;
     openRecent(path: string): Promise<DesktopResult<ProjectOverview>>;
     close(): Promise<DesktopResult<{ readonly closed: boolean }>>;
+    releaseLocalWorkspace(): Promise<void>;
     getOverview(): Promise<DesktopResult<ProjectOverview>>;
     updateMetadata(command: ProjectMetadataCommand): Promise<DesktopResult<ProjectOverview>>;
     createBackup(): Promise<DesktopResult<ProjectBackupResult>>;

@@ -16,7 +16,12 @@ from impeller_reliability.persistence.project_errors import ProjectOperationErro
 from impeller_reliability.persistence.project_lock import ProjectLock
 from impeller_reliability.persistence.project_manifest import ProjectManifest
 from impeller_reliability.persistence.project_paths import PathIdentity, inspect_reserved_directory
-from impeller_reliability.persistence.timestamps import utc_now
+from impeller_reliability.persistence.project_values import (
+    require_application_version,
+    require_canonical_project_id,
+    require_project_metadata_value,
+)
+from impeller_reliability.persistence.timestamps import require_canonical_utc_timestamp, utc_now
 from impeller_reliability.worker.deadline import RequestDeadline
 
 
@@ -61,19 +66,22 @@ class ProjectSession:
         ).fetchone()
         if row is None:
             raise ProjectOperationError("corrupt_project", "Метаданные проекта отсутствуют.")
-        return ProjectOverview(
-            project_id=str(row["project_id"]),
-            path=str(self.path),
-            name=str(row["name"]),
-            project_number=str(row["project_number"]),
-            description=str(row["description"]),
-            status=_parse_project_status(str(row["status"])),
-            record_revision=int(row["record_revision"]),
-            created_at_utc=str(row["created_at_utc"]),
-            updated_at_utc=str(row["updated_at_utc"]),
-            created_with_application_version=str(row["created_with_application_version"]),
-            schema_version=int(self._connection.execute("PRAGMA user_version").fetchone()[0]),
-        )
+        try:
+            return ProjectOverview(
+                project_id=require_canonical_project_id(_require_text(row["project_id"])),
+                path=str(self.path),
+                name=require_project_metadata_value("name", row["name"]),
+                project_number=require_project_metadata_value("projectNumber", row["project_number"]),
+                description=require_project_metadata_value("description", row["description"]),
+                status=_parse_project_status(require_project_metadata_value("status", row["status"])),
+                record_revision=_require_revision(row["record_revision"]),
+                created_at_utc=require_canonical_utc_timestamp(_require_text(row["created_at_utc"])),
+                updated_at_utc=require_canonical_utc_timestamp(_require_text(row["updated_at_utc"])),
+                created_with_application_version=require_application_version(_require_text(row["created_with_application_version"])),
+                schema_version=int(self._connection.execute("PRAGMA user_version").fetchone()[0]),
+            )
+        except (TypeError, ValueError) as error:
+            raise ProjectOperationError("corrupt_project", "Метаданные проекта повреждены.") from error
 
     def update_metadata(
         self,
@@ -207,6 +215,18 @@ def _parse_project_status(value: str) -> Literal["draft", "active", "completed",
     if value == "archived":
         return "archived"
     raise ProjectOperationError("corrupt_project", "Статус проекта в project.sqlite не поддерживается.")
+
+
+def _require_text(value: object) -> str:
+    if not isinstance(value, str):
+        raise TypeError("project_metadata_not_text")
+    return value
+
+
+def _require_revision(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError("project_revision_invalid")
+    return value
 
 
 def _check_deadline(deadline: RequestDeadline | None, stage: str) -> None:

@@ -94,6 +94,7 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
         activeProject = null;
         return Promise.resolve(success({ closed: true }));
       },
+      releaseLocalWorkspace: () => Promise.resolve(),
       getOverview: () =>
         Promise.resolve(activeProject === null ? noProject() : success(activeProject)),
       updateMetadata: ({ expectedRevision, metadata }) => {

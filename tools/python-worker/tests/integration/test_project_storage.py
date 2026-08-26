@@ -690,6 +690,110 @@ def test_invalid_or_mismatched_application_version_is_rejected_without_mutation(
     assert not (project_path / "project.sqlite-shm").exists()
 
 
+@pytest.mark.parametrize(
+    ("column", "audit_field", "raw_value"),
+    [
+        ("name", "name", b"A" * 200),
+        ("project_number", "projectNumber", b"A" * 100),
+        ("description", "description", b"A" * 4_000),
+        ("status", "status", b"draft"),
+    ],
+)
+def test_non_text_project_metadata_is_rejected_without_mutation(
+    tmp_path: Path,
+    column: str,
+    audit_field: str,
+    raw_value: bytes,
+) -> None:
+    project_path = tmp_path / "non-text-metadata.irproj"
+    service = _create_project(project_path)
+    service.close()
+    with _database(project_path) as connection:
+        payload = json.loads(str(connection.execute("SELECT payload_json FROM project_audit_events WHERE sequence = 1").fetchone()[0]))
+        payload["after"][audit_field] = str(raw_value)
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            f"UPDATE project_metadata SET {column} = ?",
+            (sqlite3.Binary(raw_value),),
+        )
+        connection.execute("DROP TRIGGER project_audit_events_no_update")
+        connection.execute(
+            "UPDATE project_audit_events SET payload_json = ? WHERE sequence = 1",
+            (json.dumps(payload, ensure_ascii=False, separators=(",", ":")),),
+        )
+        connection.execute(project_schema.PROJECT_AUDIT_NO_UPDATE_TRIGGER_SQL)
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+        connection.commit()
+    database_path = project_path / "project.sqlite"
+    lock_path = project_path / ".project.lock"
+    before_hash = _sha256(database_path)
+    before_lock = lock_path.read_bytes()
+    candidate = ProjectService()
+
+    try:
+        with pytest.raises(ProjectOperationError) as raised:
+            candidate.open(path=str(project_path), application_instance_id=str(uuid4()))
+        assert raised.value.code == "corrupt_project"
+    finally:
+        candidate.close()
+
+    assert _sha256(database_path) == before_hash
+    assert lock_path.read_bytes() == before_lock
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
+
+
+@pytest.mark.parametrize("representation", ["hex", "braced", "urn", "invalid_version"])
+def test_noncanonical_project_id_is_rejected_without_mutation(
+    tmp_path: Path,
+    representation: str,
+) -> None:
+    project_path = tmp_path / "noncanonical-project-id.irproj"
+    service = _create_project(project_path)
+    service.close()
+    manifest_path = project_path / "project-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    canonical_id = str(manifest["projectId"])
+    if representation == "hex":
+        project_id = canonical_id.replace("-", "")
+    elif representation == "braced":
+        project_id = f"{{{canonical_id}}}"
+    elif representation == "urn":
+        project_id = f"urn:uuid:{canonical_id}"
+    else:
+        project_id = f"{canonical_id[:14]}0{canonical_id[15:]}"
+    manifest["projectId"] = project_id
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with _database(project_path) as connection:
+        payload = json.loads(str(connection.execute("SELECT payload_json FROM project_audit_events WHERE sequence = 1").fetchone()[0]))
+        payload["entityId"] = project_id
+        connection.execute("UPDATE project_metadata SET project_id = ?", (project_id,))
+        connection.execute("DROP TRIGGER project_audit_events_no_update")
+        connection.execute(
+            "UPDATE project_audit_events SET payload_json = ? WHERE sequence = 1",
+            (json.dumps(payload, ensure_ascii=False, separators=(",", ":")),),
+        )
+        connection.execute(project_schema.PROJECT_AUDIT_NO_UPDATE_TRIGGER_SQL)
+        connection.commit()
+    database_path = project_path / "project.sqlite"
+    lock_path = project_path / ".project.lock"
+    before_hash = _sha256(database_path)
+    before_lock = lock_path.read_bytes()
+    candidate = ProjectService()
+
+    try:
+        with pytest.raises(ProjectOperationError) as raised:
+            candidate.open(path=str(project_path), application_instance_id=str(uuid4()))
+        assert raised.value.code == "corrupt_project"
+    finally:
+        candidate.close()
+
+    assert _sha256(database_path) == before_hash
+    assert lock_path.read_bytes() == before_lock
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
+
+
 def test_backup_precedes_forward_migration(tmp_path: Path) -> None:
     project_path = tmp_path / "migration.irproj"
     service = _create_project(project_path)

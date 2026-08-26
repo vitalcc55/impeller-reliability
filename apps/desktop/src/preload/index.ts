@@ -34,7 +34,9 @@ const api: ImpellerApi = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.statusChanged, handleStatus);
     },
     subscribeCloseRequested: (listener) => {
-      const handleCloseRequested = (): void => listener();
+      const handleCloseRequested = (): void => {
+        void ipcRenderer.invoke(IPC_CHANNELS.closeAcknowledged).then(() => listener());
+      };
       ipcRenderer.on(IPC_CHANNELS.closeRequested, handleCloseRequested);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.closeRequested, handleCloseRequested);
     },
@@ -56,6 +58,9 @@ const api: ImpellerApi = {
       createDesktopResultSchema(projectCloseResultSchema).parse(
         await ipcRenderer.invoke(IPC_CHANNELS.projectClose),
       ),
+    releaseLocalWorkspace: async () => {
+      await ipcRenderer.invoke(IPC_CHANNELS.projectReleaseLocalWorkspace);
+    },
     getOverview: async () =>
       createDesktopResultSchema(projectOverviewSchema).parse(
         await ipcRenderer.invoke(IPC_CHANNELS.projectGetOverview),

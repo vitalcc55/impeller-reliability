@@ -6,20 +6,24 @@ from typing import Annotated, Final, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError, field_validator
 
-from impeller_reliability.persistence.application_versions import require_application_version
 from impeller_reliability.persistence.project_errors import ProjectOperationError
+from impeller_reliability.persistence.project_values import (
+    require_application_version,
+    require_canonical_project_id,
+)
 from impeller_reliability.persistence.timestamps import require_canonical_utc_timestamp
 
 PROJECT_CONTAINER_SCHEMA: Final = "impeller.project-container.v1"
 PROJECT_DATABASE_FILE: Final = "project.sqlite"
 ApplicationVersion = Annotated[str, AfterValidator(require_application_version)]
+ProjectId = Annotated[str, AfterValidator(require_canonical_project_id)]
 
 
 class ProjectManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     schemaVersion: Literal["impeller.project-container.v1"] = PROJECT_CONTAINER_SCHEMA
-    projectId: str
+    projectId: ProjectId
     createdAtUtc: str
     createdWithApplicationVersion: ApplicationVersion
     databaseFile: Literal["project.sqlite"] = PROJECT_DATABASE_FILE

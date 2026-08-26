@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shutil
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from impeller_reliability.persistence.project_database import (
     ProjectMetadataSeed,
@@ -115,10 +115,6 @@ class ProjectService:
         if not project_path.is_dir():
             raise ProjectOperationError("corrupt_project", "Каталог проекта не найден.")
         manifest = read_manifest(project_path / "project-manifest.json")
-        try:
-            UUID(manifest.projectId)
-        except ValueError as error:
-            raise ProjectOperationError("corrupt_project", "projectId в manifest не является UUID.") from error
         preflight_snapshot = inspect_project_container(project_path, manifest)
         database_identity = probe_project_database_identity(
             project_path / manifest.databaseFile,

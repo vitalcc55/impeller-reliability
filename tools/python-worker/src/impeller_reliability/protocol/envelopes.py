@@ -4,7 +4,10 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
-from impeller_reliability.persistence.application_versions import require_application_version
+from impeller_reliability.persistence.project_values import (
+    require_application_version,
+    require_canonical_project_id,
+)
 from impeller_reliability.persistence.timestamps import require_canonical_utc_timestamp
 
 Operation = Literal[
@@ -23,6 +26,7 @@ Operation = Literal[
 ProjectStatus = Literal["draft", "active", "completed", "archived"]
 CanonicalUtcTimestamp = Annotated[str, AfterValidator(require_canonical_utc_timestamp)]
 ApplicationVersion = Annotated[str, AfterValidator(require_application_version)]
+ProjectId = Annotated[str, AfterValidator(require_canonical_project_id)]
 
 
 class EmptyPayload(BaseModel):
@@ -190,11 +194,11 @@ class StorageHealthResult(BaseModel):
 class ProjectOverviewResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    projectId: str
+    projectId: ProjectId
     path: str
-    name: str
-    projectNumber: str
-    description: str
+    name: str = Field(min_length=1, max_length=200)
+    projectNumber: str = Field(max_length=100)
+    description: str = Field(max_length=4_000)
     status: ProjectStatus
     recordRevision: int = Field(ge=1)
     createdAtUtc: CanonicalUtcTimestamp
