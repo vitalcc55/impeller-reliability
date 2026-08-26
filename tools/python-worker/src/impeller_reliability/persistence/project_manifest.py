@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Final, Literal
+from typing import Annotated, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError, field_validator
 
+from impeller_reliability.persistence.application_versions import require_application_version
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.timestamps import require_canonical_utc_timestamp
 
 PROJECT_CONTAINER_SCHEMA: Final = "impeller.project-container.v1"
 PROJECT_DATABASE_FILE: Final = "project.sqlite"
+ApplicationVersion = Annotated[str, AfterValidator(require_application_version)]
 
 
 class ProjectManifest(BaseModel):
@@ -19,7 +21,7 @@ class ProjectManifest(BaseModel):
     schemaVersion: Literal["impeller.project-container.v1"] = PROJECT_CONTAINER_SCHEMA
     projectId: str
     createdAtUtc: str
-    createdWithApplicationVersion: str
+    createdWithApplicationVersion: ApplicationVersion
     databaseFile: Literal["project.sqlite"] = PROJECT_DATABASE_FILE
 
     @field_validator("createdAtUtc")

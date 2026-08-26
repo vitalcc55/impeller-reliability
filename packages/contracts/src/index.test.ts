@@ -115,4 +115,38 @@ describe('worker contracts', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('rejects invalid application versions at the desktop boundary', () => {
+    const overview = {
+      projectId: '019c89f0-0b57-7ef5-9656-595184fcb272',
+      path: 'C:\\Projects\\Wheel.irproj',
+      name: 'Wheel',
+      projectNumber: '',
+      description: '',
+      status: 'draft',
+      recordRevision: 1,
+      createdAtUtc: '2026-08-26T00:00:00.000Z',
+      updatedAtUtc: '2026-08-26T00:00:00.000Z',
+      createdWithApplicationVersion: '0.1.0',
+      schemaVersion: 1,
+    } as const;
+
+    expect(
+      projectOverviewSchema.safeParse({ ...overview, createdWithApplicationVersion: '' }).success,
+    ).toBe(false);
+    expect(
+      projectOverviewSchema.safeParse({ ...overview, createdWithApplicationVersion: ' 0.1.0' })
+        .success,
+    ).toBe(false);
+    expect(
+      projectOverviewSchema.safeParse({ ...overview, createdWithApplicationVersion: '\ufeff0.1.0' })
+        .success,
+    ).toBe(false);
+    expect(
+      projectOverviewSchema.safeParse({
+        ...overview,
+        createdWithApplicationVersion: '🚀'.repeat(33),
+      }).success,
+    ).toBe(false);
+  });
 });

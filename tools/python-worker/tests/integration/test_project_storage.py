@@ -638,6 +638,58 @@ def test_invalid_project_timestamp_is_rejected_without_mutation(
     assert not (project_path / "project.sqlite-shm").exists()
 
 
+@pytest.mark.parametrize(
+    ("version_target", "invalid_value"),
+    [
+        ("manifest", ""),
+        ("manifest", " 0.1.0"),
+        ("both", "\ufeff0.1.0"),
+        ("both", "🚀" * 33),
+        ("metadata", ""),
+        ("metadata", "0.2.0"),
+        ("blob", sqlite3.Binary(b"0.1.0")),
+    ],
+)
+def test_invalid_or_mismatched_application_version_is_rejected_without_mutation(
+    tmp_path: Path,
+    version_target: str,
+    invalid_value: object,
+) -> None:
+    project_path = tmp_path / "invalid-application-version.irproj"
+    service = _create_project(project_path)
+    service.close()
+    if version_target in {"manifest", "both", "blob"}:
+        manifest_value = "b'0.1.0'" if version_target == "blob" else invalid_value
+        assert isinstance(manifest_value, str)
+        manifest_path = project_path / "project-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["createdWithApplicationVersion"] = manifest_value
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    if version_target in {"metadata", "both", "blob"}:
+        with _database(project_path) as connection:
+            connection.execute("PRAGMA ignore_check_constraints = ON")
+            connection.execute(
+                "UPDATE project_metadata SET created_with_application_version = ?",
+                (invalid_value,),
+            )
+            connection.commit()
+    database_path = project_path / "project.sqlite"
+    lock_path = project_path / ".project.lock"
+    before_hash = _sha256(database_path)
+    before_lock = lock_path.read_bytes()
+    candidate = ProjectService()
+
+    with pytest.raises(ProjectOperationError) as raised:
+        candidate.open(path=str(project_path), application_instance_id=str(uuid4()))
+
+    assert raised.value.code == "corrupt_project"
+    assert candidate.has_active_session is False
+    assert _sha256(database_path) == before_hash
+    assert lock_path.read_bytes() == before_lock
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
+
+
 def test_backup_precedes_forward_migration(tmp_path: Path) -> None:
     project_path = tmp_path / "migration.irproj"
     service = _create_project(project_path)

@@ -7,6 +7,7 @@ from typing import Final
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
+from impeller_reliability.persistence.application_versions import require_application_version
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.timestamps import parse_canonical_utc_timestamp
 
@@ -101,8 +102,11 @@ def validate_project_evidence(
     connection: sqlite3.Connection,
     project_id: str,
     project_created_at_utc: str,
+    project_created_with_application_version: str,
 ) -> None:
-    metadata_rows = connection.execute("SELECT project_id, name, project_number, description, status, record_revision, created_at_utc, updated_at_utc FROM project_metadata").fetchall()
+    metadata_rows = connection.execute(
+        "SELECT project_id, name, project_number, description, status, record_revision, created_at_utc, updated_at_utc, created_with_application_version FROM project_metadata"
+    ).fetchall()
     if len(metadata_rows) != 1 or str(metadata_rows[0][0]) != project_id:
         raise _evidence_error()
     metadata = metadata_rows[0]
@@ -116,7 +120,11 @@ def validate_project_evidence(
     manifest_created_at = _require_timestamp(project_created_at_utc)
     metadata_created_at = _require_timestamp(str(metadata[6]))
     metadata_updated_at = _require_timestamp(str(metadata[7]))
+    manifest_application_version = _require_application_version(project_created_with_application_version)
+    metadata_application_version = _require_application_version(metadata[8])
     if metadata_created_at != manifest_created_at or metadata_updated_at < metadata_created_at:
+        raise _evidence_error()
+    if metadata_application_version != manifest_application_version:
         raise _evidence_error()
     event_rows = connection.execute("SELECT sequence, event_type, actor_kind, occurred_at_utc, payload_json FROM project_audit_events ORDER BY sequence").fetchall()
     if not event_rows:
@@ -235,6 +243,15 @@ def _require_int(value: object) -> int:
 def _require_timestamp(value: str) -> datetime:
     try:
         return parse_canonical_utc_timestamp(value)
+    except ValueError as error:
+        raise _evidence_error() from error
+
+
+def _require_application_version(value: object) -> str:
+    if not isinstance(value, str):
+        raise _evidence_error()
+    try:
+        return require_application_version(value)
     except ValueError as error:
         raise _evidence_error() from error
 

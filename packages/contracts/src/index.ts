@@ -47,6 +47,7 @@ export const storageHealthResultSchema = z
   .strict();
 
 export const projectStatusSchema = z.enum(['draft', 'active', 'completed', 'archived']);
+const applicationVersionSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/u);
 export const projectDraftSchema = z
   .object({
     name: z.string().trim().min(1).max(200),
@@ -59,7 +60,7 @@ export const projectCreatePayloadSchema = z
   .object({
     path: z.string().min(1).max(32_767),
     applicationInstanceId: z.string().min(1).max(128),
-    applicationVersion: z.string().min(1).max(64),
+    applicationVersion: applicationVersionSchema,
     draft: projectDraftSchema,
   })
   .strict();
@@ -93,7 +94,7 @@ export const projectOverviewSchema = z
     recordRevision: z.number().int().positive(),
     createdAtUtc: canonicalUtcTimestampSchema,
     updatedAtUtc: canonicalUtcTimestampSchema,
-    createdWithApplicationVersion: z.string().min(1),
+    createdWithApplicationVersion: applicationVersionSchema,
     schemaVersion: z.number().int().positive(),
   })
   .strict();
