@@ -37,10 +37,11 @@ let mainWindow: BrowserWindow | null = null;
 let workerClient: WorkerClient | null = null;
 let restartPromise: Promise<RuntimeStatus> | null = null;
 let quitting = false;
-let rendererCloseApproved = false;
+type RendererCloseState = 'idle' | 'waiting-for-decision' | 'approved';
+let rendererCloseState: RendererCloseState = 'idle';
 let rendererReady = false;
 let rendererUnavailable = false;
-let closeAcknowledgementTimer: ReturnType<typeof setTimeout> | null = null;
+let closeDeliveryTimer: ReturnType<typeof setTimeout> | null = null;
 let activeProjectAuthorization: { readonly path: string; readonly projectId: string } | null = null;
 const applicationInstanceId = randomUUID();
 const RENDERER_CLOSE_ACK_TIMEOUT_MS = 2_000;
@@ -159,11 +160,17 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
     return refreshStatus();
   });
   ipcMain.handle(IPC_CHANNELS.restart, () => restartWorker());
-  ipcMain.handle(IPC_CHANNELS.closeAcknowledged, () => clearCloseAcknowledgementTimer());
+  ipcMain.handle(IPC_CHANNELS.closeAcknowledged, () => clearCloseDeliveryTimer());
   ipcMain.handle(IPC_CHANNELS.confirmClose, () => {
-    clearCloseAcknowledgementTimer();
-    rendererCloseApproved = true;
+    if (rendererCloseState !== 'waiting-for-decision') return;
+    clearCloseDeliveryTimer();
+    rendererCloseState = 'approved';
     app.quit();
+  });
+  ipcMain.handle(IPC_CHANNELS.cancelClose, () => {
+    if (rendererCloseState !== 'waiting-for-decision') return;
+    clearCloseDeliveryTimer();
+    rendererCloseState = 'idle';
   });
   ipcMain.handle(IPC_CHANNELS.openLog, async () => {
     const result = await shell.openPath(logPath);
@@ -430,16 +437,16 @@ function registerRendererProtocol(): void {
   });
 }
 
-function clearCloseAcknowledgementTimer(): void {
-  if (closeAcknowledgementTimer === null) return;
-  clearTimeout(closeAcknowledgementTimer);
-  closeAcknowledgementTimer = null;
+function clearCloseDeliveryTimer(): void {
+  if (closeDeliveryTimer === null) return;
+  clearTimeout(closeDeliveryTimer);
+  closeDeliveryTimer = null;
 }
 
 function closeWithoutRendererIfPending(): void {
-  if (closeAcknowledgementTimer === null) return;
-  clearCloseAcknowledgementTimer();
-  rendererCloseApproved = true;
+  if (rendererCloseState !== 'waiting-for-decision') return;
+  clearCloseDeliveryTimer();
+  rendererCloseState = 'approved';
   app.quit();
 }
 
@@ -465,6 +472,7 @@ async function createWindow(): Promise<void> {
   mainWindow.webContents.on('did-start-loading', () => {
     rendererReady = false;
     rendererUnavailable = false;
+    closeWithoutRendererIfPending();
   });
   mainWindow.webContents.on('render-process-gone', () => {
     rendererUnavailable = true;
@@ -484,17 +492,18 @@ async function createWindow(): Promise<void> {
     (_webContents, _permission, callback) => callback(false),
   );
   mainWindow.on('close', (event) => {
-    if (quitting || rendererCloseApproved || process.env['IMPELLER_SMOKE_OUTPUT'] !== undefined)
+    if (
+      quitting ||
+      rendererCloseState === 'approved' ||
+      process.env['IMPELLER_SMOKE_OUTPUT'] !== undefined
+    )
       return;
     if (!rendererReady || rendererUnavailable) return;
     event.preventDefault();
-    if (closeAcknowledgementTimer === null) {
+    if (rendererCloseState === 'idle') {
+      rendererCloseState = 'waiting-for-decision';
       mainWindow?.webContents.send(IPC_CHANNELS.closeRequested);
-      closeAcknowledgementTimer = setTimeout(() => {
-        closeAcknowledgementTimer = null;
-        rendererCloseApproved = true;
-        app.quit();
-      }, RENDERER_CLOSE_ACK_TIMEOUT_MS);
+      closeDeliveryTimer = setTimeout(closeWithoutRendererIfPending, RENDERER_CLOSE_ACK_TIMEOUT_MS);
     }
   });
   mainWindow.once('ready-to-show', () => {
@@ -576,7 +585,7 @@ async function runSmokeIfRequested(): Promise<void> {
   if (Number.isInteger(holdMs) && holdMs > 0 && holdMs <= 5_000) {
     await new Promise<void>((resolveHold) => setTimeout(resolveHold, holdMs));
   }
-  rendererCloseApproved = true;
+  rendererCloseState = 'approved';
   app.quit();
 }
 

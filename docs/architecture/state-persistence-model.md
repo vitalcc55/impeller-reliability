@@ -14,14 +14,14 @@ Persisted: "M02.1 project source of truth" {
 
 WorkerRuntime: "Python worker runtime" {
   Connection: "one ProjectSession + sequential SQLite writer"
-  Lock: "read-only identity preflight → Windows OS-held lock"
+  Lock: "bounded read-only validation → Windows OS-held lock"
   Jobs: "request/job progress + cancellation"
   Canonical: "validated domain values and report inputs"
 }
 
 MainRuntime: "Electron Main runtime" {
   WorkerProcess: "one worker process + controlled restart"
-  Lifecycle: "starting/ready/unavailable/stopping/stopped"
+  Lifecycle: "starting/ready/unavailable/stopping/stopped + one close state"
   Queue: "one active + one queued; backpressure; deadline at dispatch"
   Pending: "one sent requestId + operation + revision + domain/transport deadlines"
   Paths: "approved file/project paths"
@@ -59,4 +59,4 @@ Persisted.Assets -> Derived.Exports
 RendererRuntime.Preview -> RendererRuntime.QueryCache: "synthetic DEV state only"
 ```
 
-App-level `health.sqlite` остаётся отдельной инфраструктурной диагностикой. M02.1 project truth находится только в `.irproj`; Renderer хранит draft, Main — allowlist недавних путей и последовательную очередь, Python — активную ProjectSession. Existing project становится writable только после read-only identity/topology/schema/evidence preflight и повторной проверки под OS lock до WAL. Stateful domain timeout проверяется до commit; graceful lifecycle сначала дренирует принятую bounded-очередь, а indeterminate transport timeout завершает worker и однозначно снимает ProjectSession/OS lock. Потеря worker не размонтирует форму: повторное присоединение возможно только при совпадении `projectId` и `record_revision`; permanently detached draft можно удалить локально без изменения project truth или recent list. Browser preview ничего не сохраняет и не является evidence persistence.
+App-level `health.sqlite` остаётся отдельной инфраструктурной диагностикой. M02.1 project truth находится только в `.irproj`; Renderer хранит draft, Main — allowlist недавних путей, close state и последовательную очередь, Python — активную ProjectSession. Existing project становится writable только после bounded read-only structure/schema/evidence validation и OS lock. Stateful domain timeout проверяется до commit; graceful lifecycle сначала дренирует принятую bounded-очередь, а indeterminate transport timeout завершает worker и снимает ProjectSession/OS lock. Потеря worker не размонтирует форму: повторное присоединение возможно только при совпадении `projectId` и `record_revision`; permanently detached draft можно удалить локально без изменения project truth или recent list. Browser preview ничего не сохраняет и не является evidence persistence.

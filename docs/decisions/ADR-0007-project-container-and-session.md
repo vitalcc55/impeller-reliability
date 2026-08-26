@@ -9,7 +9,7 @@
 
 ## Решение
 
-Рабочий проект — каталог `.irproj` с manifest и Python-owned `project.sqlite`. Existing container проходит read-only identity/topology и version-specific schema/evidence preflight до OS lock и любых SQLite-записей; reserved reparse/hard-link objects запрещены. Один worker удерживает максимум одну ProjectSession и Windows OS lock; Main зеркалит serial worker одной очередью и дренирует её перед controlled lifecycle. Создание выполняется sibling staging + atomic rename, migrations только forward с проверенным backup.
+Рабочий проект — каталог `.irproj` с manifest и Python-owned `project.sqlite`. Existing container проходит bounded read-only structure/schema/evidence validation до OS lock и SQLite-записей. Один worker удерживает максимум одну ProjectSession и Windows OS lock; Main зеркалит serial worker одной очередью и дренирует её перед controlled lifecycle. Создание выполняется sibling staging + atomic rename, migrations только forward с проверенным backup.
 
 ## Альтернативы
 
@@ -21,4 +21,4 @@ ZIP для текущей работы требовал бы постоянно�
 
 ## Риски
 
-Повреждённый manifest/SQLite, path substitution, несовместимая/подменённая schema, lifecycle во время stateful operation и lock contention. Они закрываются typed errors, точным schema/evidence contract, последовательным dispatch/drain и повторными pre-WAL checks; новая/чужая SQLite не модифицируется. Полное устранение malicious same-user filesystem TOCTOU потребовало бы custom SQLite VFS или отдельной directory ACL policy и остаётся за границей M02.1.
+Повреждённый manifest/SQLite, несовместимая schema, lifecycle во время stateful operation и lock contention. Они закрываются typed errors, schema/evidence contract, последовательным dispatch/drain и OS lock; актуальная граница файловых угроз принадлежит `docs/security/THREAT_MODEL.md`.

@@ -66,11 +66,14 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
       if (active) applyRuntime(nextRuntime);
     });
     const unsubscribeCloseRequested = desktopApi.system.subscribeCloseRequested(() => {
-      if (projectWorkspace.current?.hasDirtyDraft() === true) {
-        setManagedAction('close-application');
-        return;
-      }
-      void desktopApi.system.confirmClose();
+      void (async () => {
+        const dirtyAfterSave = await projectWorkspace.current?.waitForPendingSave();
+        if (dirtyAfterSave === true) {
+          setManagedAction('close-application');
+          return;
+        }
+        await desktopApi.system.confirmClose();
+      })();
     });
     void desktopApi.system
       .getStatus()
@@ -139,12 +142,18 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
     }
     await restartWorker();
   };
+  const cancelManagedAction = async (): Promise<void> => {
+    const action = managedAction;
+    if (action === 'close-application' && desktopApi !== null)
+      await desktopApi.system.cancelClose();
+    setManagedAction(null);
+  };
 
   return (
     <div className="desktop-shell">
       <Modal
         opened={managedAction !== null}
-        onClose={() => setManagedAction(null)}
+        onClose={() => void cancelManagedAction()}
         title="Есть несохранённые изменения"
         centered
       >
@@ -154,7 +163,7 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
             : 'Закрыть приложение без сохранения изменений в проекте? Это действие удалит только локальный черновик формы.'}
         </Text>
         <Group mt="lg" justify="flex-end">
-          <Button variant="default" onClick={() => setManagedAction(null)}>
+          <Button variant="default" onClick={() => void cancelManagedAction()}>
             Продолжить редактирование
           </Button>
           <Button

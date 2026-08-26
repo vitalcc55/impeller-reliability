@@ -8,7 +8,7 @@ from typing import Annotated, Final, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError, field_validator
 
 from impeller_reliability.persistence.project_errors import ProjectOperationError
-from impeller_reliability.persistence.project_paths import inspect_opened_regular_file, inspect_reserved_file
+from impeller_reliability.persistence.project_paths import inspect_reserved_file
 from impeller_reliability.persistence.project_values import (
     require_application_version,
     require_canonical_project_id,
@@ -41,14 +41,11 @@ class ProjectManifest(BaseModel):
 def read_manifest(path: Path, deadline: RequestDeadline | None = None) -> ProjectManifest:
     try:
         _check_deadline(deadline, "project_manifest_preflight")
-        expected_identity = inspect_reserved_file(path, path.name)
-        if expected_identity is None:
-            raise AssertionError("required_manifest_identity_missing")
+        inspect_reserved_file(path, path.name)
+        if path.stat().st_size > MAX_PROJECT_MANIFEST_BYTES:
+            raise ProjectOperationError("corrupt_project", "Manifest проекта повреждён или несовместим.")
         descriptor = os.open(path, os.O_RDONLY | os.O_BINARY)
         try:
-            opened_identity = inspect_opened_regular_file(descriptor, path.name)
-            if opened_identity != expected_identity or os.fstat(descriptor).st_size > MAX_PROJECT_MANIFEST_BYTES:
-                raise ProjectOperationError("corrupt_project", "Manifest проекта повреждён или несовместим.")
             chunks: list[bytes] = []
             remaining = MAX_PROJECT_MANIFEST_BYTES + 1
             while remaining > 0:
@@ -59,8 +56,7 @@ def read_manifest(path: Path, deadline: RequestDeadline | None = None) -> Projec
                 chunks.append(chunk)
                 remaining -= len(chunk)
             encoded = b"".join(chunks)
-            final_identity = inspect_opened_regular_file(descriptor, path.name)
-            if len(encoded) > MAX_PROJECT_MANIFEST_BYTES or final_identity != expected_identity or os.fstat(descriptor).st_size != len(encoded):
+            if len(encoded) > MAX_PROJECT_MANIFEST_BYTES:
                 raise ProjectOperationError("corrupt_project", "Manifest проекта повреждён или несовместим.")
         finally:
             os.close(descriptor)

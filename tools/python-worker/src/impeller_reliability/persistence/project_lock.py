@@ -42,17 +42,15 @@ class ProjectLock:
 
     @classmethod
     def acquire(cls, path: Path, owner: LockOwner) -> ProjectLock:
-        expected_identity = inspect_reserved_file(path, ".project.lock", allow_missing=True)
+        lock_exists = inspect_reserved_file(path, ".project.lock", allow_missing=True)
         try:
             descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_BINARY, 0o600)
         except FileExistsError:
-            if expected_identity is None:
-                expected_identity = inspect_reserved_file(path, ".project.lock")
+            if not lock_exists:
+                inspect_reserved_file(path, ".project.lock")
             descriptor = os.open(path, os.O_RDWR | os.O_BINARY)
         try:
-            opened_identity = inspect_opened_regular_file(descriptor, ".project.lock")
-            if expected_identity is not None and opened_identity != expected_identity:
-                raise ProjectOperationError("corrupt_project", ".project.lock был подменён перед захватом блокировки.")
+            inspect_opened_regular_file(descriptor, ".project.lock")
         except Exception:
             os.close(descriptor)
             raise

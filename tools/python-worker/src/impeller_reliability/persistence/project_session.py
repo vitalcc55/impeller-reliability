@@ -8,14 +8,14 @@ from typing import Literal, Self
 from impeller_reliability.persistence.project_database import (
     create_verified_backup,
     insert_audit,
-    remove_owned_backup,
+    remove_backup,
     sha256_file,
     validate_project_database,
 )
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_lock import ProjectLock
 from impeller_reliability.persistence.project_manifest import ProjectManifest
-from impeller_reliability.persistence.project_paths import PathIdentity, inspect_reserved_directory
+from impeller_reliability.persistence.project_paths import inspect_reserved_directory
 from impeller_reliability.persistence.project_values import (
     require_application_version,
     require_canonical_project_id,
@@ -47,13 +47,11 @@ class ProjectSession:
         manifest: ProjectManifest,
         connection: sqlite3.Connection,
         project_lock: ProjectLock,
-        backups_identity: PathIdentity,
     ) -> None:
         self.path = path
         self.manifest = manifest
         self._connection = connection
         self._lock = project_lock
-        self._backups_identity = backups_identity
         self._closed = False
 
     def overview(self) -> ProjectOverview:
@@ -166,9 +164,7 @@ class ProjectSession:
         deadline: RequestDeadline | None = None,
     ) -> tuple[Path, str, str]:
         _check_deadline(deadline, "backup_start")
-        current_backups_identity = inspect_reserved_directory(self.path / "backups", "backups/")
-        if current_backups_identity != self._backups_identity:
-            raise ProjectOperationError("corrupt_project", "Каталог backups/ был подменён после открытия проекта.")
+        inspect_reserved_directory(self.path / "backups", "backups/")
         created_at = utc_now()
         schema_version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
         backup = create_verified_backup(
@@ -179,11 +175,11 @@ class ProjectSession:
             deadline=deadline,
         )
         try:
-            digest = sha256_file(backup.path, deadline)
+            digest = sha256_file(backup, deadline)
             _check_deadline(deadline, "backup_finalize")
-            return (backup.path, digest, created_at)
+            return (backup, digest, created_at)
         except Exception:
-            remove_owned_backup(backup)
+            remove_backup(backup)
             raise
 
     def validate(self, deadline: RequestDeadline | None = None) -> None:

@@ -110,7 +110,7 @@ payload_json TEXT NOT NULL
 
 ## Lock и ProjectSession
 
-После read-only manifest/SQLite identity preflight Python безопасно открывает `.project.lock`, сверяет identity открытого regular file и удерживает через `msvcrt.locking(..., LK_NBLCK, 1)` эксклюзивную блокировку одного байта. Только после захвата в файл записываются диагностические поля `projectId`, `applicationInstanceId`, `pid`, `startedAtUtc`, `host`. PID не участвует в решении о владении.
+После read-only manifest/SQLite validation Python открывает обычный `.project.lock` и удерживает через `msvcrt.locking(..., LK_NBLCK, 1)` эксклюзивную блокировку одного байта. В файл записываются диагностические поля `projectId`, `applicationInstanceId`, `pid`, `startedAtUtc`, `host`; PID не участвует в решении о владении.
 
 Один worker владеет максимум одной ProjectSession. Повторный `project.open/create` при активной сессии отклоняется. Main передаёт JSONL-запросы последовательно: один запрос выполняется и максимум один ожидает dispatch; следующий получает observable busy failure. Domain/transport deadline начинается только при фактической отправке текущей операции. Controlled restart и shutdown сначала прекращают приём новых запросов и дренируют bounded-очередь, затем отправляют `system.shutdown`; отдельный exit timeout относится только к завершению process после ответа. Принудительное завершение остаётся для protocol failure или operation transport timeout. `project.close`, graceful shutdown и аварийное завершение процесса освобождают OS lock; отдельный process test доказывает освобождение после crash.
 
@@ -119,16 +119,16 @@ payload_json TEXT NOT NULL
 Последовательность worker:
 
 1. проверить абсолютный путь, расширение и сам каталог `.irproj`;
-2. проверить `project-manifest.json` как отдельный regular file, сверить identity открытого descriptor, ограничить чтение 4 KiB и только затем разобрать strict manifest;
+2. проверить `project-manifest.json` как отдельный regular file, ограничить чтение 4 KiB и только затем разобрать strict manifest;
 3. проверить topology зарезервированных `project.sqlite`, optional `.project.lock`, `backups/` и SQLite sidecars; symlink/junction/reparse и hard-linked files запрещены;
 4. открыть `project.sqlite` через immutable read-only URI и проверить `application_id`, `user_version`, точный version-specific schema contract, migration ledger, `projectId` и согласованную цепочку metadata/audit для schema v1 без WAL/lock/backup;
-5. захватить OS lock и повторно сверить file identity зарезервированных путей;
-6. открыть подтверждённый SQLite только в `mode=rw`, ещё раз проверить file identity и полный schema/evidence contract до применения WAL/FK/FULL/busy timeout;
+5. захватить OS lock;
+6. открыть подтверждённый SQLite в `mode=rw` и применить WAL/FK/FULL/busy timeout;
 7. при `current < supported` создать SQLite Backup API snapshot в проверенном `backups/`, выполнить его `quick_check`, затем применить forward-only migrations;
 8. выполнить `quick_check`, `foreign_key_check` и повторные structural/semantic проверки schema v1;
 9. получить канонический `ProjectOverview` и только затем назначить активную ProjectSession.
 
-При неверном identity или `current > supported` ошибка возвращается до создания/изменения lock, WAL и backup. Неудачная migration откатывается, исходная база остаётся доступной, проверенный migration backup сохраняется. Ручной backup считается завершённым только после `quick_check`, SHA-256 и final deadline; новый файл и принадлежащие ему sidecars удаляются при любой ошибке. Отдельный `ProjectMigrator` не использует `check_storage()`.
+При неверном формате или `current > supported` ошибка возвращается до WAL и backup. Неудачная migration откатывается, исходная база остаётся доступной, проверенный migration backup сохраняется. Ручной backup считается завершённым только после `quick_check`, SHA-256 и final deadline; новый незавершённый файл удаляется при ошибке. Отдельный `ProjectMigrator` не использует `check_storage()`.
 
 ## IPC и ownership путей
 
@@ -209,24 +209,7 @@ Review closure считается завершённым после Python timeo
 
 ## Final PR review closure
 
-Финальные итерации ревью PR #1 закрывают подтверждённые P2 до слияния и не расширяют M02.1:
-
-1. Существующий контейнер проходит structural preflight зарезервированных путей и read-only SQLite identity probe до создания lock, WAL или backup. После OS lock пути и file identity сверяются повторно; write connection открывается только для подтверждённых `application_id` и поддерживаемой schema. Файловые symlink/junction/reparse points и hard-linked reserved files отклоняются.
-2. Ручной backup принадлежит одному запросу до завершения SQLite copy, `quick_check`, SHA-256 и финальной deadline-проверки. Любая ошибка этой последовательности удаляет только новый файл текущего запроса; существующие manual/migration backups сохраняются.
-3. Permanently detached workspace предлагает независимые действия: повторное подключение/перечитывание и двухшаговый локальный discard. Discard очищает только Renderer project/draft state, не вызывает `project.close`, не изменяет `.irproj` и не удаляет recent path.
-4. `WorkerClient` владеет одной последовательной очередью, совпадающей с serial JSONL worker и ограниченной одним active + одним queued request. Shutdown и controlled restart закрывают вход, дренируют уже принятые операции в пределах их собственных transport deadlines и только затем останавливают process; queued deadlines больше не истекают до фактического dispatch, а final shutdown отменяет пересекающийся restart.
-5. Schema v1 имеет один канонический version-specific contract, из которого создаются и проверяются таблицы/триггеры. Read-only probe, write-open до WAL и post-migration validation проверяют точный набор user objects, migration ledger и согласованность metadata с append-only audit chain; неизвестные user schema objects отклоняются.
-6. Manifest, migration, metadata, audit, backup и desktop read models используют канонический UTC timestamp с миллисекундами. Невалидные календарные значения отклоняются как `corrupt_project` до lock/WAL, а Zod/Pydantic не пропускают их в Renderer.
-7. Версия приложения при создании имеет единый ASCII-token contract длиной до 64 символов. Manifest и `project_metadata` обязаны содержать одно текстовое значение; несогласованность, другой SQLite storage type или нарушение contract отклоняются read-only проверкой как `corrupt_project` до ProjectSession, lock и WAL. Pydantic/Zod повторно защищают IPC boundary.
-8. Все строковые `project_metadata` проверяются как SQLite TEXT с теми же длинами и значениями, что desktop contract; преобразование BLOB через `str()` отсутствует как в preflight evidence, так и в активной ProjectSession.
-9. `projectId` принимается только в канонической UUID-записи с поддерживаемыми version/variant; Python manifest/response и Zod используют один смысл, а старый permissive `UUID(...)`-путь удалён.
-10. Main хранит process-local authorization активного проекта отдельно от необязательного recent-projects read model. Повреждение recent-store остаётся наблюдаемой ошибкой списка, но не блокирует reattach ранее разрешённого пути; identity сверяется до возврата результата Renderer. Authorization отзывается при любом успешном close и отдельной локальной release-операцией после подтверждённого discard, которая не выдаётся за `project.close` и не изменяет `.irproj`.
-11. Обычное закрытие с исправным Renderer сохраняет dirty-draft prompt. Если Renderer не загрузился, завершился или не подтверждает close request за bounded timeout, Main завершает приложение без ожидания Renderer — это утверждённая владельцем fallback-политика для недоступного UI.
-12. Время нового audit-события не может быть меньше последнего persisted `updated_at_utc`; коррекция системных часов назад сохраняет неубывающий логический порядок без отдельного clock service.
-13. SQLite backup copy, `quick_check`, SHA-256 и finalization находятся внутри одного domain deadline. `quick_check` использует SQLite progress handler, поэтому timeout возвращается в Python cleanup до transport kill и удаляет только новый неверифицированный backup.
-14. Проверка schema, migration, metadata и audit evidence идёт под общим SQLite deadline; audit читается cursor-streaming без row-count cap. Недоверенные scalar и payload не передаются в Python, если их тип или UTF-8 размер выходят за контрактный технический bound.
-15. Cleanup неудачного backup сначала проверяет точный созданный путь и не сканирует каталог в штатном timeout-path. Поиск по identity остаётся только ленивым fallback при доказанной подмене пути и не материализует список backups.
-16. Manifest проверяется как отдельный обычный файл до чтения, читается через сверенный descriptor с пределом 4 KiB и domain deadline. Audit evidence включает bounded `event_id` и принимает только канонический UUID v4, который создаёт единственный writer.
+Финальный контракт M02.1 сводится к пяти инвариантам: bounded validation недоверенного контейнера; один Python-owned SQLite writer под OS lock; атомарные metadata/audit и forward migrations с backup; последовательные worker operations с deadline; Renderer draft, который не теряется молча. Electron Main владеет одним автоматом закрытия `idle → waiting-for-decision → approved`; уже принятое сохранение завершается до решения, а недоступный Renderer не блокирует выход.
 
 Исправления публикуются отдельным commit, каждый review thread получает ссылку на commit и regression test и разрешается только после push. Затем запрашивается повторный Codex review. Squash merge допустим только при отсутствии открытых P1/P2, зелёных Quality/package gates, совпадающем SHA и конечном дереве без Etelka; M02.2 в этом цикле не начинается.
 

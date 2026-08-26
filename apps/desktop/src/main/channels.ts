@@ -7,6 +7,7 @@ export const IPC_CHANNELS = {
   closeRequested: 'impeller:system:close-requested',
   closeAcknowledged: 'impeller:system:close-acknowledged',
   confirmClose: 'impeller:system:confirm-close',
+  cancelClose: 'impeller:system:cancel-close',
   projectCreate: 'impeller:project:create',
   projectOpen: 'impeller:project:open',
   projectOpenRecent: 'impeller:project:open-recent',

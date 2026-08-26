@@ -1,5 +1,5 @@
 import { Button, Group, Select, Text, Textarea, TextInput, Title } from '@mantine/core';
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 
 import type {
   DesktopError,
@@ -29,6 +29,7 @@ interface ProjectWorkspaceProps {
 
 export interface ProjectWorkspaceHandle {
   hasDirtyDraft(): boolean;
+  waitForPendingSave(): Promise<boolean>;
   reattachAfterWorkerRestart(): Promise<boolean>;
 }
 
@@ -44,13 +45,13 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     const [reattachBlocked, setReattachBlocked] = useState(false);
     const [confirmReload, setConfirmReload] = useState(false);
     const [confirmDiscardLocal, setConfirmDiscardLocal] = useState(false);
-    const dirty =
-      project !== null &&
-      (draft.name !== project.name ||
-        draft.projectNumber !== project.projectNumber ||
-        draft.description !== project.description ||
-        draft.status !== project.status);
+    const dirty = isDraftDirty(project, draft);
+    const dirtyRef = useRef(dirty);
+    const pendingSaveRef = useRef<Promise<void> | null>(null);
     const detached = project !== null && (!workerReady || reattachBlocked);
+    useEffect(() => {
+      dirtyRef.current = dirty;
+    }, [dirty]);
 
     const refreshRecent = useCallback(async (): Promise<void> => {
       if (desktopApi === null) return;
@@ -82,6 +83,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     }, [desktopApi]);
 
     const acceptProject = (overview: ProjectOverview, notice: string): void => {
+      dirtyRef.current = false;
       setProject(overview);
       setDraft({
         name: overview.name,
@@ -136,8 +138,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
         if (result.ok) acceptProject(result.result, 'Недавний проект открыт.');
         else handleFailure(result.error);
       });
-    const saveProject = (): Promise<void> =>
-      run('save', async () => {
+    const saveProject = (): Promise<void> => {
+      const operation = run('save', async () => {
         if (desktopApi === null || project === null) return;
         const result = await desktopApi.project.updateMetadata({
           expectedRevision: project.recordRevision,
@@ -150,6 +152,12 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           );
         else handleFailure(result.error);
       });
+      pendingSaveRef.current = operation;
+      void operation.finally(() => {
+        if (pendingSaveRef.current === operation) pendingSaveRef.current = null;
+      });
+      return operation;
+    };
     const closeProject = (): Promise<void> =>
       run('close', async () => {
         if (desktopApi === null) return;
@@ -174,6 +182,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
         else handleFailure(result.error);
       });
     const changeDraft = (nextDraft: ProjectDraft): void => {
+      dirtyRef.current = isDraftDirty(project, nextDraft);
       setDraft(nextDraft);
       setConfirmClose(false);
       setConfirmDiscardLocal(false);
@@ -231,6 +240,11 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
       ref,
       () => ({
         hasDirtyDraft: () => dirty,
+        waitForPendingSave: async () => {
+          const pendingSave = pendingSaveRef.current;
+          if (pendingSave !== null) await pendingSave;
+          return dirtyRef.current;
+        },
         reattachAfterWorkerRestart,
       }),
       [dirty, reattachAfterWorkerRestart],
@@ -476,14 +490,14 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                 required
                 maxLength={200}
                 value={draft.name}
-                disabled={detached}
+                disabled={detached || busy !== null}
                 onChange={(event) => changeDraft({ ...draft, name: event.currentTarget.value })}
               />
               <TextInput
                 label="Номер проекта"
                 maxLength={100}
                 value={draft.projectNumber}
-                disabled={detached}
+                disabled={detached || busy !== null}
                 onChange={(event) =>
                   changeDraft({ ...draft, projectNumber: event.currentTarget.value })
                 }
@@ -493,7 +507,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                 data={statusOptions}
                 allowDeselect={false}
                 value={draft.status}
-                disabled={detached}
+                disabled={detached || busy !== null}
                 onChange={(value) => {
                   if (
                     value === 'draft' ||
@@ -510,7 +524,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                 minRows={5}
                 maxLength={4000}
                 value={draft.description}
-                disabled={detached}
+                disabled={detached || busy !== null}
                 onChange={(event) =>
                   changeDraft({ ...draft, description: event.currentTarget.value })
                 }
@@ -550,6 +564,16 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     );
   },
 );
+
+function isDraftDirty(project: ProjectOverview | null, draft: ProjectDraft): boolean {
+  return (
+    project !== null &&
+    (draft.name !== project.name ||
+      draft.projectNumber !== project.projectNumber ||
+      draft.description !== project.description ||
+      draft.status !== project.status)
+  );
+}
 
 function Feedback({
   message,

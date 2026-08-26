@@ -14,7 +14,6 @@ from uuid import uuid4
 
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_manifest import ProjectManifest
-from impeller_reliability.persistence.project_paths import PathIdentity, inspect_reserved_file
 from impeller_reliability.persistence.project_schema import (
     PROJECT_SCHEMA_VERSION,
     create_schema_v1_objects,
@@ -33,12 +32,6 @@ MIN_SUPPORTED_PROJECT_SCHEMA_VERSION: Final = 1
 class ProjectDatabaseIdentity:
     application_id: int
     schema_version: int
-
-
-@dataclass(frozen=True, slots=True)
-class VerifiedBackup:
-    path: Path
-    identity: PathIdentity
 
 
 def configure_project_connection(connection: sqlite3.Connection) -> None:
@@ -222,7 +215,7 @@ class ProjectMigrator:
             initial_metadata=None,
             deadline=deadline,
         )
-        return backup.path
+        return backup
 
     def _apply_pending(
         self,
@@ -259,18 +252,16 @@ def create_verified_backup(
     schema_version: int,
     *,
     deadline: RequestDeadline | None = None,
-) -> VerifiedBackup:
+) -> Path:
     _check_deadline(deadline, "backup_prepare")
     backups_path.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     backup_path = backups_path / f"project-v{schema_version}-{stamp}.sqlite"
-    reserved_identity: PathIdentity | None = None
+    backup_created = False
     try:
         descriptor = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_BINARY, 0o600)
         os.close(descriptor)
-        reserved_identity = inspect_reserved_file(backup_path, backup_path.name)
-        if reserved_identity is None:
-            raise AssertionError("reserved_backup_identity_missing")
+        backup_created = True
         target = sqlite3.connect(backup_path)
         try:
             source.backup(
@@ -293,46 +284,20 @@ def create_verified_backup(
         if quick_check != "ok":
             raise ProjectOperationError("storage_error", "Проверка backup project.sqlite завершилась ошибкой.")
         _check_deadline(deadline, "backup_complete")
-        completed_identity = inspect_reserved_file(backup_path, backup_path.name)
-        if completed_identity != reserved_identity:
-            raise ProjectOperationError("storage_error", "Backup был подменён во время создания.")
-        return VerifiedBackup(path=backup_path, identity=reserved_identity)
+        return backup_path
     except Exception:
-        if reserved_identity is not None:
-            remove_owned_backup(VerifiedBackup(path=backup_path, identity=reserved_identity))
+        if backup_created:
+            remove_backup(backup_path)
         raise
 
 
-def remove_owned_backup(backup: VerifiedBackup) -> bool:
-    owned_path = _find_owned_backup_path(backup)
-    if owned_path is None:
-        return False
+def remove_backup(backup_path: Path) -> None:
     for suffix in ("-wal", "-shm", "-journal"):
-        sidecar_path = owned_path.with_name(f"{owned_path.name}{suffix}")
-        sidecar_identity = inspect_reserved_file(sidecar_path, sidecar_path.name, allow_missing=True)
-        if sidecar_identity is not None:
+        sidecar_path = backup_path.with_name(f"{backup_path.name}{suffix}")
+        if sidecar_path.is_file() and not sidecar_path.is_symlink():
             sidecar_path.unlink()
-    owned_path.unlink()
-    return True
-
-
-def _find_owned_backup_path(backup: VerifiedBackup) -> Path | None:
-    try:
-        current_identity = inspect_reserved_file(backup.path, backup.path.name, allow_missing=True)
-    except ProjectOperationError:
-        current_identity = None
-    if current_identity == backup.identity:
-        return backup.path
-    for candidate in backup.path.parent.glob("*.sqlite"):
-        if candidate == backup.path:
-            continue
-        try:
-            current_identity = inspect_reserved_file(candidate, candidate.name, allow_missing=True)
-        except ProjectOperationError:
-            continue
-        if current_identity == backup.identity:
-            return candidate
-    return None
+    if backup_path.is_file() and not backup_path.is_symlink():
+        backup_path.unlink()
 
 
 def create_project_database(
@@ -358,7 +323,6 @@ def create_project_database(
 
 def open_project_database(
     database_path: Path,
-    expected_identity: PathIdentity,
     expected_database_identity: ProjectDatabaseIdentity,
     manifest: ProjectManifest,
     *,
@@ -371,14 +335,10 @@ def open_project_database(
         connection = connect(_sqlite_uri(database_path, "mode=rw"))
         _validate_open_connection_identity(
             connection,
-            database_path,
             expected_database_identity,
             manifest,
             deadline,
         )
-        current_identity = inspect_reserved_file(database_path, database_path.name)
-        if current_identity != expected_identity:
-            raise ProjectOperationError("corrupt_project", "project.sqlite был подменён перед открытием на запись.")
         connection.row_factory = sqlite3.Row
         configure_project_connection(connection)
         return connection
@@ -394,18 +354,10 @@ def open_project_database(
 
 def _validate_open_connection_identity(
     connection: sqlite3.Connection,
-    database_path: Path,
     expected_identity: ProjectDatabaseIdentity,
     manifest: ProjectManifest,
     deadline: RequestDeadline | None,
 ) -> None:
-    database_rows = connection.execute("PRAGMA database_list").fetchall()
-    main_rows = [row for row in database_rows if str(row[1]) == "main"]
-    if len(main_rows) != 1:
-        raise ProjectOperationError("corrupt_project", "Write connection не содержит единственную main database.")
-    opened_path = Path(str(main_rows[0][2]))
-    if os.path.normcase(os.path.abspath(opened_path)) != os.path.normcase(os.path.abspath(database_path)):
-        raise ProjectOperationError("corrupt_project", "Write connection открыл другой project.sqlite.")
     application_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
     schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     if application_id != expected_identity.application_id or schema_version != expected_identity.schema_version:

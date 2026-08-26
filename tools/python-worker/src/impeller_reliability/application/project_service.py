@@ -17,9 +17,8 @@ from impeller_reliability.persistence.project_errors import ProjectOperationErro
 from impeller_reliability.persistence.project_lock import ProjectLock, current_lock_owner
 from impeller_reliability.persistence.project_manifest import PROJECT_DATABASE_FILE, ProjectManifest, read_manifest, write_manifest
 from impeller_reliability.persistence.project_paths import (
-    inspect_project_container,
     inspect_reserved_directory,
-    verify_project_snapshot_stable,
+    validate_project_container,
 )
 from impeller_reliability.persistence.project_session import ProjectOverview, ProjectSession
 from impeller_reliability.persistence.timestamps import utc_now
@@ -114,7 +113,7 @@ class ProjectService:
         project_path = self._validate_container_path(path)
         inspect_reserved_directory(project_path, ".irproj")
         manifest = read_manifest(project_path / "project-manifest.json", deadline)
-        preflight_snapshot = inspect_project_container(project_path, manifest)
+        validate_project_container(project_path, manifest)
         database_identity = probe_project_database_identity(
             project_path / manifest.databaseFile,
             manifest,
@@ -129,19 +128,13 @@ class ProjectService:
         )
         connection = None
         try:
-            locked_snapshot = inspect_project_container(project_path, manifest)
-            verify_project_snapshot_stable(preflight_snapshot, locked_snapshot)
             _check_deadline(deadline, "project_open_database")
             connection = open_project_database(
                 project_path / manifest.databaseFile,
-                locked_snapshot.database,
                 database_identity,
                 manifest,
                 deadline=deadline,
             )
-            current_backups_identity = inspect_reserved_directory(project_path / "backups", "backups/")
-            if current_backups_identity != locked_snapshot.backups:
-                raise ProjectOperationError("corrupt_project", "Каталог backups/ был подменён перед migration.")
             self._migrator.migrate_existing(
                 connection,
                 project_path / manifest.databaseFile,
@@ -156,7 +149,6 @@ class ProjectService:
                 manifest,
                 connection,
                 project_lock,
-                locked_snapshot.backups,
             )
             overview = session.overview()
             self._session = session

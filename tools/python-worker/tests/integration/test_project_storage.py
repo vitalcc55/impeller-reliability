@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Generator, Iterator
+from collections.abc import Generator
 from contextlib import closing, contextmanager
 from datetime import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -22,14 +21,11 @@ from impeller_reliability.persistence.project_database import (
     MIGRATIONS,
     Migration,
     ProjectMigrator,
-    VerifiedBackup,
     configure_project_connection,
-    remove_owned_backup,
     sha256_file,
 )
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_manifest import ProjectManifest, read_manifest, write_manifest
-from impeller_reliability.persistence.project_paths import inspect_reserved_file
 from impeller_reliability.persistence.project_session import ProjectSession
 from impeller_reliability.worker.deadline import RequestDeadline
 
@@ -591,41 +587,6 @@ def test_schema_v1_contract_is_rejected_without_mutation(
     assert database_path.stat().st_mtime_ns == before_mtime
     assert lock_path.read_bytes() == before_lock
     assert lock_path.stat().st_mtime_ns == before_lock_mtime
-    assert not (project_path / "project.sqlite-wal").exists()
-    assert not (project_path / "project.sqlite-shm").exists()
-
-
-def test_schema_change_between_probe_and_write_open_is_rejected_before_wal(tmp_path: Path) -> None:
-    project_path = tmp_path / "schema-swap.irproj"
-    service = _create_project(project_path)
-    service.close()
-    database_path = project_path / "project.sqlite"
-    manifest = read_manifest(project_path / "project-manifest.json")
-    database_identity = project_database.probe_project_database_identity(
-        database_path,
-        manifest,
-        project_schema.PROJECT_SCHEMA_VERSION,
-    )
-    with _database(project_path) as connection:
-        connection.execute("DROP TRIGGER project_audit_events_no_update")
-        assert str(connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0]).lower() == "delete"
-    path_identity = inspect_reserved_file(database_path, database_path.name)
-    assert path_identity is not None
-    before_hash = _sha256(database_path)
-    before_mtime = database_path.stat().st_mtime_ns
-
-    with pytest.raises(ProjectOperationError) as raised:
-        project_database.open_project_database(
-            database_path,
-            path_identity,
-            database_identity,
-            manifest,
-        )
-
-    assert raised.value.code == "corrupt_project"
-    assert _sha256(database_path) == before_hash
-    assert database_path.stat().st_mtime_ns == before_mtime
-    assert _read_journal_mode_without_writes(database_path) == "delete"
     assert not (project_path / "project.sqlite-wal").exists()
     assert not (project_path / "project.sqlite-shm").exists()
 
@@ -1215,23 +1176,6 @@ def test_backup_quick_check_is_interrupted_at_its_deadline() -> None:
         connection.close()
 
 
-def test_owned_backup_cleanup_does_not_scan_the_backup_directory(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backup_path = tmp_path / "owned.sqlite"
-    backup_path.write_bytes(b"owned")
-    identity = inspect_reserved_file(backup_path, backup_path.name)
-    assert identity is not None
-
-    def fail_on_directory_scan(_path: Path, _pattern: str) -> Iterator[Path]:
-        raise AssertionError("backup_directory_was_scanned")
-
-    monkeypatch.setattr(Path, "glob", fail_on_directory_scan)
-    assert remove_owned_backup(VerifiedBackup(path=backup_path, identity=identity))
-    assert not backup_path.exists()
-
-
 def test_backup_quick_check_timeout_removes_only_new_backup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1259,6 +1203,25 @@ def test_backup_quick_check_timeout_removes_only_new_backup(
     assert raised.value.code == "timeout"
     assert list((project_path / "backups").iterdir()) == [previous_backup]
     assert service.get_overview().record_revision == 1
+    service.close()
+
+
+@pytest.mark.parametrize("corruption", ["missing", "file"])
+def test_manual_backup_requires_the_project_backups_directory(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    project_path = tmp_path / f"backup-directory-{corruption}.irproj"
+    service = _create_project(project_path)
+    backups_path = project_path / "backups"
+    backups_path.rmdir()
+    if corruption == "file":
+        backups_path.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ProjectOperationError) as raised:
+        service.create_backup()
+    assert raised.value.code == "corrupt_project"
+    assert backups_path.exists() is (corruption == "file")
     service.close()
 
 
@@ -1305,38 +1268,6 @@ def test_hash_read_error_removes_only_new_backup(tmp_path: Path, monkeypatch: py
     service.close()
 
 
-def test_hash_cleanup_does_not_delete_substituted_previous_backup(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project_path = tmp_path / "hash-substitution.irproj"
-    service = _create_project(project_path)
-    previous_backup = project_path / "backups" / "previous.sqlite"
-    previous_backup.write_bytes(b"previous backup")
-    displaced_new_backups: list[Path] = []
-    substituted_paths: list[Path] = []
-
-    def substitute_before_failure(path: Path, _deadline: RequestDeadline | None = None) -> str:
-        displaced_new_backup = path.with_name("displaced-new.sqlite")
-        displaced_new_backups.append(displaced_new_backup)
-        substituted_paths.append(path)
-        path.replace(displaced_new_backup)
-        previous_backup.replace(path)
-        path.with_name(f"{path.name}-wal").write_bytes(b"previous sidecar")
-        raise OSError("hash substitution")
-
-    monkeypatch.setattr(project_session, "sha256_file", substitute_before_failure)
-    with pytest.raises(OSError, match="hash substitution"):
-        service.create_backup()
-    assert len(displaced_new_backups) == 1 and not displaced_new_backups[0].exists()
-    assert len(substituted_paths) == 1
-    substituted_path = substituted_paths[0]
-    assert substituted_path.read_bytes() == b"previous backup"
-    assert substituted_path.with_name(f"{substituted_path.name}-wal").read_bytes() == b"previous sidecar"
-    assert service.get_overview().record_revision == 1
-    service.close()
-
-
 def test_open_database_closes_connection_when_wal_configuration_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1348,8 +1279,6 @@ def test_open_database_closes_connection_when_wal_configuration_fails(
     service.close()
     database_path = project_path / "project.sqlite"
     manifest = read_manifest(project_path / "project-manifest.json")
-    expected_identity = inspect_reserved_file(database_path, database_path.name)
-    assert expected_identity is not None
     expected_database_identity = project_database.probe_project_database_identity(
         database_path,
         manifest,
@@ -1368,7 +1297,6 @@ def test_open_database_closes_connection_when_wal_configuration_fails(
     with pytest.raises(ProjectOperationError, match="WAL unavailable"):
         project_database.open_project_database(
             database_path,
-            expected_identity,
             expected_database_identity,
             manifest,
             connection_factory=capture_connection,
@@ -1376,44 +1304,6 @@ def test_open_database_closes_connection_when_wal_configuration_fails(
     assert len(captured) == 1
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         captured[0].execute("SELECT 1")
-
-
-def test_write_connection_factory_cannot_redirect_to_external_database(tmp_path: Path) -> None:
-    project_path = tmp_path / "connection-binding.irproj"
-    service = _create_project(project_path)
-    service.close()
-    database_path = project_path / "project.sqlite"
-    manifest = read_manifest(project_path / "project-manifest.json")
-    expected_path_identity = inspect_reserved_file(database_path, database_path.name)
-    assert expected_path_identity is not None
-    expected_database_identity = project_database.probe_project_database_identity(
-        database_path,
-        manifest,
-        project_schema.PROJECT_SCHEMA_VERSION,
-    )
-    external_database = tmp_path / "external-connection.sqlite"
-    shutil.copy2(database_path, external_database)
-    with closing(sqlite3.connect(external_database)) as connection:
-        assert str(connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0]).lower() == "delete"
-    before_hash = _sha256(external_database)
-    before_mtime = external_database.stat().st_mtime_ns
-
-    def connect_external(_database_uri: str) -> sqlite3.Connection:
-        return sqlite3.connect(external_database)
-
-    with pytest.raises(ProjectOperationError, match=r"другой project\.sqlite"):
-        project_database.open_project_database(
-            database_path,
-            expected_path_identity,
-            expected_database_identity,
-            manifest,
-            connection_factory=connect_external,
-        )
-    assert _sha256(external_database) == before_hash
-    assert external_database.stat().st_mtime_ns == before_mtime
-    assert _read_journal_mode_without_writes(external_database) == "delete"
-    assert not external_database.with_name(f"{external_database.name}-wal").exists()
-    assert not external_database.with_name(f"{external_database.name}-shm").exists()
 
 
 def test_os_lock_blocks_second_process_and_releases_after_crash(tmp_path: Path) -> None:

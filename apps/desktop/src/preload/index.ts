@@ -26,6 +26,9 @@ const api: ImpellerApi = {
     confirmClose: async () => {
       await ipcRenderer.invoke(IPC_CHANNELS.confirmClose);
     },
+    cancelClose: async () => {
+      await ipcRenderer.invoke(IPC_CHANNELS.cancelClose);
+    },
     subscribeStatus: (listener) => {
       const handleStatus = (_event: IpcRendererEvent, value: unknown): void => {
         listener(runtimeStatusSchema.parse(value));
