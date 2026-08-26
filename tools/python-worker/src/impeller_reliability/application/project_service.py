@@ -112,9 +112,8 @@ class ProjectService:
         _check_deadline(deadline, "project_open_start")
         self._require_no_session()
         project_path = self._validate_container_path(path)
-        if not project_path.is_dir():
-            raise ProjectOperationError("corrupt_project", "Каталог проекта не найден.")
-        manifest = read_manifest(project_path / "project-manifest.json")
+        inspect_reserved_directory(project_path, ".irproj")
+        manifest = read_manifest(project_path / "project-manifest.json", deadline)
         preflight_snapshot = inspect_project_container(project_path, manifest)
         database_identity = probe_project_database_identity(
             project_path / manifest.databaseFile,

@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Annotated, Final, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError, field_validator
 
 from impeller_reliability.persistence.project_errors import ProjectOperationError
+from impeller_reliability.persistence.project_paths import inspect_opened_regular_file, inspect_reserved_file
 from impeller_reliability.persistence.project_values import (
     require_application_version,
     require_canonical_project_id,
 )
 from impeller_reliability.persistence.timestamps import require_canonical_utc_timestamp
+from impeller_reliability.worker.deadline import RequestDeadline
 
 PROJECT_CONTAINER_SCHEMA: Final = "impeller.project-container.v1"
 PROJECT_DATABASE_FILE: Final = "project.sqlite"
+MAX_PROJECT_MANIFEST_BYTES: Final = 4_096
 ApplicationVersion = Annotated[str, AfterValidator(require_application_version)]
 ProjectId = Annotated[str, AfterValidator(require_canonical_project_id)]
 
@@ -34,10 +38,37 @@ class ProjectManifest(BaseModel):
         return require_canonical_utc_timestamp(value)
 
 
-def read_manifest(path: Path) -> ProjectManifest:
+def read_manifest(path: Path, deadline: RequestDeadline | None = None) -> ProjectManifest:
     try:
-        raw = path.read_text(encoding="utf-8")
-        return ProjectManifest.model_validate_json(raw)
+        _check_deadline(deadline, "project_manifest_preflight")
+        expected_identity = inspect_reserved_file(path, path.name)
+        if expected_identity is None:
+            raise AssertionError("required_manifest_identity_missing")
+        descriptor = os.open(path, os.O_RDONLY | os.O_BINARY)
+        try:
+            opened_identity = inspect_opened_regular_file(descriptor, path.name)
+            if opened_identity != expected_identity or os.fstat(descriptor).st_size > MAX_PROJECT_MANIFEST_BYTES:
+                raise ProjectOperationError("corrupt_project", "Manifest проекта повреждён или несовместим.")
+            chunks: list[bytes] = []
+            remaining = MAX_PROJECT_MANIFEST_BYTES + 1
+            while remaining > 0:
+                _check_deadline(deadline, "project_manifest_read")
+                chunk = os.read(descriptor, remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            encoded = b"".join(chunks)
+            final_identity = inspect_opened_regular_file(descriptor, path.name)
+            if len(encoded) > MAX_PROJECT_MANIFEST_BYTES or final_identity != expected_identity or os.fstat(descriptor).st_size != len(encoded):
+                raise ProjectOperationError("corrupt_project", "Manifest проекта повреждён или несовместим.")
+        finally:
+            os.close(descriptor)
+        _check_deadline(deadline, "project_manifest_decode")
+        raw = encoded.decode("utf-8", errors="strict")
+        manifest = ProjectManifest.model_validate_json(raw)
+        _check_deadline(deadline, "project_manifest_validate")
+        return manifest
     except (OSError, UnicodeError, ValidationError, ValueError) as error:
         raise ProjectOperationError("corrupt_project", "Manifest проекта повреждён или несовместим.") from error
 
@@ -45,3 +76,8 @@ def read_manifest(path: Path) -> ProjectManifest:
 def write_manifest(path: Path, manifest: ProjectManifest) -> None:
     encoded = json.dumps(manifest.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n"
     path.write_text(encoded, encoding="utf-8", newline="\n")
+
+
+def _check_deadline(deadline: RequestDeadline | None, stage: str) -> None:
+    if deadline is not None:
+        deadline.check(stage)

@@ -1,6 +1,6 @@
 # Functional Requirements
 
-Канонические функциональные области: проекты/справочники, планы РБД/РПТ/ПМН, файловый обмен R130SH, анализ запусков, FMEA/FMECA, статистика/Вейбулл, Марков, Монте-Карло, вибрация и отчётность. Каждый расчёт хранит versioned algorithm id, input hash, evidence, warnings, units, sources и rounding policy. Импортированные факты и выпущенные snapshots неизменяемы.
+Канонические функциональные области: проекты/справочники, односторонний импорт результатов R130SH, расчёты РБД/РПТ/ПМН, анализ запусков, FMEA/FMECA, статистика/Вейбулл, Марков, Монте-Карло, вибрация и отчётность. Каждый расчёт хранит versioned algorithm id, input hash, evidence, warnings, units, sources и rounding policy. Импортированные факты и выпущенные snapshots неизменяемы. Impeller Reliability не формирует задания для R130SH и не участвует в проведении стендового испытания.
 
 M01 capabilities ограничены handshake, ping, shutdown и SQLite health.
 

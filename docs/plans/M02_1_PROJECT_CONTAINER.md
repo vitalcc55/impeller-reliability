@@ -118,14 +118,15 @@ payload_json TEXT NOT NULL
 
 Последовательность worker:
 
-1. проверить абсолютный путь и расширение `.irproj`, строго прочитать manifest;
-2. проверить topology зарезервированных `project-manifest.json`, `project.sqlite`, optional `.project.lock`, `backups/` и SQLite sidecars; symlink/junction/reparse и hard-linked files запрещены;
-3. открыть `project.sqlite` через immutable read-only URI и проверить `application_id`, `user_version`, точный version-specific schema contract, migration ledger, `projectId` и согласованную цепочку metadata/audit для schema v1 без WAL/lock/backup;
-4. захватить OS lock и повторно сверить file identity зарезервированных путей;
-5. открыть подтверждённый SQLite только в `mode=rw`, ещё раз проверить file identity и полный schema/evidence contract до применения WAL/FK/FULL/busy timeout;
-6. при `current < supported` создать SQLite Backup API snapshot в проверенном `backups/`, выполнить его `quick_check`, затем применить forward-only migrations;
-7. выполнить `quick_check`, `foreign_key_check` и повторные structural/semantic проверки schema v1;
-8. получить канонический `ProjectOverview` и только затем назначить активную ProjectSession.
+1. проверить абсолютный путь, расширение и сам каталог `.irproj`;
+2. проверить `project-manifest.json` как отдельный regular file, сверить identity открытого descriptor, ограничить чтение 4 KiB и только затем разобрать strict manifest;
+3. проверить topology зарезервированных `project.sqlite`, optional `.project.lock`, `backups/` и SQLite sidecars; symlink/junction/reparse и hard-linked files запрещены;
+4. открыть `project.sqlite` через immutable read-only URI и проверить `application_id`, `user_version`, точный version-specific schema contract, migration ledger, `projectId` и согласованную цепочку metadata/audit для schema v1 без WAL/lock/backup;
+5. захватить OS lock и повторно сверить file identity зарезервированных путей;
+6. открыть подтверждённый SQLite только в `mode=rw`, ещё раз проверить file identity и полный schema/evidence contract до применения WAL/FK/FULL/busy timeout;
+7. при `current < supported` создать SQLite Backup API snapshot в проверенном `backups/`, выполнить его `quick_check`, затем применить forward-only migrations;
+8. выполнить `quick_check`, `foreign_key_check` и повторные structural/semantic проверки schema v1;
+9. получить канонический `ProjectOverview` и только затем назначить активную ProjectSession.
 
 При неверном identity или `current > supported` ошибка возвращается до создания/изменения lock, WAL и backup. Неудачная migration откатывается, исходная база остаётся доступной, проверенный migration backup сохраняется. Ручной backup считается завершённым только после `quick_check`, SHA-256 и final deadline; новый файл и принадлежащие ему sidecars удаляются при любой ошибке. Отдельный `ProjectMigrator` не использует `check_storage()`.
 
@@ -225,6 +226,7 @@ Review closure считается завершённым после Python timeo
 13. SQLite backup copy, `quick_check`, SHA-256 и finalization находятся внутри одного domain deadline. `quick_check` использует SQLite progress handler, поэтому timeout возвращается в Python cleanup до transport kill и удаляет только новый неверифицированный backup.
 14. Проверка schema, migration, metadata и audit evidence идёт под общим SQLite deadline; audit читается cursor-streaming без row-count cap. Недоверенные scalar и payload не передаются в Python, если их тип или UTF-8 размер выходят за контрактный технический bound.
 15. Cleanup неудачного backup сначала проверяет точный созданный путь и не сканирует каталог в штатном timeout-path. Поиск по identity остаётся только ленивым fallback при доказанной подмене пути и не материализует список backups.
+16. Manifest проверяется как отдельный обычный файл до чтения, читается через сверенный descriptor с пределом 4 KiB и domain deadline. Audit evidence включает bounded `event_id` и принимает только канонический UUID v4, который создаёт единственный writer.
 
 Исправления публикуются отдельным commit, каждый review thread получает ссылку на commit и regression test и разрешается только после push. Затем запрашивается повторный Codex review. Squash merge допустим только при отсутствии открытых P1/P2, зелёных Quality/package gates, совпадающем SHA и конечном дереве без Etelka; M02.2 в этом цикле не начинается.
 

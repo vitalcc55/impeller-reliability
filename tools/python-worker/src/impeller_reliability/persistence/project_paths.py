@@ -4,9 +4,12 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import stat
+from typing import TYPE_CHECKING
 
 from impeller_reliability.persistence.project_errors import ProjectOperationError
-from impeller_reliability.persistence.project_manifest import ProjectManifest
+
+if TYPE_CHECKING:
+    from impeller_reliability.persistence.project_manifest import ProjectManifest
 
 _WINDOWS_REPARSE_POINT_ATTRIBUTE = 0x0400
 

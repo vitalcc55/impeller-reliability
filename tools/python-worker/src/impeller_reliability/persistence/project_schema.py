@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import sqlite3
 from typing import Final
+from uuid import RFC_4122, UUID
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
@@ -208,6 +209,11 @@ def validate_project_evidence(
         """
             SELECT sequence,
                    CASE
+                       WHEN typeof(event_id) = 'text'
+                        AND length(CAST(event_id AS BLOB)) <= 36
+                       THEN event_id
+                   END,
+                   CASE
                        WHEN typeof(event_type) = 'text'
                         AND length(CAST(event_type AS BLOB)) <= 32
                        THEN event_type
@@ -264,14 +270,15 @@ def _validate_audit_rows(
         _check_deadline(deadline, "project_evidence_audit")
         if _require_int(row[0]) != expected_sequence:
             raise _evidence_error()
-        event_at = _require_timestamp(str(row[3]))
+        _require_event_id(row[1])
+        event_at = _require_timestamp(str(row[4]))
         if event_at < previous_event_at:
             raise _evidence_error()
-        if not isinstance(row[4], str):
+        if not isinstance(row[5], str):
             raise _evidence_error()
-        payload = _parse_json_object(row[4])
+        payload = _parse_json_object(row[5])
         if expected_sequence == 1:
-            if str(row[1]) != "project.created" or str(row[2]) != "application":
+            if str(row[2]) != "project.created" or str(row[3]) != "application":
                 raise _evidence_error()
             if (
                 payload.get("entityType") != "project"
@@ -290,7 +297,7 @@ def _validate_audit_rows(
 
         if reconstructed is None:
             raise _evidence_error()
-        if str(row[1]) != "project.metadata_updated" or str(row[2]) != "user":
+        if str(row[2]) != "project.metadata_updated" or str(row[3]) != "user":
             raise _evidence_error()
         changed_fields = _require_string_list(payload.get("changedFields"))
         if not changed_fields or len(changed_fields) != len(set(changed_fields)):
@@ -364,6 +371,18 @@ def _require_metadata_values(value: JsonValue | None) -> dict[str, str]:
 
 def _require_int(value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
+        raise _evidence_error()
+    return value
+
+
+def _require_event_id(value: object) -> str:
+    if not isinstance(value, str):
+        raise _evidence_error()
+    try:
+        parsed = UUID(value)
+    except ValueError as error:
+        raise _evidence_error() from error
+    if str(parsed) != value or parsed.variant != RFC_4122 or parsed.version != 4:
         raise _evidence_error()
     return value
 

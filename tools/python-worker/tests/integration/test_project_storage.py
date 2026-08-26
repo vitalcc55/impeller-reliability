@@ -17,7 +17,7 @@ from uuid import uuid4
 import pytest
 
 from impeller_reliability.application.project_service import ProjectService
-from impeller_reliability.persistence import project_database, project_schema, project_session
+from impeller_reliability.persistence import project_database, project_manifest, project_schema, project_session
 from impeller_reliability.persistence.project_database import (
     MIGRATIONS,
     Migration,
@@ -270,6 +270,80 @@ def test_corrupt_project_is_rejected(tmp_path: Path, corruption: str) -> None:
     with pytest.raises(ProjectOperationError) as raised:
         ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
     assert raised.value.code == "corrupt_project"
+
+
+def test_oversized_manifest_is_rejected_before_unbounded_text_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = tmp_path / "oversized-manifest.irproj"
+    service = _create_project(project_path)
+    service.close()
+    manifest_path = project_path / "project-manifest.json"
+    manifest_path.write_bytes(b"{" + b" " * project_manifest.MAX_PROJECT_MANIFEST_BYTES + b"}")
+
+    def reject_unbounded_read(
+        _path: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> str:
+        raise AssertionError(f"oversized_manifest_used_path_read_text:{encoding}:{errors}:{newline}")
+
+    monkeypatch.setattr(Path, "read_text", reject_unbounded_read)
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
+
+
+@pytest.mark.parametrize("link_kind", ["hardlink", "symlink"])
+def test_linked_manifest_is_rejected_before_external_target_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    link_kind: str,
+) -> None:
+    project_path = tmp_path / "linked-manifest.irproj"
+    service = _create_project(project_path)
+    service.close()
+    manifest_path = project_path / "project-manifest.json"
+    external_manifest = tmp_path / "external-manifest.json"
+    manifest_path.replace(external_manifest)
+    if link_kind == "hardlink":
+        os.link(external_manifest, manifest_path)
+    else:
+        os.symlink(external_manifest, manifest_path)
+    external_hash = _sha256(external_manifest)
+
+    def reject_link_target_read(
+        _path: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> str:
+        raise AssertionError(f"linked_manifest_target_was_read:{encoding}:{errors}:{newline}")
+
+    monkeypatch.setattr(Path, "read_text", reject_link_target_read)
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+    assert _sha256(external_manifest) == external_hash
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
+
+
+def test_manifest_read_honors_the_project_deadline(tmp_path: Path) -> None:
+    project_path = tmp_path / "manifest-deadline.irproj"
+    service = _create_project(project_path)
+    service.close()
+
+    with pytest.raises(ProjectOperationError) as raised:
+        project_manifest.read_manifest(
+            project_path / "project-manifest.json",
+            RequestDeadline.start(1_000, clock=_DelayedClock(expire_on_call=2)),
+        )
+    assert raised.value.code == "timeout"
 
 
 def test_foreign_sqlite_is_rejected_without_any_mutation(tmp_path: Path) -> None:
@@ -675,6 +749,40 @@ def test_oversized_audit_scalar_is_rejected_before_timestamp_materialization(
     with pytest.raises(ProjectOperationError) as raised:
         ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
     assert raised.value.code == "corrupt_project"
+
+
+@pytest.mark.parametrize(
+    "invalid_event_id",
+    ["not-a-uuid", sqlite3.Binary(b"00000000-0000-4000-8000-000000000000")],
+    ids=["malformed", "uuid-shaped-blob"],
+)
+def test_invalid_audit_event_id_is_rejected_before_project_open(
+    tmp_path: Path,
+    invalid_event_id: object,
+) -> None:
+    project_path = tmp_path / "invalid-audit-event-id.irproj"
+    service = _create_project(project_path)
+    service.close()
+    database_path = project_path / "project.sqlite"
+    before_mtime = database_path.stat().st_mtime_ns
+    with _database(project_path) as connection:
+        connection.execute("DROP TRIGGER project_audit_events_no_update")
+        connection.execute(
+            "UPDATE project_audit_events SET event_id = ? WHERE sequence = 1",
+            (invalid_event_id,),
+        )
+        connection.execute(project_schema.PROJECT_AUDIT_NO_UPDATE_TRIGGER_SQL)
+        connection.commit()
+    corrupted_hash = _sha256(database_path)
+    corrupted_mtime = database_path.stat().st_mtime_ns
+
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+    assert raised.value.code == "corrupt_project"
+    assert _sha256(database_path) == corrupted_hash
+    assert database_path.stat().st_mtime_ns == corrupted_mtime >= before_mtime
+    assert not (project_path / "project.sqlite-wal").exists()
+    assert not (project_path / "project.sqlite-shm").exists()
 
 
 def test_non_integer_metadata_revision_is_rejected_before_materialization(

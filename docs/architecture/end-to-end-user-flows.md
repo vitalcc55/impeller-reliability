@@ -45,16 +45,14 @@ User -> Renderer: "Закрыть и открыть повторно"
 Worker -> Project: "release/reacquire OS lock"
 Project -> Renderer: "persisted revision and values"
 
-User -> Renderer: "Утвердить план (M03/M04)"
-Renderer -> Worker: "source values + references"
-Worker -> Project: "immutable plan revision"
-Worker -> Main: "verified *.r130plan payload"
-Main -> R130SH: "atomic file export"
-
-R130SH -> Main: "*.r130run (M04)"
+R130SH -> Main: "result package после независимого испытания (M03)"
 Main -> Worker: "staged package after path/size gate"
 Worker -> Project: "checksums, validation, immutable import revision"
 Worker -> Renderer: "receipt, differences, completeness/classification"
+
+User -> Renderer: "Дополнить дело и выполнить расчёты (M04+)"
+Renderer -> Worker: "project data + selected immutable run inputs"
+Worker -> Project: "validated data + versioned calculation evidence"
 
 User -> Renderer: "Запустить анализ/выпустить отчёт (M05+)"
 Renderer -> Worker: "selected immutable inputs"

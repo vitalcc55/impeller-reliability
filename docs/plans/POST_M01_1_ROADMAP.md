@@ -10,17 +10,17 @@ M02.2 отдельной вертикалью добавляет Customer, Wheel
 
 Одновременно расширяются существующие owners требований, domain model, glossary и traceability. Новые параллельные спецификации не создаются.
 
-## M03 — планы испытаний
+## M03 — входной результат R130SH
 
-Сначала один полный РБД vertical slice: Project → Specimen → Campaign → draft → Python validation/calculation → evidence → immutable revision → повторное открытие. Только после утверждённого контракта и golden fixtures добавляются РПТ и ПМН; затем формируется `.r130plan`. ECharts и KaTeX появляются вместе с реальной потребностью этой вертикали.
+После получения реального обезличенного экспорта R130SH фиксируются входная schema, positive/negative fixtures, canonical hashing и importer Impeller Reliability. Вертикаль: независимый результат R130SH → безопасный staging → immutable import → привязка к проекту/образцу → повторное открытие. Прямое чтение SQLite R130SH, исходящий план и управление стендом запрещены.
 
-## M04 — файловая интеграция R130SH
+## M04 — расчёты испытаний
 
-Последовательность: JSON Schema → обезличенные positive/negative fixtures → canonical hashing → exporter R130SH → importer Impeller Reliability → cross-repository contract tests. Прямое чтение SQLite R130SH и управление стендом остаются запрещены.
+Сначала один полный РБД vertical slice на импортированных и дополненных данных: Project → Specimen → Campaign → Python validation/calculation → evidence → immutable revision → повторное открытие. Только после утверждённого математического контракта и golden fixtures добавляются РПТ и ПМН. ECharts и KaTeX появляются вместе с реальной потребностью этой вертикали. Расчёты не формируют задание для R130SH.
 
 ## M05 и последующие предметные этапы
 
-После plan/run contract реализуются анализ запуска и классификация, затем только по утверждённым методикам — FMEA/FMECA, статистика/Вейбулл, тренды и спектры вибрации, Марков, Монте-Карло и полная отчётность. Формулы не переносятся из демонстрационного кода без contract, source, invariants, rounding policy и независимых fixtures.
+После входного run contract и расчётной вертикали реализуются анализ запуска и классификация, затем только по утверждённым методикам — FMEA/FMECA, статистика/Вейбулл, тренды и спектры вибрации, Марков, Монте-Карло и полная отчётность. Формулы не переносятся из демонстрационного кода без contract, source, invariants, rounding policy и независимых fixtures.
 
 ## Поставка и эксплуатация
 
@@ -36,9 +36,9 @@ TypeScript 7/Vite 8 переходят только цельной совмес�
 
 1. `codex/m01-closure-hardening`
 2. `codex/m02-project-storage`
-3. `codex/m03-rbd-plan-vertical-slice`
-4. `codex/m03-rpt-pmn-plans`
-5. `codex/m04-r130sh-contracts`
+3. `codex/m03-r130sh-run-import`
+4. `codex/m04-rbd-analysis`
+5. `codex/m04-rpt-pmn-analysis`
 6. `codex/m05-run-analysis`
 
 Каждая ветка заканчивается наблюдаемым вертикальным результатом и собственным verification gate; M02 не начинается из M01.1 автоматически.
