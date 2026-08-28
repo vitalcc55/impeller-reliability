@@ -29,6 +29,16 @@ export const workerOperationSchema = z.enum([
   'specimen.update',
   'specimen.archive',
   'specimen.restore',
+  'caseDocument.create',
+  'caseDocument.createWithFile',
+  'caseDocument.list',
+  'caseDocument.get',
+  'caseDocument.update',
+  'caseDocument.attachFile',
+  'caseDocument.verifyFile',
+  'caseDocument.archive',
+  'caseDocument.restore',
+  'caseDocument.resolveFile',
 ]);
 
 export type WorkerOperation = z.infer<typeof workerOperationSchema>;
@@ -295,6 +305,121 @@ export const specimenRevisionPayloadSchema = specimenIdPayloadSchema
   .extend({ expectedRevision: z.number().int().positive() })
   .strict();
 
+export const caseDocumentKindSchema = z.enum([
+  'technical_specification',
+  'individual_test_method',
+  'typical_test_method',
+  'customer_requirement',
+  'test_request',
+  'operational_documentation',
+  'standard',
+  'drawing',
+  'measurement_or_attestation_record',
+  'other',
+]);
+export const caseDocumentIntegrityStatusSchema = z.enum([
+  'not_attached',
+  'verified',
+  'missing',
+  'modified',
+  'verification_error',
+]);
+export const caseDocumentWarningSchema = z.enum([
+  'case_document_file_missing',
+  'case_document_designation_missing',
+  'case_document_revision_missing',
+]);
+export const caseDocumentDraftSchema = z
+  .object({
+    documentKind: caseDocumentKindSchema,
+    title: z.string().trim().min(1).max(300),
+    designation: z.string().trim().max(200),
+    revisionLabel: z.string().trim().max(200),
+    documentDate: optionalDateSchema,
+    issuer: z.string().trim().max(300),
+    notes: z.string().trim().max(4_000),
+  })
+  .strict();
+export const caseDocumentCreateCommandSchema = z
+  .object({
+    caseDocumentId: entityIdSchema,
+    document: caseDocumentDraftSchema,
+    wheelModelIds: z.array(entityIdSchema),
+    specimenIds: z.array(entityIdSchema),
+  })
+  .strict();
+export const caseDocumentCreateWithFilePayloadSchema = caseDocumentCreateCommandSchema
+  .extend({ sourcePath: z.string().min(1).max(32_767) })
+  .strict();
+export const caseDocumentIdPayloadSchema = z.object({ caseDocumentId: entityIdSchema }).strict();
+export const caseDocumentListPayloadSchema = z
+  .object({
+    includeArchived: z.boolean(),
+    documentKind: caseDocumentKindSchema.nullable(),
+  })
+  .strict();
+export const caseDocumentUpdatePayloadSchema = caseDocumentCreateCommandSchema
+  .extend({ expectedRevision: z.number().int().positive() })
+  .strict();
+export const caseDocumentAttachFileCommandSchema = caseDocumentIdPayloadSchema
+  .extend({ expectedRevision: z.number().int().positive() })
+  .strict();
+export const caseDocumentAttachFilePayloadSchema = caseDocumentAttachFileCommandSchema
+  .extend({ sourcePath: z.string().min(1).max(32_767) })
+  .strict();
+export const caseDocumentRevisionPayloadSchema = caseDocumentIdPayloadSchema
+  .extend({ expectedRevision: z.number().int().positive() })
+  .strict();
+export const caseDocumentFileSchema = z
+  .object({
+    originalFileName: z
+      .string()
+      .min(1)
+      .max(255)
+      .regex(/^[^/\\]+$/u)
+      .refine((value) => value !== '.' && value !== '..'),
+    mediaType: z.string().min(1).max(128),
+    sizeBytes: z
+      .number()
+      .int()
+      .positive()
+      .max(100 * 1024 * 1024),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/u),
+    attachedAtUtc: canonicalUtcTimestampSchema,
+  })
+  .strict();
+export const caseDocumentSchema = caseDocumentDraftSchema
+  .extend({
+    caseDocumentId: entityIdSchema,
+    recordRevision: z.number().int().positive(),
+    archivedAtUtc: canonicalUtcTimestampSchema.nullable(),
+    createdAtUtc: canonicalUtcTimestampSchema,
+    updatedAtUtc: canonicalUtcTimestampSchema,
+    file: caseDocumentFileSchema.nullable(),
+    integrityStatus: caseDocumentIntegrityStatusSchema,
+    wheelModelIds: z.array(entityIdSchema),
+    specimenIds: z.array(entityIdSchema),
+    warnings: z.array(caseDocumentWarningSchema),
+  })
+  .strict();
+export const caseDocumentSummarySchema = z
+  .object({
+    caseDocumentId: entityIdSchema,
+    documentKind: caseDocumentKindSchema,
+    title: z.string(),
+    designation: z.string(),
+    recordRevision: z.number().int().positive(),
+    archivedAtUtc: canonicalUtcTimestampSchema.nullable(),
+    warnings: z.array(caseDocumentWarningSchema),
+  })
+  .strict();
+export const caseDocumentListResultSchema = z
+  .object({ items: z.array(caseDocumentSummarySchema) })
+  .strict();
+export const caseDocumentResolveFileResultSchema = z
+  .object({ absolutePath: z.string().min(1).max(32_767) })
+  .strict();
+
 export type EmptyWorkerPayload = z.infer<typeof emptyPayloadSchema>;
 export type HandshakeResult = z.infer<typeof handshakeResultSchema>;
 export type PingResult = z.infer<typeof pingResultSchema>;
@@ -315,6 +440,13 @@ export type SpecimenDraft = z.infer<typeof specimenDraftSchema>;
 export type SpecimenCreateCommand = z.infer<typeof specimenCreatePayloadSchema>;
 export type Specimen = z.infer<typeof specimenSchema>;
 export type SpecimenSummary = z.infer<typeof specimenSummarySchema>;
+export type CaseDocumentKind = z.infer<typeof caseDocumentKindSchema>;
+export type CaseDocumentIntegrityStatus = z.infer<typeof caseDocumentIntegrityStatusSchema>;
+export type CaseDocumentWarning = z.infer<typeof caseDocumentWarningSchema>;
+export type CaseDocumentDraft = z.infer<typeof caseDocumentDraftSchema>;
+export type CaseDocumentCreateCommand = z.infer<typeof caseDocumentCreateCommandSchema>;
+export type CaseDocument = z.infer<typeof caseDocumentSchema>;
+export type CaseDocumentSummary = z.infer<typeof caseDocumentSummarySchema>;
 
 export interface WorkerOperationMap {
   readonly 'system.handshake': {
@@ -412,6 +544,46 @@ export interface WorkerOperationMap {
   readonly 'specimen.restore': {
     readonly request: z.infer<typeof specimenRevisionPayloadSchema>;
     readonly result: Specimen;
+  };
+  readonly 'caseDocument.create': {
+    readonly request: CaseDocumentCreateCommand;
+    readonly result: CaseDocument;
+  };
+  readonly 'caseDocument.createWithFile': {
+    readonly request: z.infer<typeof caseDocumentCreateWithFilePayloadSchema>;
+    readonly result: CaseDocument;
+  };
+  readonly 'caseDocument.list': {
+    readonly request: z.infer<typeof caseDocumentListPayloadSchema>;
+    readonly result: z.infer<typeof caseDocumentListResultSchema>;
+  };
+  readonly 'caseDocument.get': {
+    readonly request: z.infer<typeof caseDocumentIdPayloadSchema>;
+    readonly result: CaseDocument;
+  };
+  readonly 'caseDocument.update': {
+    readonly request: z.infer<typeof caseDocumentUpdatePayloadSchema>;
+    readonly result: CaseDocument;
+  };
+  readonly 'caseDocument.attachFile': {
+    readonly request: z.infer<typeof caseDocumentAttachFilePayloadSchema>;
+    readonly result: CaseDocument;
+  };
+  readonly 'caseDocument.verifyFile': {
+    readonly request: z.infer<typeof caseDocumentIdPayloadSchema>;
+    readonly result: CaseDocument;
+  };
+  readonly 'caseDocument.archive': {
+    readonly request: z.infer<typeof caseDocumentRevisionPayloadSchema>;
+    readonly result: CaseDocument;
+  };
+  readonly 'caseDocument.restore': {
+    readonly request: z.infer<typeof caseDocumentRevisionPayloadSchema>;
+    readonly result: CaseDocument;
+  };
+  readonly 'caseDocument.resolveFile': {
+    readonly request: z.infer<typeof caseDocumentIdPayloadSchema>;
+    readonly result: z.infer<typeof caseDocumentResolveFileResultSchema>;
   };
 }
 
@@ -511,6 +683,60 @@ export const workerRequestSchema = z.discriminatedUnion('operation', [
   requestBaseSchema
     .extend({ operation: z.literal('specimen.restore'), payload: specimenRevisionPayloadSchema })
     .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('caseDocument.create'),
+      payload: caseDocumentCreateCommandSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('caseDocument.createWithFile'),
+      payload: caseDocumentCreateWithFilePayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('caseDocument.list'), payload: caseDocumentListPayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('caseDocument.get'), payload: caseDocumentIdPayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('caseDocument.update'),
+      payload: caseDocumentUpdatePayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('caseDocument.attachFile'),
+      payload: caseDocumentAttachFilePayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('caseDocument.verifyFile'),
+      payload: caseDocumentIdPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('caseDocument.archive'),
+      payload: caseDocumentRevisionPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('caseDocument.restore'),
+      payload: caseDocumentRevisionPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('caseDocument.resolveFile'),
+      payload: caseDocumentIdPayloadSchema,
+    })
+    .strict(),
 ]);
 
 export const workerErrorSchema = z
@@ -531,6 +757,12 @@ export const workerErrorSchema = z
       'entity_archived',
       'entity_in_use',
       'duplicate_entity',
+      'duplicate_document_content',
+      'file_already_attached',
+      'unsupported_file_type',
+      'file_too_large',
+      'file_missing',
+      'file_integrity_mismatch',
       'internal_error',
     ]),
     message: z.string(),
@@ -579,6 +811,13 @@ export const wheelModelListSuccessResponseSchema = createSuccessResponseSchema(
 export const specimenSuccessResponseSchema = createSuccessResponseSchema(specimenSchema);
 export const specimenListSuccessResponseSchema =
   createSuccessResponseSchema(specimenListResultSchema);
+export const caseDocumentSuccessResponseSchema = createSuccessResponseSchema(caseDocumentSchema);
+export const caseDocumentListSuccessResponseSchema = createSuccessResponseSchema(
+  caseDocumentListResultSchema,
+);
+export const caseDocumentResolveFileSuccessResponseSchema = createSuccessResponseSchema(
+  caseDocumentResolveFileResultSchema,
+);
 export const workerErrorResponseSchema = responseBaseSchema
   .extend({
     ok: z.literal(false),
@@ -626,6 +865,18 @@ const specimenListResponseSchema = z.union([
   specimenListSuccessResponseSchema,
   workerErrorResponseSchema,
 ]);
+const caseDocumentResponseSchema = z.union([
+  caseDocumentSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const caseDocumentListResponseSchema = z.union([
+  caseDocumentListSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const caseDocumentResolveFileResponseSchema = z.union([
+  caseDocumentResolveFileSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
 
 export type WorkerRequest = z.infer<typeof workerRequestSchema>;
 export type WorkerErrorResponse = z.infer<typeof workerErrorResponseSchema>;
@@ -655,6 +906,16 @@ export interface WorkerResponseMap {
   readonly 'specimen.update': z.infer<typeof specimenResponseSchema>;
   readonly 'specimen.archive': z.infer<typeof specimenResponseSchema>;
   readonly 'specimen.restore': z.infer<typeof specimenResponseSchema>;
+  readonly 'caseDocument.create': z.infer<typeof caseDocumentResponseSchema>;
+  readonly 'caseDocument.createWithFile': z.infer<typeof caseDocumentResponseSchema>;
+  readonly 'caseDocument.list': z.infer<typeof caseDocumentListResponseSchema>;
+  readonly 'caseDocument.get': z.infer<typeof caseDocumentResponseSchema>;
+  readonly 'caseDocument.update': z.infer<typeof caseDocumentResponseSchema>;
+  readonly 'caseDocument.attachFile': z.infer<typeof caseDocumentResponseSchema>;
+  readonly 'caseDocument.verifyFile': z.infer<typeof caseDocumentResponseSchema>;
+  readonly 'caseDocument.archive': z.infer<typeof caseDocumentResponseSchema>;
+  readonly 'caseDocument.restore': z.infer<typeof caseDocumentResponseSchema>;
+  readonly 'caseDocument.resolveFile': z.infer<typeof caseDocumentResolveFileResponseSchema>;
 }
 
 export type WorkerResponseFor<TOperation extends WorkerOperation> = WorkerResponseMap[TOperation];
@@ -740,6 +1001,19 @@ export function parseWorkerResponse(operation: WorkerOperation, input: unknown):
       return specimenResponseSchema.parse(input);
     case 'specimen.list':
       return specimenListResponseSchema.parse(input);
+    case 'caseDocument.create':
+    case 'caseDocument.createWithFile':
+    case 'caseDocument.get':
+    case 'caseDocument.update':
+    case 'caseDocument.attachFile':
+    case 'caseDocument.verifyFile':
+    case 'caseDocument.archive':
+    case 'caseDocument.restore':
+      return caseDocumentResponseSchema.parse(input);
+    case 'caseDocument.list':
+      return caseDocumentListResponseSchema.parse(input);
+    case 'caseDocument.resolveFile':
+      return caseDocumentResolveFileResponseSchema.parse(input);
   }
 }
 
@@ -775,6 +1049,12 @@ export const desktopErrorSchema = z
       'entity_archived',
       'entity_in_use',
       'duplicate_entity',
+      'duplicate_document_content',
+      'file_already_attached',
+      'unsupported_file_type',
+      'file_too_large',
+      'file_missing',
+      'file_integrity_mismatch',
       'operation_in_progress',
       'storage_error',
       'worker_unavailable',
@@ -818,6 +1098,10 @@ export type WheelModelUpdateCommand = z.infer<typeof wheelModelUpdatePayloadSche
 export type WheelModelRevisionCommand = z.infer<typeof wheelModelRevisionPayloadSchema>;
 export type SpecimenUpdateCommand = z.infer<typeof specimenUpdatePayloadSchema>;
 export type SpecimenRevisionCommand = z.infer<typeof specimenRevisionPayloadSchema>;
+export type CaseDocumentUpdateCommand = z.infer<typeof caseDocumentUpdatePayloadSchema>;
+export type CaseDocumentAttachFileCommand = z.infer<typeof caseDocumentAttachFileCommandSchema>;
+export type CaseDocumentRevisionCommand = z.infer<typeof caseDocumentRevisionPayloadSchema>;
+export type CaseDocumentListQuery = z.infer<typeof caseDocumentListPayloadSchema>;
 
 export interface ImpellerApi {
   readonly system: {
@@ -860,5 +1144,17 @@ export interface ImpellerApi {
     update(command: SpecimenUpdateCommand): Promise<DesktopResult<Specimen>>;
     archive(command: SpecimenRevisionCommand): Promise<DesktopResult<Specimen>>;
     restore(command: SpecimenRevisionCommand): Promise<DesktopResult<Specimen>>;
+  };
+  readonly caseDocument: {
+    create(command: CaseDocumentCreateCommand): Promise<DesktopResult<CaseDocument>>;
+    createWithFile(command: CaseDocumentCreateCommand): Promise<DesktopResult<CaseDocument>>;
+    list(query: CaseDocumentListQuery): Promise<DesktopResult<readonly CaseDocumentSummary[]>>;
+    get(caseDocumentId: string): Promise<DesktopResult<CaseDocument>>;
+    update(command: CaseDocumentUpdateCommand): Promise<DesktopResult<CaseDocument>>;
+    attachFile(command: CaseDocumentAttachFileCommand): Promise<DesktopResult<CaseDocument>>;
+    verifyFile(caseDocumentId: string): Promise<DesktopResult<CaseDocument>>;
+    openFile(caseDocumentId: string): Promise<DesktopResult<{ readonly opened: boolean }>>;
+    archive(command: CaseDocumentRevisionCommand): Promise<DesktopResult<CaseDocument>>;
+    restore(command: CaseDocumentRevisionCommand): Promise<DesktopResult<CaseDocument>>;
   };
 }

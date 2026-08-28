@@ -1,5 +1,7 @@
 # M02.2A — Analyst Dossier
 
+> Нумерация schema в этом предрелизном плане заменена решением M02.2B: пользовательских данных и выпуска ещё не было, поэтому первый публикуемый формат создаётся как единая schema v1 без migration/compatibility с промежуточными v1/v2. Предметные и audit-инварианты M02.2A сохранены.
+
 ## Outcome contract
 
 M02.2A добавляет редактируемые сведения аналитического дела без участия в управлении стендом:
@@ -21,9 +23,9 @@ M02.2A добавляет редактируемые сведения анали
 
 M02.2A создаёт только слой `analyst_enrichment`: `customer_profile`, `wheel_models` и `specimens`. Будущие `r130sh_source` и `derived_analysis` остаются отдельными владельцами. Таблицы импорта, автоматическое разрешение расхождений и универсальная EAV-модель не создаются.
 
-## Project schema v2
+## Published project schema baseline
 
-Forward-only migration `0002` добавляет:
+В финальную первую schema v1 входят:
 
 - одну optional-карточку `customer_profile` на проект;
 - каталог `wheel_models` с UUID v4, optional инженерными характеристиками, revision и archive timestamp;
@@ -31,7 +33,7 @@ Forward-only migration `0002` добавляет:
 - UUID v4 новой модели или образца создаётся до отправки create-команды и является её idempotency key: безопасный повтор не создаёт вторую сущность;
 - индексы по архивному состоянию, названию/обозначению модели, связи specimen → model и идентификационному номеру.
 
-Перед migration существующей v1 создаётся и проверяется backup v1. Migration, migration ledger и `user_version=2` фиксируются одной транзакцией. Schema v1 остаётся только входом forward migration: dual-write, compatibility tables и runtime-поддержка двух моделей не создаются.
+Поскольку предыдущий формат не выпускался и пользовательских данных нет, dossier tables создаются сразу в полном `0001 create_project_database`. Промежуточные `0001/0002` не принимаются как legacy input; dual-write, compatibility tables и backup фиктивного predecessor отсутствуют. Future forward migration начинается от выпущенной schema v1.
 
 ## Domain rules
 
@@ -77,7 +79,7 @@ List имеет `includeArchived` и детерминированную сорт
 
 ## Verification
 
-- Python: migration/backup/rollback, CRUD, no-op/conflict, archive invariants, canonical values, warnings, transactional audit, persistence и timeouts;
+- Python: atomic full-schema create, CRUD, no-op/conflict, archive invariants, canonical values, warnings, transactional audit, persistence и timeouts;
 - TypeScript: Zod/Pydantic-equivalent operation maps, response parsing, errors и общий draft owner;
 - Electron E2E: customer → model → specimen → update/archive/restore → close/reopen, а также dirty lifecycle;
 - Browser QA: desktop/640 px, keyboard/focus, empty/warning/error states и clean console;
@@ -95,8 +97,8 @@ List имеет `includeArchived` и детерминированную сорт
 
 ## Definition of Done
 
-Этап завершён, когда schema v1 безопасно мигрирует в v2 с verified backup, вертикаль Analyst Dossier сохраняется после повторного открытия, все изменения дают доказательный audit, общий draft guard не теряет ввод, локальный и GitHub gates зелёные, а owner-документы согласованы с downstream-only моделью R130SH.
+Этап завершён, когда Analyst Dossier входит в первый atomic schema v1 baseline, сохраняется после повторного открытия, все изменения дают доказательный audit, общий draft guard не теряет ввод, локальный и GitHub gates зелёные, а owner-документы согласованы с downstream-only моделью R130SH.
 
 ## Stop condition
 
-После PR и review работа останавливается. M02.2B, TestCampaign, импорт `.r130run`, source bindings, расчёты, FMEA, статистика, вибрация, отчётность, installer и signing не начинаются.
+Эта stop condition была выполнена после PR #2. Текущая последующая работа ограничена отдельным outcome contract M02.2B; TestCampaign, импорт `.r130run`, source bindings, расчёты, FMEA, статистика, вибрация, отчётность, installer и signing по-прежнему не начинаются.

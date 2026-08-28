@@ -6,6 +6,21 @@ from impeller_reliability import __version__
 from impeller_reliability.application.project_service import ProjectService
 from impeller_reliability.persistence.sqlite_health import SCHEMA_VERSION, check_storage
 from impeller_reliability.protocol.envelopes import (
+    CaseDocumentArchiveRequest,
+    CaseDocumentAttachFileRequest,
+    CaseDocumentCreateRequest,
+    CaseDocumentCreateWithFileRequest,
+    CaseDocumentFileResult,
+    CaseDocumentGetRequest,
+    CaseDocumentListRequest,
+    CaseDocumentListResult,
+    CaseDocumentResolveFileRequest,
+    CaseDocumentResolveFileResult,
+    CaseDocumentRestoreRequest,
+    CaseDocumentResult,
+    CaseDocumentSummaryResult,
+    CaseDocumentUpdateRequest,
+    CaseDocumentVerifyFileRequest,
     CustomerGetRequest,
     CustomerGetResult,
     CustomerProfileResult,
@@ -77,6 +92,16 @@ CAPABILITIES: list[Operation] = [
     "specimen.update",
     "specimen.archive",
     "specimen.restore",
+    "caseDocument.create",
+    "caseDocument.createWithFile",
+    "caseDocument.list",
+    "caseDocument.get",
+    "caseDocument.update",
+    "caseDocument.attachFile",
+    "caseDocument.verifyFile",
+    "caseDocument.archive",
+    "caseDocument.restore",
+    "caseDocument.resolveFile",
 ]
 
 
@@ -228,6 +253,87 @@ class Dispatcher:
             case SpecimenArchiveRequest() | SpecimenRestoreRequest():
                 specimen = self._projects.set_specimen_archived(request.payload.specimenId, request.payload.expectedRevision, isinstance(request, SpecimenArchiveRequest), active_deadline)
                 return SuccessResponse[SpecimenResult](requestId=request.requestId, revision=request.revision, result=self._specimen_result(specimen))
+            case CaseDocumentCreateRequest():
+                document = self._projects.create_case_document(
+                    request.payload.caseDocumentId,
+                    request.payload.document.model_dump(mode="python"),
+                    tuple(request.payload.wheelModelIds),
+                    tuple(request.payload.specimenIds),
+                    active_deadline,
+                )
+                return self._case_document_response(request.requestId, request.revision, document)
+            case CaseDocumentCreateWithFileRequest():
+                document = self._projects.create_case_document_with_file(
+                    request.payload.caseDocumentId,
+                    request.payload.document.model_dump(mode="python"),
+                    tuple(request.payload.wheelModelIds),
+                    tuple(request.payload.specimenIds),
+                    Path(request.payload.sourcePath),
+                    active_deadline,
+                )
+                return self._case_document_response(request.requestId, request.revision, document)
+            case CaseDocumentListRequest():
+                documents = self._projects.list_case_documents(
+                    request.payload.includeArchived,
+                    request.payload.documentKind,
+                    active_deadline,
+                )
+                return SuccessResponse[CaseDocumentListResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=CaseDocumentListResult(items=[self._case_document_summary(item) for item in documents]),
+                )
+            case CaseDocumentGetRequest():
+                return self._case_document_response(
+                    request.requestId,
+                    request.revision,
+                    self._projects.get_case_document(request.payload.caseDocumentId, active_deadline),
+                )
+            case CaseDocumentUpdateRequest():
+                document = self._projects.update_case_document(
+                    request.payload.caseDocumentId,
+                    request.payload.expectedRevision,
+                    request.payload.document.model_dump(mode="python"),
+                    tuple(request.payload.wheelModelIds),
+                    tuple(request.payload.specimenIds),
+                    active_deadline,
+                )
+                return self._case_document_response(request.requestId, request.revision, document)
+            case CaseDocumentAttachFileRequest():
+                document = self._projects.attach_case_document_file(
+                    request.payload.caseDocumentId,
+                    request.payload.expectedRevision,
+                    Path(request.payload.sourcePath),
+                    active_deadline,
+                )
+                return self._case_document_response(request.requestId, request.revision, document)
+            case CaseDocumentVerifyFileRequest():
+                return self._case_document_response(
+                    request.requestId,
+                    request.revision,
+                    self._projects.verify_case_document_file(
+                        request.payload.caseDocumentId,
+                        active_deadline,
+                    ),
+                )
+            case CaseDocumentArchiveRequest() | CaseDocumentRestoreRequest():
+                document = self._projects.set_case_document_archived(
+                    request.payload.caseDocumentId,
+                    request.payload.expectedRevision,
+                    isinstance(request, CaseDocumentArchiveRequest),
+                    active_deadline,
+                )
+                return self._case_document_response(request.requestId, request.revision, document)
+            case CaseDocumentResolveFileRequest():
+                resolved = self._projects.resolve_case_document_file(
+                    request.payload.caseDocumentId,
+                    active_deadline,
+                )
+                return SuccessResponse[CaseDocumentResolveFileResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=CaseDocumentResolveFileResult(absolutePath=str(resolved)),
+                )
 
     def close(self) -> None:
         self._projects.close()
@@ -352,4 +458,69 @@ class Dispatcher:
             recordRevision=specimen.record_revision,
             archivedAtUtc=specimen.archived_at_utc,
             warnings=list(specimen.warnings),
+        )
+
+    @staticmethod
+    def _case_document_response(
+        request_id: str,
+        revision: int,
+        document: object,
+    ) -> SuccessResponse[CaseDocumentResult]:
+        return SuccessResponse[CaseDocumentResult](
+            requestId=request_id,
+            revision=revision,
+            result=Dispatcher._case_document_result(document),
+        )
+
+    @staticmethod
+    def _case_document_result(document: object) -> CaseDocumentResult:
+        from impeller_reliability.persistence.case_documents import CaseDocument
+
+        if not isinstance(document, CaseDocument):
+            raise AssertionError("invalid_case_document")
+        file = document.file
+        return CaseDocumentResult(
+            caseDocumentId=document.case_document_id,
+            documentKind=document.document_kind,
+            title=document.title,
+            designation=document.designation,
+            revisionLabel=document.revision_label,
+            documentDate=document.document_date,
+            issuer=document.issuer,
+            notes=document.notes,
+            recordRevision=document.record_revision,
+            archivedAtUtc=document.archived_at_utc,
+            createdAtUtc=document.created_at_utc,
+            updatedAtUtc=document.updated_at_utc,
+            file=(
+                None
+                if file is None
+                else CaseDocumentFileResult(
+                    originalFileName=file.original_file_name,
+                    mediaType=file.media_type,
+                    sizeBytes=file.size_bytes,
+                    sha256=file.sha256,
+                    attachedAtUtc=file.attached_at_utc,
+                )
+            ),
+            integrityStatus=document.integrity_status,
+            wheelModelIds=list(document.wheel_model_ids),
+            specimenIds=list(document.specimen_ids),
+            warnings=list(document.warnings),
+        )
+
+    @staticmethod
+    def _case_document_summary(document: object) -> CaseDocumentSummaryResult:
+        from impeller_reliability.persistence.case_documents import CaseDocument
+
+        if not isinstance(document, CaseDocument):
+            raise AssertionError("invalid_case_document")
+        return CaseDocumentSummaryResult(
+            caseDocumentId=document.case_document_id,
+            documentKind=document.document_kind,
+            title=document.title,
+            designation=document.designation,
+            recordRevision=document.record_revision,
+            archivedAtUtc=document.archived_at_utc,
+            warnings=list(document.warnings),
         )

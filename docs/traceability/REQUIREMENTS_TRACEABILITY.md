@@ -24,7 +24,7 @@
 | Audit evidence and rollback | versioned evidence-chain validation + changed-fields before/after + atomic transaction | pytest integration |
 | Bounded stateful operations | sequential dispatch + domain checkpoints + larger transport timeout + worker termination | Vitest + pytest injected deadlines |
 | Unsaved draft lifecycle | renderer draft guard + detached/revision-checked reattach | Electron E2E |
-| Migration backup/rollback | SQLite Backup API + forward migrator | pytest integration |
+| Future migration backup/rollback | retained SQLite Backup API + forward migrator; no predecessor for first released v1 | future migration pytest integration |
 | Main-owned project paths | dialogs + recent allowlist | contracts + E2E + preload review |
 | Project persistence packaged | create/update/close/reopen smoke | win-unpacked + portable smoke |
 | Existing project validation | bounded manifest + reserved topology + immutable SQLite schema/evidence | pytest corruption/link/deadline integration |
@@ -33,9 +33,18 @@
 | Published project schema integrity | exact schema objects/triggers/migration ledger before lock and WAL | pytest mutation integration |
 | Canonical UTC project timestamps | Python manifest/schema/evidence validation + Zod/Pydantic boundary | pytest mutation + Vitest contract |
 | Analyst dossier separation | `analyst_enrichment` Customer/WheelModel/Specimen; no R130SH plan owner | owner-doc review + schema/IPC tests |
-| Schema v1 → v2 | verified backup + forward migration `0002` + semantic validation | pytest migration/rollback/reopen |
+| First released project schema v1 | one atomic full schema, exact published contract, no unreleased compatibility input | pytest create/reopen/newer/corrupt schema |
 | Optimistic dossier revisions | expected revision; no-op leaves revision/audit unchanged | pytest + Electron E2E |
 | Reversible archive invariants | archived model/specimen rules without hard delete | pytest domain/integration |
 | Incomplete dossier warnings | non-blocking entity warnings without readiness score | pytest + UI/E2E |
 | Shared draft lifecycle | one draft-owner contract across metadata/customer/model/specimen | Vitest + Electron E2E |
 | Dossier persistence packaged | customer/model/specimen close/reopen | win-unpacked + portable smoke |
+| CaseDocument separation | analyst-owned records/tables only; no `r130sh_source` or polymorphic link table | schema + owner-doc review |
+| Managed document confinement | Main dialog + Python revalidation + project-relative immutable registry | Vitest + pytest containment/signature tests |
+| File attach postconditions | staging/streaming SHA-256/atomic rename/transaction/cleanup | pytest failure/deadline/recovery integration |
+| Document optimistic revision/audit | metadata+applicability transaction; immutable attach event; no-op/conflict invariants | pytest audit reconstruction + Electron E2E |
+| Document integrity isolation | missing/modified status without corrupting ProjectSession | pytest close/reopen + Electron E2E |
+| Renderer path secrecy | DTO/preload omit source/absolute/managed path; open resolves only in Main | Zod/Vitest + IPC review |
+| Shared document draft/focus | one draft owner; transition confirmation restores focus and preserves input | Electron E2E keyboard/dirty/restart/close |
+| Narrow document workspace | adaptive master-detail and wrapping metadata at 640 px | Browser + Electron E2E |
+| Honest backup scope | UI/docs say SQLite-only; full transfer copies closed `.irproj` | copy assertions + E2E |

@@ -172,7 +172,7 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
             onClick={() => void confirmManagedAction()}
           >
             {managedAction === 'restart'
-              ? 'Перезапустить и сохранить черновик'
+              ? 'Перезапустить, не удаляя черновик'
               : 'Закрыть без сохранения'}
           </Button>
         </Group>

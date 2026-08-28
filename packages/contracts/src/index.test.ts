@@ -4,6 +4,8 @@ import {
   parseWorkerResponse,
   customerUpsertPayloadSchema,
   customerProfileSchema,
+  caseDocumentCreateCommandSchema,
+  caseDocumentSchema,
   entityIdSchema,
   projectIdSchema,
   projectBackupResultSchema,
@@ -44,6 +46,70 @@ describe('worker contracts', () => {
         revision: 0,
         deadlineMs: 1_000,
         payload: {},
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps case-document source paths out of Renderer commands and DTOs', () => {
+    const command = {
+      caseDocumentId: '113ec2c8-9439-4ce8-823d-3e2b0de8f001',
+      document: {
+        documentKind: 'standard',
+        title: ' ГОСТ ',
+        designation: '',
+        revisionLabel: '',
+        documentDate: null,
+        issuer: '',
+        notes: '',
+      },
+      wheelModelIds: [],
+      specimenIds: [],
+    } as const;
+    expect(caseDocumentCreateCommandSchema.parse(command).document.title).toBe('ГОСТ');
+    expect(
+      caseDocumentCreateCommandSchema.safeParse({ ...command, sourcePath: 'C:\\secret.pdf' })
+        .success,
+    ).toBe(false);
+    expect(
+      workerRequestSchema.safeParse({
+        protocolVersion: 1,
+        requestId: 'document-1',
+        kind: 'request',
+        operation: 'caseDocument.createWithFile',
+        revision: 1,
+        deadlineMs: 30_000,
+        payload: { ...command, sourcePath: 'C:\\approved.pdf' },
+      }).success,
+    ).toBe(true);
+    const result = {
+      ...command.document,
+      caseDocumentId: command.caseDocumentId,
+      recordRevision: 1,
+      archivedAtUtc: null,
+      createdAtUtc: '2026-08-28T00:00:00.000Z',
+      updatedAtUtc: '2026-08-28T00:00:00.000Z',
+      file: null,
+      integrityStatus: 'not_attached',
+      wheelModelIds: [],
+      specimenIds: [],
+      warnings: ['case_document_file_missing'],
+    } as const;
+    expect(caseDocumentSchema.parse(result).integrityStatus).toBe('not_attached');
+    expect(
+      caseDocumentSchema.safeParse({ ...result, absolutePath: 'C:\\managed.pdf' }).success,
+    ).toBe(false);
+    expect(
+      caseDocumentSchema.safeParse({
+        ...result,
+        file: {
+          originalFileName: 'C:\\secret.pdf',
+          mediaType: 'application/pdf',
+          sizeBytes: 10,
+          sha256: 'a'.repeat(64),
+          attachedAtUtc: '2026-08-28T00:00:00.000Z',
+        },
+        integrityStatus: 'verified',
+        warnings: [],
       }).success,
     ).toBe(false);
   });

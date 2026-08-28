@@ -73,6 +73,16 @@ def test_handshake_reports_current_capabilities_and_revision(tmp_path: Path) -> 
         "specimen.update",
         "specimen.archive",
         "specimen.restore",
+        "caseDocument.create",
+        "caseDocument.createWithFile",
+        "caseDocument.list",
+        "caseDocument.get",
+        "caseDocument.update",
+        "caseDocument.attachFile",
+        "caseDocument.verifyFile",
+        "caseDocument.archive",
+        "caseDocument.restore",
+        "caseDocument.resolveFile",
     ]
 
 
@@ -242,4 +252,111 @@ def test_dispatcher_covers_operation_specific_analyst_dossier_contracts(tmp_path
     wheel = _dispatch(dispatcher, "wheelModel.restore", {"wheelModelId": wheel_id, "expectedRevision": wheel["recordRevision"]}, 16)
     _dispatch(dispatcher, "specimen.restore", {"specimenId": specimen_id, "expectedRevision": specimen["recordRevision"]}, 17)
     assert wheel["archivedAtUtc"] is None
+    dispatcher.close()
+
+
+def test_dispatcher_covers_case_document_contracts(tmp_path: Path) -> None:
+    dispatcher = Dispatcher(tmp_path)
+    project_path = tmp_path / "case-document-dispatcher.irproj"
+    _dispatch(
+        dispatcher,
+        "project.create",
+        {
+            "path": str(project_path),
+            "applicationInstanceId": str(uuid4()),
+            "applicationVersion": "0.1.0",
+            "draft": {"name": "Дело", "projectNumber": "", "description": "", "status": "draft"},
+        },
+        1,
+    )
+    document_id = str(uuid4())
+    document = {
+        "documentKind": "standard",
+        "title": "ГОСТ",
+        "designation": "ГОСТ 1",
+        "revisionLabel": "Ред. 1",
+        "documentDate": "2026-08-28",
+        "issuer": "Росстандарт",
+        "notes": "",
+    }
+    created = _dispatch(
+        dispatcher,
+        "caseDocument.create",
+        {
+            "caseDocumentId": document_id,
+            "document": document,
+            "wheelModelIds": [],
+            "specimenIds": [],
+        },
+        2,
+    )
+    assert created["recordRevision"] == 1
+    assert created["integrityStatus"] == "not_attached"
+    source = tmp_path / "standard.pdf"
+    source.write_bytes(b"%PDF-1.7\ndispatcher\n")
+    attached = _dispatch(
+        dispatcher,
+        "caseDocument.attachFile",
+        {
+            "caseDocumentId": document_id,
+            "expectedRevision": 1,
+            "sourcePath": str(source),
+        },
+        3,
+    )
+    assert attached["recordRevision"] == 2
+    assert attached["integrityStatus"] == "verified"
+    assert _dispatch(
+        dispatcher,
+        "caseDocument.list",
+        {"includeArchived": False, "documentKind": "standard"},
+        4,
+    )["items"]
+    assert _dispatch(
+        dispatcher,
+        "caseDocument.get",
+        {"caseDocumentId": document_id},
+        5,
+    )["file"]
+    assert (
+        _dispatch(
+            dispatcher,
+            "caseDocument.verifyFile",
+            {"caseDocumentId": document_id},
+            6,
+        )["integrityStatus"]
+        == "verified"
+    )
+    resolved = _dispatch(
+        dispatcher,
+        "caseDocument.resolveFile",
+        {"caseDocumentId": document_id},
+        7,
+    )
+    assert Path(str(resolved["absolutePath"])).is_file()
+    updated = _dispatch(
+        dispatcher,
+        "caseDocument.update",
+        {
+            "caseDocumentId": document_id,
+            "expectedRevision": 2,
+            "document": {**document, "notes": "Уточнено"},
+            "wheelModelIds": [],
+            "specimenIds": [],
+        },
+        8,
+    )
+    archived = _dispatch(
+        dispatcher,
+        "caseDocument.archive",
+        {"caseDocumentId": document_id, "expectedRevision": updated["recordRevision"]},
+        9,
+    )
+    restored = _dispatch(
+        dispatcher,
+        "caseDocument.restore",
+        {"caseDocumentId": document_id, "expectedRevision": archived["recordRevision"]},
+        10,
+    )
+    assert restored["archivedAtUtc"] is None
     dispatcher.close()

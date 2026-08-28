@@ -1,7 +1,20 @@
 import { Button, Checkbox, Group, Select, Text, Textarea, TextInput, Title } from '@mantine/core';
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import {
+  forwardRef,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
 
 import type {
+  CaseDocument,
+  CaseDocumentDraft,
+  CaseDocumentKind,
+  CaseDocumentSummary,
+  CaseDocumentWarning,
   CompletenessWarning,
   CustomerDraft,
   CustomerProfile,
@@ -14,13 +27,14 @@ import type {
   WheelModelDraft,
   WheelModelSummary,
 } from '@impeller-reliability/contracts';
+import { caseDocumentKindSchema } from '@impeller-reliability/contracts';
 
 import {
   formatOptionalPositiveInteger,
   parseOptionalPositiveInteger,
 } from './optional-positive-integer';
 
-export type DossierSection = 'customer' | 'wheels' | 'specimens';
+export type DossierSection = 'customer' | 'wheels' | 'specimens' | 'documents';
 
 interface AnalystDossierProps {
   readonly desktopApi: ImpellerApi;
@@ -28,6 +42,7 @@ interface AnalystDossierProps {
   readonly section: DossierSection;
   readonly disabled: boolean;
   readonly onDirtyChange: (dirty: boolean) => void;
+  readonly onPendingChange: (pending: boolean) => void;
   readonly requestTransition: (dirty: boolean, action: () => void, discard: () => void) => void;
 }
 
@@ -65,10 +80,35 @@ const emptySpecimen: SpecimenDraft = {
   initialConditionNotes: '',
   notes: '',
 };
+const emptyDocument: CaseDocumentDraft = {
+  documentKind: 'other',
+  title: '',
+  designation: '',
+  revisionLabel: '',
+  documentDate: null,
+  issuer: '',
+  notes: '',
+};
+const documentKindLabel: Readonly<Record<CaseDocumentKind, string>> = {
+  technical_specification: 'Технические условия',
+  individual_test_method: 'Индивидуальная ПМИ',
+  typical_test_method: 'Типовая ПМИ',
+  customer_requirement: 'Требования заказчика',
+  test_request: 'Заявка на испытание',
+  operational_documentation: 'Эксплуатационная документация',
+  standard: 'Нормативный документ',
+  drawing: 'Чертёж или конструкторский документ',
+  measurement_or_attestation_record: 'Поверка или аттестация',
+  other: 'Иной материал дела',
+};
+const documentKindOptions = Object.entries(documentKindLabel).map(([value, label]) => ({
+  value,
+  label,
+}));
 
 export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierProps>(
   function AnalystDossier(
-    { desktopApi, projectId, section, disabled, onDirtyChange, requestTransition },
+    { desktopApi, projectId, section, disabled, onDirtyChange, onPendingChange, requestTransition },
     ref,
   ): React.JSX.Element {
     const [customer, setCustomer] = useState<CustomerProfile | null>(null);
@@ -84,6 +124,21 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
     const [specimenDraft, setSpecimenDraft] = useState<SpecimenDraft>(emptySpecimen);
     const [specimenBaseline, setSpecimenBaseline] = useState<SpecimenDraft>(emptySpecimen);
     const [specimenCreateId, setSpecimenCreateId] = useState(() => crypto.randomUUID());
+    const [documents, setDocuments] = useState<readonly CaseDocumentSummary[]>([]);
+    const [document, setDocument] = useState<CaseDocument | null>(null);
+    const [documentDraft, setDocumentDraft] = useState<CaseDocumentDraft>(emptyDocument);
+    const [documentBaseline, setDocumentBaseline] = useState<CaseDocumentDraft>(emptyDocument);
+    const [documentWheelIds, setDocumentWheelIds] = useState<readonly string[]>([]);
+    const [documentSpecimenIds, setDocumentSpecimenIds] = useState<readonly string[]>([]);
+    const [documentBaselineWheelIds, setDocumentBaselineWheelIds] = useState<readonly string[]>([]);
+    const [documentBaselineSpecimenIds, setDocumentBaselineSpecimenIds] = useState<
+      readonly string[]
+    >([]);
+    const [documentCreateId, setDocumentCreateId] = useState(() => crypto.randomUUID());
+    const [documentKindFilter, setDocumentKindFilter] = useState<CaseDocumentKind | null>(null);
+    const wheelNameRef = useRef<HTMLInputElement>(null);
+    const specimenNumberRef = useRef<HTMLInputElement>(null);
+    const documentTitleRef = useRef<HTMLInputElement>(null);
     const [includeArchived, setIncludeArchived] = useState(false);
     const [busy, setBusy] = useState<string | null>(null);
     const [error, setError] = useState<DesktopError | null>(null);
@@ -92,7 +147,10 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
     const [loadedKey, setLoadedKey] = useState<string | null>(null);
     const pendingSaveRef = useRef<Promise<void> | null>(null);
     const selectionRevisionRef = useRef(0);
-    const loadKey = `${projectId}:${section}:${includeArchived ? 'archived' : 'active'}`;
+    const loadRevisionRef = useRef(0);
+    const loadKey = `${projectId}:${section}:${includeArchived ? 'archived' : 'active'}:${
+      section === 'documents' ? (documentKindFilter ?? 'all') : 'all'
+    }`;
 
     const customerDirty = !sameCustomer(customerDraft, customer);
     const nominalSpeed = parseOptionalPositiveInteger(nominalSpeedInput);
@@ -103,41 +161,117 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
       nominalSpeedInput !== formatOptionalPositiveInteger(wheel?.nominalSpeedRpm ?? null) ||
       bladeCountInput !== formatOptionalPositiveInteger(wheel?.bladeCount ?? null);
     const specimenDirty = JSON.stringify(specimenDraft) !== JSON.stringify(specimenBaseline);
+    const documentDirty =
+      JSON.stringify(documentDraft) !== JSON.stringify(documentBaseline) ||
+      JSON.stringify(documentWheelIds) !== JSON.stringify(documentBaselineWheelIds) ||
+      JSON.stringify(documentSpecimenIds) !== JSON.stringify(documentBaselineSpecimenIds);
     const activeDirty =
-      section === 'customer' ? customerDirty : section === 'wheels' ? wheelDirty : specimenDirty;
+      section === 'customer'
+        ? customerDirty
+        : section === 'wheels'
+          ? wheelDirty
+          : section === 'specimens'
+            ? specimenDirty
+            : documentDirty;
     const activeWheels = wheels.filter((item) => item.archivedAtUtc === null);
 
     useEffect(() => onDirtyChange(activeDirty), [activeDirty, onDirtyChange]);
+    useEffect(() => {
+      onPendingChange(busy !== null);
+      return () => onPendingChange(false);
+    }, [busy, onPendingChange]);
 
-    const loadCustomer = useCallback(async (): Promise<void> => {
-      const result = await desktopApi.caseCustomer.get();
-      if (!result.ok) return setError(result.error);
-      setCustomer(result.result);
-      setCustomerDraft(result.result === null ? emptyCustomer : customerToDraft(result.result));
-    }, [desktopApi]);
-    const loadWheels = useCallback(async (): Promise<void> => {
-      const result = await desktopApi.wheelModel.list(includeArchived);
-      if (!result.ok) return setError(result.error);
-      setWheels(result.result);
-    }, [desktopApi, includeArchived]);
-    const loadSpecimens = useCallback(async (): Promise<void> => {
-      const result = await desktopApi.specimen.list(includeArchived);
-      if (!result.ok) return setError(result.error);
-      setSpecimens(result.result);
-    }, [desktopApi, includeArchived]);
+    const loadCustomer = useCallback(
+      async (loadRevision?: number): Promise<void> => {
+        if (loadRevision !== undefined && loadRevision !== loadRevisionRef.current) return;
+        const result = await desktopApi.caseCustomer.get();
+        if (loadRevision !== undefined && loadRevision !== loadRevisionRef.current) return;
+        if (!result.ok) return setError(result.error);
+        setCustomer(result.result);
+        setCustomerDraft(result.result === null ? emptyCustomer : customerToDraft(result.result));
+      },
+      [desktopApi],
+    );
+    const loadWheels = useCallback(
+      async (loadRevision?: number): Promise<void> => {
+        if (loadRevision !== undefined && loadRevision !== loadRevisionRef.current) return;
+        const result = await desktopApi.wheelModel.list(includeArchived);
+        if (loadRevision !== undefined && loadRevision !== loadRevisionRef.current) return;
+        if (!result.ok) return setError(result.error);
+        setWheels(result.result);
+      },
+      [desktopApi, includeArchived],
+    );
+    const loadSpecimens = useCallback(
+      async (loadRevision?: number): Promise<void> => {
+        if (loadRevision !== undefined && loadRevision !== loadRevisionRef.current) return;
+        const result = await desktopApi.specimen.list(includeArchived);
+        if (loadRevision !== undefined && loadRevision !== loadRevisionRef.current) return;
+        if (!result.ok) return setError(result.error);
+        setSpecimens(result.result);
+      },
+      [desktopApi, includeArchived],
+    );
+    const loadDocuments = useCallback(
+      async (loadRevision?: number): Promise<void> => {
+        if (loadRevision !== undefined && loadRevision !== loadRevisionRef.current) return;
+        const result = await desktopApi.caseDocument.list({
+          includeArchived,
+          documentKind: documentKindFilter,
+        });
+        if (loadRevision !== undefined && loadRevision !== loadRevisionRef.current) return;
+        if (!result.ok) return setError(result.error);
+        setDocuments(result.result);
+      },
+      [desktopApi, documentKindFilter, includeArchived],
+    );
+    const loadDocumentTargets = useCallback(
+      async (loadRevision?: number): Promise<void> => {
+        if (loadRevision !== undefined && loadRevision !== loadRevisionRef.current) return;
+        const wheelResult = await desktopApi.wheelModel.list(true);
+        if (loadRevision !== undefined && loadRevision !== loadRevisionRef.current) return;
+        if (!wheelResult.ok) return setError(wheelResult.error);
+        const specimenResult = await desktopApi.specimen.list(true);
+        if (loadRevision !== undefined && loadRevision !== loadRevisionRef.current) return;
+        if (!specimenResult.ok) return setError(specimenResult.error);
+        setWheels(wheelResult.result);
+        setSpecimens(specimenResult.result);
+      },
+      [desktopApi],
+    );
 
     useEffect(() => {
+      const loadRevision = ++loadRevisionRef.current;
       const timer = window.setTimeout(() => {
         const load =
           section === 'customer'
-            ? loadCustomer()
+            ? loadCustomer(loadRevision)
             : section === 'wheels'
-              ? loadWheels()
-              : Promise.all([loadWheels(), loadSpecimens()]).then(() => undefined);
-        void load.catch(() => setError(unavailableError())).finally(() => setLoadedKey(loadKey));
+              ? loadWheels(loadRevision)
+              : section === 'specimens'
+                ? loadWheels(loadRevision).then(() => loadSpecimens(loadRevision))
+                : loadDocumentTargets(loadRevision).then(() => loadDocuments(loadRevision));
+        void load
+          .catch(() => {
+            if (loadRevision === loadRevisionRef.current) setError(unavailableError());
+          })
+          .finally(() => {
+            if (loadRevision === loadRevisionRef.current) setLoadedKey(loadKey);
+          });
       }, 0);
-      return () => window.clearTimeout(timer);
-    }, [loadCustomer, loadKey, loadSpecimens, loadWheels, section]);
+      return () => {
+        window.clearTimeout(timer);
+        if (loadRevision === loadRevisionRef.current) loadRevisionRef.current += 1;
+      };
+    }, [
+      loadCustomer,
+      loadDocuments,
+      loadDocumentTargets,
+      loadKey,
+      loadSpecimens,
+      loadWheels,
+      section,
+    ]);
 
     const run = async (key: string, action: () => Promise<void>): Promise<void> => {
       setBusy(key);
@@ -163,6 +297,17 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
       setNominalSpeedInput(formatOptionalPositiveInteger(value?.nominalSpeedRpm ?? null));
       setBladeCountInput(formatOptionalPositiveInteger(value?.bladeCount ?? null));
     }, []);
+    const resetDocumentDraft = useCallback((value: CaseDocument | null): void => {
+      const draft = value === null ? emptyDocument : documentToDraft(value);
+      const wheelIds = value?.wheelModelIds ?? [];
+      const specimenIds = value?.specimenIds ?? [];
+      setDocumentDraft(draft);
+      setDocumentBaseline(draft);
+      setDocumentWheelIds(wheelIds);
+      setDocumentBaselineWheelIds(wheelIds);
+      setDocumentSpecimenIds(specimenIds);
+      setDocumentBaselineSpecimenIds(specimenIds);
+    }, []);
 
     const saveCustomer = (): Promise<void> =>
       trackSave(
@@ -187,21 +332,15 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
         () => {
           const selectionRevision = ++selectionRevisionRef.current;
           setConfirmArchiveKey(null);
-          void (async () => {
-            try {
-              const result = await desktopApi.wheelModel.get(wheelModelId);
-              if (selectionRevision !== selectionRevisionRef.current) return;
-              if (!result.ok) return setError(result.error);
-              setWheel(result.result);
-              setWheelDraft(wheelToDraft(result.result));
-              setNominalSpeedInput(formatOptionalPositiveInteger(result.result.nominalSpeedRpm));
-              setBladeCountInput(formatOptionalPositiveInteger(result.result.bladeCount));
-            } catch {
-              if (selectionRevision === selectionRevisionRef.current) {
-                setError(unavailableError());
-              }
-            }
-          })();
+          void run('wheel-load', async () => {
+            const result = await desktopApi.wheelModel.get(wheelModelId);
+            if (selectionRevision !== selectionRevisionRef.current) return;
+            if (!result.ok) return setError(result.error);
+            setWheel(result.result);
+            setWheelDraft(wheelToDraft(result.result));
+            setNominalSpeedInput(formatOptionalPositiveInteger(result.result.nominalSpeedRpm));
+            setBladeCountInput(formatOptionalPositiveInteger(result.result.bladeCount));
+          });
         },
         () => resetWheelDraft(wheel),
       );
@@ -219,6 +358,7 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
           setWheelCreateId(crypto.randomUUID());
           setMessage(null);
           setError(null);
+          window.setTimeout(() => wheelNameRef.current?.focus(), 0);
         },
         () => resetWheelDraft(wheel),
       );
@@ -293,21 +433,15 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
         () => {
           const selectionRevision = ++selectionRevisionRef.current;
           setConfirmArchiveKey(null);
-          void (async () => {
-            try {
-              const result = await desktopApi.specimen.get(specimenId);
-              if (selectionRevision !== selectionRevisionRef.current) return;
-              if (!result.ok) return setError(result.error);
-              setSpecimen(result.result);
-              const draft = specimenToDraft(result.result);
-              setSpecimenDraft(draft);
-              setSpecimenBaseline(draft);
-            } catch {
-              if (selectionRevision === selectionRevisionRef.current) {
-                setError(unavailableError());
-              }
-            }
-          })();
+          void run('specimen-load', async () => {
+            const result = await desktopApi.specimen.get(specimenId);
+            if (selectionRevision !== selectionRevisionRef.current) return;
+            if (!result.ok) return setError(result.error);
+            setSpecimen(result.result);
+            const draft = specimenToDraft(result.result);
+            setSpecimenDraft(draft);
+            setSpecimenBaseline(draft);
+          });
         },
         () => setSpecimenDraft(specimenBaseline),
       );
@@ -329,6 +463,7 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
           setSpecimenCreateId(crypto.randomUUID());
           setMessage(null);
           setError(null);
+          window.setTimeout(() => specimenNumberRef.current?.focus(), 0);
         },
         () => setSpecimenDraft(specimenBaseline),
       );
@@ -387,6 +522,141 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
       );
     };
 
+    const selectDocument = (caseDocumentId: string | null): void => {
+      if (caseDocumentId === null) return;
+      requestTransition(
+        documentDirty,
+        () => {
+          const selectionRevision = ++selectionRevisionRef.current;
+          setConfirmArchiveKey(null);
+          void run('document-load', async () => {
+            const result = await desktopApi.caseDocument.get(caseDocumentId);
+            if (selectionRevision !== selectionRevisionRef.current) return;
+            if (!result.ok) return setError(result.error);
+            setDocument(result.result);
+            resetDocumentDraft(result.result);
+          });
+        },
+        () => resetDocumentDraft(document),
+      );
+    };
+    const newDocument = (): void => {
+      requestTransition(
+        documentDirty,
+        () => {
+          selectionRevisionRef.current += 1;
+          setConfirmArchiveKey(null);
+          setDocument(null);
+          resetDocumentDraft(null);
+          setDocumentCreateId(crypto.randomUUID());
+          setMessage(null);
+          setError(null);
+          window.setTimeout(() => documentTitleRef.current?.focus(), 0);
+        },
+        () => resetDocumentDraft(document),
+      );
+    };
+    const saveDocument = (withFile: boolean): Promise<void> =>
+      trackSave(
+        run(withFile ? 'document-create-file' : 'document-save', async () => {
+          const command = {
+            caseDocumentId: documentCreateId,
+            document: documentDraft,
+            wheelModelIds: [...documentWheelIds].sort(),
+            specimenIds: [...documentSpecimenIds].sort(),
+          };
+          const result =
+            document === null
+              ? withFile
+                ? await desktopApi.caseDocument.createWithFile(command)
+                : await desktopApi.caseDocument.create(command)
+              : await desktopApi.caseDocument.update({
+                  ...command,
+                  caseDocumentId: document.caseDocumentId,
+                  expectedRevision: document.recordRevision,
+                });
+          if (!result.ok) {
+            if (result.error.code !== 'cancelled') setError(result.error);
+            return;
+          }
+          setDocument(result.result);
+          resetDocumentDraft(result.result);
+          await loadDocuments();
+          setMessage(`Документ сохранён. Редакция ${String(result.result.recordRevision)}.`);
+        }),
+      );
+    const attachDocumentFile = (): void => {
+      if (document === null) return;
+      requestTransition(
+        documentDirty,
+        () =>
+          void trackSave(
+            run('document-attach', async () => {
+              const result = await desktopApi.caseDocument.attachFile({
+                caseDocumentId: document.caseDocumentId,
+                expectedRevision: document.recordRevision,
+              });
+              if (!result.ok) {
+                if (result.error.code !== 'cancelled') setError(result.error);
+                return;
+              }
+              setDocument(result.result);
+              resetDocumentDraft(result.result);
+              await loadDocuments();
+              setMessage(`Файл прикреплён. Редакция ${String(result.result.recordRevision)}.`);
+            }),
+          ),
+        () => resetDocumentDraft(document),
+      );
+    };
+    const verifyDocumentFile = (): void => {
+      if (document === null) return;
+      void run('document-verify', async () => {
+        const result = await desktopApi.caseDocument.verifyFile(document.caseDocumentId);
+        if (!result.ok) return setError(result.error);
+        setDocument(result.result);
+        setMessage('Проверка управляемой копии завершена.');
+      });
+    };
+    const openDocumentFile = (): void => {
+      if (document === null) return;
+      void run('document-open', async () => {
+        const result = await desktopApi.caseDocument.openFile(document.caseDocumentId);
+        if (!result.ok) return setError(result.error);
+        setMessage('Управляемая копия передана системному приложению.');
+      });
+    };
+    const toggleDocumentArchive = (): void => {
+      if (document === null) return;
+      const confirmationKey = `document:${document.caseDocumentId}:${document.archivedAtUtc === null ? 'archive' : 'restore'}`;
+      if (confirmArchiveKey !== confirmationKey) {
+        setConfirmArchiveKey(confirmationKey);
+        return;
+      }
+      requestTransition(
+        documentDirty,
+        () =>
+          void trackSave(
+            run('document-archive', async () => {
+              const command = {
+                caseDocumentId: document.caseDocumentId,
+                expectedRevision: document.recordRevision,
+              };
+              const result =
+                document.archivedAtUtc === null
+                  ? await desktopApi.caseDocument.archive(command)
+                  : await desktopApi.caseDocument.restore(command);
+              if (!result.ok) return setError(result.error);
+              setDocument(result.result);
+              resetDocumentDraft(result.result);
+              setConfirmArchiveKey(null);
+              await loadDocuments();
+            }),
+          ),
+        () => resetDocumentDraft(document),
+      );
+    };
+
     useImperativeHandle(
       ref,
       () => ({
@@ -394,7 +664,8 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
           if (section === 'customer')
             setCustomerDraft(customer === null ? emptyCustomer : customerToDraft(customer));
           else if (section === 'wheels') resetWheelDraft(wheel);
-          else setSpecimenDraft(specimenBaseline);
+          else if (section === 'specimens') setSpecimenDraft(specimenBaseline);
+          else resetDocumentDraft(document);
         },
         waitForPendingSave: async () => {
           if (pendingSaveRef.current !== null) await pendingSaveRef.current;
@@ -413,6 +684,10 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
             const result = await desktopApi.specimen.get(specimen.specimenId);
             return result.ok && result.result.recordRevision === specimen.recordRevision;
           }
+          if (section === 'documents' && document !== null) {
+            const result = await desktopApi.caseDocument.get(document.caseDocumentId);
+            return result.ok && result.result.recordRevision === document.recordRevision;
+          }
           return true;
         },
       }),
@@ -420,7 +695,9 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
         activeDirty,
         customer,
         desktopApi,
+        document,
         resetWheelDraft,
+        resetDocumentDraft,
         section,
         specimen,
         specimenBaseline,
@@ -436,7 +713,9 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
               ? 'Заказчик'
               : section === 'wheels'
                 ? 'Модели рабочих колёс'
-                : 'Физические образцы'}
+                : section === 'specimens'
+                  ? 'Физические образцы'
+                  : 'Документы дела'}
           </Title>
           <Text>
             Это редактируемые сведения аналитического дела. После появления импорта исходные
@@ -512,7 +791,7 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
               }))}
               selectedId={wheel?.wheelModelId ?? null}
               busy={busy}
-              disabled={disabled}
+              disabled={disabled || busy !== null}
               onSelect={selectWheel}
               onCreate={newWheel}
               includeArchived={includeArchived}
@@ -528,6 +807,7 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
             >
               <div className="dossier-form dossier-form--two-columns">
                 <TextInput
+                  ref={wheelNameRef}
                   label="Полное наименование"
                   required
                   value={wheelDraft.fullName}
@@ -674,7 +954,7 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
               </Group>
             </form>
           </div>
-        ) : (
+        ) : section === 'specimens' ? (
           <div className="dossier-editor">
             <DossierList
               title="Реестр образцов"
@@ -729,6 +1009,7 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
                   }}
                 />
                 <TextInput
+                  ref={specimenNumberRef}
                   label="Идентификационный номер"
                   required
                   value={specimenDraft.identificationNumber}
@@ -883,6 +1164,284 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
               </Group>
             </form>
           </div>
+        ) : (
+          <div className="dossier-editor dossier-editor--documents">
+            <DossierList
+              title="Реестр документов"
+              items={documents.map((item) => ({
+                id: item.caseDocumentId,
+                title: item.title,
+                subtitle:
+                  item.designation === '' ? documentKindLabel[item.documentKind] : item.designation,
+                archived: item.archivedAtUtc !== null,
+              }))}
+              selectedId={document?.caseDocumentId ?? null}
+              busy={busy}
+              disabled={disabled}
+              onSelect={selectDocument}
+              onCreate={newDocument}
+              includeArchived={includeArchived}
+              onIncludeArchived={setIncludeArchived}
+              createLabel="Новый документ"
+              filter={
+                <Select
+                  label="Фильтр по виду"
+                  clearable
+                  data={documentKindOptions}
+                  value={documentKindFilter}
+                  disabled={disabled || busy !== null}
+                  onChange={(value) => {
+                    if (value === null) return setDocumentKindFilter(null);
+                    const parsed = caseDocumentKindSchema.safeParse(value);
+                    if (parsed.success) setDocumentKindFilter(parsed.data);
+                  }}
+                />
+              }
+            />
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveDocument(false);
+              }}
+              className="dossier-detail"
+            >
+              <div className="dossier-form dossier-form--two-columns">
+                <Select
+                  label="Вид документа"
+                  required
+                  data={documentKindOptions}
+                  value={documentDraft.documentKind}
+                  disabled={
+                    disabled ||
+                    busy !== null ||
+                    (document !== null && document.archivedAtUtc !== null)
+                  }
+                  onChange={(value) => {
+                    const parsed = caseDocumentKindSchema.safeParse(value);
+                    if (parsed.success)
+                      setDocumentDraft({
+                        ...documentDraft,
+                        documentKind: parsed.data,
+                      });
+                  }}
+                />
+                <TextInput
+                  ref={documentTitleRef}
+                  label="Название"
+                  required
+                  value={documentDraft.title}
+                  disabled={
+                    disabled ||
+                    busy !== null ||
+                    (document !== null && document.archivedAtUtc !== null)
+                  }
+                  onChange={(event) =>
+                    setDocumentDraft({ ...documentDraft, title: event.currentTarget.value })
+                  }
+                />
+                <TextInput
+                  label="Обозначение"
+                  value={documentDraft.designation}
+                  disabled={
+                    disabled ||
+                    busy !== null ||
+                    (document !== null && document.archivedAtUtc !== null)
+                  }
+                  onChange={(event) =>
+                    setDocumentDraft({ ...documentDraft, designation: event.currentTarget.value })
+                  }
+                />
+                <TextInput
+                  label="Редакция"
+                  value={documentDraft.revisionLabel}
+                  disabled={
+                    disabled ||
+                    busy !== null ||
+                    (document !== null && document.archivedAtUtc !== null)
+                  }
+                  onChange={(event) =>
+                    setDocumentDraft({ ...documentDraft, revisionLabel: event.currentTarget.value })
+                  }
+                />
+                <TextInput
+                  type="date"
+                  label="Дата документа"
+                  value={documentDraft.documentDate ?? ''}
+                  disabled={
+                    disabled ||
+                    busy !== null ||
+                    (document !== null && document.archivedAtUtc !== null)
+                  }
+                  onChange={(event) =>
+                    setDocumentDraft({ ...documentDraft, documentDate: event.currentTarget.value })
+                  }
+                />
+                <TextInput
+                  label="Организация/автор"
+                  value={documentDraft.issuer}
+                  disabled={
+                    disabled ||
+                    busy !== null ||
+                    (document !== null && document.archivedAtUtc !== null)
+                  }
+                  onChange={(event) =>
+                    setDocumentDraft({ ...documentDraft, issuer: event.currentTarget.value })
+                  }
+                />
+                <fieldset className="dossier-applicability">
+                  <legend>Применимые модели</legend>
+                  {wheels.length === 0 ? (
+                    <Text size="sm">Модели ещё не зарегистрированы.</Text>
+                  ) : (
+                    wheels.map((item) => (
+                      <Checkbox
+                        key={item.wheelModelId}
+                        label={`${item.fullName}${item.archivedAtUtc === null ? '' : ' · архив'}`}
+                        checked={documentWheelIds.includes(item.wheelModelId)}
+                        disabled={
+                          disabled ||
+                          busy !== null ||
+                          (document !== null && document.archivedAtUtc !== null)
+                        }
+                        onChange={(event) =>
+                          setDocumentWheelIds(
+                            toggleIdentifier(
+                              documentWheelIds,
+                              item.wheelModelId,
+                              event.currentTarget.checked,
+                            ),
+                          )
+                        }
+                      />
+                    ))
+                  )}
+                </fieldset>
+                <fieldset className="dossier-applicability">
+                  <legend>Применимые образцы</legend>
+                  {specimens.length === 0 ? (
+                    <Text size="sm">Образцы ещё не зарегистрированы.</Text>
+                  ) : (
+                    specimens.map((item) => (
+                      <Checkbox
+                        key={item.specimenId}
+                        label={`${item.identificationNumber} · ${item.wheelModelName}${item.archivedAtUtc === null ? '' : ' · архив'}`}
+                        checked={documentSpecimenIds.includes(item.specimenId)}
+                        disabled={
+                          disabled ||
+                          busy !== null ||
+                          (document !== null && document.archivedAtUtc !== null)
+                        }
+                        onChange={(event) =>
+                          setDocumentSpecimenIds(
+                            toggleIdentifier(
+                              documentSpecimenIds,
+                              item.specimenId,
+                              event.currentTarget.checked,
+                            ),
+                          )
+                        }
+                      />
+                    ))
+                  )}
+                </fieldset>
+                <Textarea
+                  className="dossier-span"
+                  label="Примечание"
+                  value={documentDraft.notes}
+                  disabled={
+                    disabled ||
+                    busy !== null ||
+                    (document !== null && document.archivedAtUtc !== null)
+                  }
+                  onChange={(event) =>
+                    setDocumentDraft({ ...documentDraft, notes: event.currentTarget.value })
+                  }
+                />
+              </div>
+              <DocumentFileDetails document={document} />
+              <Warnings warnings={document?.warnings ?? defaultDocumentWarnings(documentDraft)} />
+              <Group className="form-actions">
+                <Button
+                  type="submit"
+                  loading={busy === 'document-save'}
+                  disabled={
+                    disabled ||
+                    busy !== null ||
+                    documentDraft.title.trim() === '' ||
+                    (document !== null && document.archivedAtUtc !== null)
+                  }
+                >
+                  {document === null ? 'Создать без файла' : 'Сохранить документ'}
+                </Button>
+                {document === null ? (
+                  <Button
+                    type="button"
+                    variant="light"
+                    loading={busy === 'document-create-file'}
+                    disabled={disabled || busy !== null || documentDraft.title.trim() === ''}
+                    onClick={() => void saveDocument(true)}
+                  >
+                    Создать с файлом
+                  </Button>
+                ) : document.file === null && document.archivedAtUtc === null ? (
+                  <Button
+                    type="button"
+                    variant="light"
+                    loading={busy === 'document-attach'}
+                    disabled={disabled || busy !== null}
+                    onClick={attachDocumentFile}
+                  >
+                    Прикрепить файл
+                  </Button>
+                ) : null}
+                {document !== null && document.file !== null ? (
+                  <>
+                    <Button
+                      type="button"
+                      variant="subtle"
+                      loading={busy === 'document-verify'}
+                      disabled={disabled || busy !== null}
+                      onClick={verifyDocumentFile}
+                    >
+                      Проверить целостность
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="subtle"
+                      loading={busy === 'document-open'}
+                      disabled={
+                        disabled || busy !== null || document.integrityStatus !== 'verified'
+                      }
+                      onClick={openDocumentFile}
+                    >
+                      Открыть управляемую копию
+                    </Button>
+                  </>
+                ) : null}
+                {document !== null ? (
+                  <Button
+                    type="button"
+                    className="danger-action"
+                    variant={
+                      confirmArchiveKey?.startsWith(`document:${document.caseDocumentId}:`)
+                        ? 'filled'
+                        : 'subtle'
+                    }
+                    loading={busy === 'document-archive'}
+                    disabled={disabled || busy !== null}
+                    onClick={toggleDocumentArchive}
+                  >
+                    {confirmArchiveKey?.startsWith(`document:${document.caseDocumentId}:`)
+                      ? 'Подтвердить действие'
+                      : document.archivedAtUtc === null
+                        ? 'Архивировать'
+                        : 'Восстановить'}
+                  </Button>
+                ) : null}
+                <Text size="sm">Редакция: {document?.recordRevision ?? 'новая запись'}</Text>
+              </Group>
+            </form>
+          </div>
         )}
       </section>
     );
@@ -901,6 +1460,7 @@ function DossierList({
   onIncludeArchived,
   createLabel,
   createDisabled = false,
+  filter,
 }: {
   readonly title: string;
   readonly items: readonly { id: string; title: string; subtitle: string; archived: boolean }[];
@@ -913,6 +1473,7 @@ function DossierList({
   readonly onIncludeArchived: (value: boolean) => void;
   readonly createLabel: string;
   readonly createDisabled?: boolean;
+  readonly filter?: ReactNode;
 }): React.JSX.Element {
   return (
     <aside className="dossier-list" aria-label={title}>
@@ -933,6 +1494,7 @@ function DossierList({
         disabled={disabled || busy !== null}
         onChange={(event) => onIncludeArchived(event.currentTarget.checked)}
       />
+      {filter}
       {items.length === 0 ? (
         <div className="dossier-empty">
           <Text fw={650}>Записей пока нет</Text>
@@ -948,7 +1510,7 @@ function DossierList({
               data-active={selectedId === item.id}
               aria-pressed={selectedId === item.id}
               aria-busy={busy !== null}
-              disabled={disabled}
+              disabled={disabled || busy !== null}
               onClick={() => {
                 if (busy === null) onSelect(item.id);
               }}
@@ -961,6 +1523,55 @@ function DossierList({
         </div>
       )}
     </aside>
+  );
+}
+
+const integrityLabel: Readonly<Record<CaseDocument['integrityStatus'], string>> = {
+  not_attached: 'Файл не прикреплён',
+  verified: 'Целостность подтверждена',
+  missing: 'Управляемый файл отсутствует',
+  modified: 'Содержимое управляемого файла изменено',
+  verification_error: 'Проверку файла выполнить не удалось',
+};
+
+function DocumentFileDetails({
+  document,
+}: {
+  readonly document: CaseDocument | null;
+}): React.JSX.Element | null {
+  if (document === null) return null;
+  const file = document.file;
+  return (
+    <section className="document-file" aria-labelledby="document-file-title">
+      <div>
+        <strong id="document-file-title">Управляемая копия</strong>
+        <span data-integrity={document.integrityStatus}>
+          {integrityLabel[document.integrityStatus]}
+        </span>
+      </div>
+      {file === null ? (
+        <Text size="sm">К записи можно один раз прикрепить локальный файл.</Text>
+      ) : (
+        <dl>
+          <div>
+            <dt>Исходное имя</dt>
+            <dd>{file.originalFileName}</dd>
+          </div>
+          <div>
+            <dt>Тип</dt>
+            <dd>{file.mediaType}</dd>
+          </div>
+          <div>
+            <dt>Размер</dt>
+            <dd>{formatFileSize(file.sizeBytes)}</dd>
+          </div>
+          <div className="document-file__hash">
+            <dt>SHA-256</dt>
+            <dd>{file.sha256}</dd>
+          </div>
+        </dl>
+      )}
+    </section>
   );
 }
 
@@ -985,17 +1596,20 @@ function FormActions({
   );
 }
 
-const warningText: Readonly<Record<CompletenessWarning, string>> = {
+const warningText: Readonly<Record<CompletenessWarning | CaseDocumentWarning, string>> = {
   customer_address_missing: 'Не заполнен юридический или фактический адрес.',
   wheel_nominal_diameter_missing: 'Не указан номинальный диаметр модели.',
   wheel_nominal_speed_missing: 'Не указана номинальная частота вращения.',
   specimen_working_diameter_missing: 'Не указан рабочий диаметр образца.',
+  case_document_file_missing: 'Файл документа не прикреплён или отсутствует.',
+  case_document_designation_missing: 'Для нормативного документа не заполнено обозначение.',
+  case_document_revision_missing: 'Для нормативного документа не указана редакция.',
 };
 
 function Warnings({
   warnings,
 }: {
-  readonly warnings: readonly CompletenessWarning[];
+  readonly warnings: readonly (CompletenessWarning | CaseDocumentWarning)[];
 }): React.JSX.Element | null {
   if (warnings.length === 0) return null;
   return (
@@ -1062,6 +1676,45 @@ function specimenToDraft(value: Specimen): SpecimenDraft {
     initialConditionNotes: value.initialConditionNotes,
     notes: value.notes,
   };
+}
+function documentToDraft(value: CaseDocument): CaseDocumentDraft {
+  return {
+    documentKind: value.documentKind,
+    title: value.title,
+    designation: value.designation,
+    revisionLabel: value.revisionLabel,
+    documentDate: value.documentDate,
+    issuer: value.issuer,
+    notes: value.notes,
+  };
+}
+function toggleIdentifier(
+  values: readonly string[],
+  identifier: string,
+  checked: boolean,
+): readonly string[] {
+  const next = checked
+    ? [...new Set([...values, identifier])]
+    : values.filter((value) => value !== identifier);
+  return next.sort();
+}
+function defaultDocumentWarnings(value: CaseDocumentDraft): readonly CaseDocumentWarning[] {
+  const warnings: CaseDocumentWarning[] = ['case_document_file_missing'];
+  if (
+    value.documentKind === 'technical_specification' ||
+    value.documentKind === 'individual_test_method' ||
+    value.documentKind === 'typical_test_method' ||
+    value.documentKind === 'standard'
+  ) {
+    if (value.designation.trim() === '') warnings.push('case_document_designation_missing');
+    if (value.revisionLabel.trim() === '') warnings.push('case_document_revision_missing');
+  }
+  return warnings;
+}
+function formatFileSize(sizeBytes: number): string {
+  if (sizeBytes < 1024) return `${String(sizeBytes)} Б`;
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} КиБ`;
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} МиБ`;
 }
 function sameCustomer(draft: CustomerDraft, value: CustomerProfile | null): boolean {
   return value === null

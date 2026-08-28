@@ -8,6 +8,8 @@ M02.1 создаёт устойчивый контейнер и сессию п�
 
 M02.2A добавляет только analyst dossier: CustomerProfile, WheelModel и Specimen в редактируемом `analyst_enrichment`. M02.2B отдельно добавляет нормативные источники и project documents. `TestCampaign` появляется позднее только как downstream-группировка импортированных запусков.
 
+M02.2B одновременно закрепляет только текущий UX-фундамент: общий interaction-state vocabulary, draft/pending/focus/error contracts, keyboard semantics и adaptive master-detail на 640 px. Дальнейшая последовательность command/jobs/tables/charts/recovery и release accessibility принадлежит `UX_INTERACTION_EVOLUTION.md`; она не разрешает преждевременные компоненты в M02.2B.
+
 Одновременно расширяются существующие owners требований, domain model, glossary и traceability. Новые параллельные спецификации не создаются.
 
 ## R130SH M0/M1 — frozen vocabulary и examples
@@ -16,11 +18,13 @@ R130SH владеет package schema и замораживает vocabulary/exam
 
 ## M03A/M03B — входной результат R130SH
 
-M03A создаёт contract/import foundation по frozen examples. После R130SH M8 exporter и M9a independent golden matrix M03B реализует полный импорт: staging → immutable `r130sh_source` → source/enrichment resolution → повторное открытие. Прямое чтение SQLite R130SH, исходящий план и управление стендом запрещены.
+M03A создаёт contract/import foundation по frozen examples. M03B после R130SH M9a independent golden matrix реализует полный импорт: staging → immutable `r130sh_source` → source/enrichment resolution → повторное открытие. Прямое чтение SQLite R130SH, исходящий план и управление стендом запрещены. Общий job/error/provenance UX появляется вместе с этим реальным длительным файловым сценарием.
 
 ## M04 — расчёты испытаний
 
 Сначала один полный РБД vertical slice на импортированных и дополненных данных: `ImportedRunPlanSnapshot` + explicit source/enrichment selection → `AnalysisInputSnapshot` → Python validation/calculation → `CalculationSnapshot`. Только после утверждённого математического контракта и golden fixtures добавляются РПТ и ПМН. Расчёты не формируют задание для R130SH.
+
+До первого расчётного экрана фиксируются command availability, неблокирующий job feedback и chart/data-alternative contract. DataGrid не появляется до реального редактируемого табличного сценария FMEA; navigation history и command/shortcut layer вводятся перед несколькими повторяемыми рабочими командами, а не как M02.2B-заготовка.
 
 ## M05 и последующие предметные этапы
 

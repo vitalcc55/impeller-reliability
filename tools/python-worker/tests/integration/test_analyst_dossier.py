@@ -71,7 +71,7 @@ def _specimen_values(wheel_id: str, **overrides: object) -> dict[str, object]:
     return values
 
 
-def test_v1_project_migrates_to_v2_with_verified_v1_backup(tmp_path: Path) -> None:
+def test_schema_v1_contains_analyst_dossier_without_migration_backup(tmp_path: Path) -> None:
     project_path = tmp_path / "legacy.irproj"
     (project_path / "assets" / "documents").mkdir(parents=True)
     (project_path / "backups").mkdir()
@@ -93,14 +93,12 @@ def test_v1_project_migrates_to_v2_with_verified_v1_backup(tmp_path: Path) -> No
 
     service = ProjectService()
     overview = service.open(path=str(project_path), application_instance_id=str(uuid4()))
-    assert overview.schema_version == 2
+    assert overview.schema_version == 1
     service.close()
 
-    backups = list((project_path / "backups").glob("project-v1-*.sqlite"))
-    assert len(backups) == 1
-    with closing(sqlite3.connect(backups[0])) as backup:
-        assert int(backup.execute("PRAGMA user_version").fetchone()[0]) == 1
-        assert backup.execute("SELECT name FROM sqlite_master WHERE name='wheel_models'").fetchone() is None
+    assert list((project_path / "backups").iterdir()) == []
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        assert connection.execute("SELECT name FROM sqlite_master WHERE name='wheel_models'").fetchone() is not None
 
 
 def test_customer_create_update_noop_conflict_and_warnings(tmp_path: Path) -> None:
@@ -374,7 +372,7 @@ def test_read_only_probe_observes_committed_wal_schema(tmp_path: Path) -> None:
         )
         service = ProjectService()
         overview = service.open(path=str(project_path), application_instance_id=str(uuid4()))
-        assert overview.schema_version == 2
+        assert overview.schema_version == 1
         service.close()
     finally:
         writer.close()

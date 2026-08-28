@@ -4,6 +4,8 @@ import json
 import sqlite3
 from uuid import uuid4
 
+from impeller_reliability.persistence.project_errors import ProjectOperationError
+from impeller_reliability.persistence.project_schema import MAX_AUDIT_PAYLOAD_BYTES
 from impeller_reliability.persistence.timestamps import utc_now
 
 
@@ -21,6 +23,12 @@ def insert_audit(
     occurred_at_utc: str,
     payload: dict[str, object],
 ) -> None:
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(serialized.encode("utf-8")) > MAX_AUDIT_PAYLOAD_BYTES:
+        raise ProjectOperationError(
+            "validation_error",
+            "Изменение содержит слишком много данных для audit evidence.",
+        )
     connection.execute(
         "INSERT INTO project_audit_events (event_id, event_type, occurred_at_utc, actor_kind, payload_json) VALUES (?, ?, ?, ?, ?)",
         (
@@ -28,6 +36,6 @@ def insert_audit(
             event_type,
             occurred_at_utc,
             actor_kind,
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            serialized,
         ),
     )

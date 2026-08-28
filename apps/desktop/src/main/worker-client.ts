@@ -157,6 +157,56 @@ export const WORKER_OPERATION_POLICIES = {
     transportTimeoutMs: 7_000,
     terminateWorkerOnTimeout: true,
   },
+  'caseDocument.create': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'caseDocument.createWithFile': {
+    domainDeadlineMs: 30_000,
+    transportTimeoutMs: 35_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'caseDocument.list': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'caseDocument.get': {
+    domainDeadlineMs: 30_000,
+    transportTimeoutMs: 35_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'caseDocument.update': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'caseDocument.attachFile': {
+    domainDeadlineMs: 30_000,
+    transportTimeoutMs: 35_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'caseDocument.verifyFile': {
+    domainDeadlineMs: 30_000,
+    transportTimeoutMs: 35_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'caseDocument.archive': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'caseDocument.restore': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'caseDocument.resolveFile': {
+    domainDeadlineMs: 30_000,
+    transportTimeoutMs: 35_000,
+    terminateWorkerOnTimeout: false,
+  },
 } as const satisfies Readonly<Record<WorkerOperation, WorkerOperationPolicy>>;
 
 export interface WorkerLifecycleEvent {

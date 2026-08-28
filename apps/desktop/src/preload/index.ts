@@ -1,7 +1,15 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import type { ZodType } from 'zod';
+import { z, type ZodType } from 'zod';
 
 import {
+  caseDocumentAttachFileCommandSchema,
+  caseDocumentCreateCommandSchema,
+  caseDocumentIdPayloadSchema,
+  caseDocumentListPayloadSchema,
+  caseDocumentListResultSchema,
+  caseDocumentRevisionPayloadSchema,
+  caseDocumentSchema,
+  caseDocumentUpdatePayloadSchema,
   createDesktopResultSchema,
   customerGetResultSchema,
   customerProfileSchema,
@@ -216,6 +224,80 @@ const api: ImpellerApi = {
         specimenRevisionPayloadSchema,
         command,
         createDesktopResultSchema(specimenSchema),
+      ),
+  },
+  caseDocument: {
+    create: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.caseDocumentCreate,
+        caseDocumentCreateCommandSchema,
+        command,
+        createDesktopResultSchema(caseDocumentSchema),
+      ),
+    createWithFile: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.caseDocumentCreateWithFile,
+        caseDocumentCreateCommandSchema,
+        command,
+        createDesktopResultSchema(caseDocumentSchema),
+      ),
+    list: async (query) => {
+      const result = await invokeValidated(
+        IPC_CHANNELS.caseDocumentList,
+        caseDocumentListPayloadSchema,
+        query,
+        createDesktopResultSchema(caseDocumentListResultSchema),
+      );
+      return result.ok ? { ok: true, result: result.result.items } : result;
+    },
+    get: async (caseDocumentId) =>
+      invokeValidated(
+        IPC_CHANNELS.caseDocumentGet,
+        caseDocumentIdPayloadSchema,
+        { caseDocumentId },
+        createDesktopResultSchema(caseDocumentSchema),
+      ),
+    update: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.caseDocumentUpdate,
+        caseDocumentUpdatePayloadSchema,
+        command,
+        createDesktopResultSchema(caseDocumentSchema),
+      ),
+    attachFile: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.caseDocumentAttachFile,
+        caseDocumentAttachFileCommandSchema,
+        command,
+        createDesktopResultSchema(caseDocumentSchema),
+      ),
+    verifyFile: async (caseDocumentId) =>
+      invokeValidated(
+        IPC_CHANNELS.caseDocumentVerifyFile,
+        caseDocumentIdPayloadSchema,
+        { caseDocumentId },
+        createDesktopResultSchema(caseDocumentSchema),
+      ),
+    openFile: async (caseDocumentId) =>
+      invokeValidated(
+        IPC_CHANNELS.caseDocumentOpenFile,
+        caseDocumentIdPayloadSchema,
+        { caseDocumentId },
+        createDesktopResultSchema(z.object({ opened: z.boolean() }).strict()),
+      ),
+    archive: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.caseDocumentArchive,
+        caseDocumentRevisionPayloadSchema,
+        command,
+        createDesktopResultSchema(caseDocumentSchema),
+      ),
+    restore: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.caseDocumentRestore,
+        caseDocumentRevisionPayloadSchema,
+        command,
+        createDesktopResultSchema(caseDocumentSchema),
       ),
   },
 };

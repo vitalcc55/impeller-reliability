@@ -51,6 +51,23 @@ Renderer -> Worker: "CustomerProfile / WheelModel / Specimen + expected revision
 Worker -> Project: "analyst_enrichment + changed-fields audit, one transaction"
 Project -> Renderer: "detail/list DTO + completeness warnings"
 
+User -> Renderer: "Создать документ дела (M02.2B)"
+Renderer -> Main: "typed metadata; createWithFile/attach без path"
+Main -> User: "system file dialog + preliminary gate"
+Main -> Worker: "approved source path только внутри worker request"
+Worker -> Project: "revalidate → staged streaming SHA-256 → atomic rename → file row/audit"
+Project -> Renderer: "metadata/file DTO + applicability + integrity/warnings; no path"
+User -> Renderer: "Проверить или открыть managed copy"
+Renderer -> Main: "verify/open by caseDocumentId"
+Main -> Worker: "registry-owned resolve + containment/existence/SHA-256"
+Worker -> Main: "verified absolute path only for Main"
+Main -> User: "shell.openPath; Renderer получает typed outcome"
+
+User -> Renderer: "Попытаться перейти с dirty draft"
+Renderer -> User: "единый keep/discard guard; focus возвращается к исходному действию"
+User -> Renderer: "validation/conflict/runtime failure"
+Renderer -> User: "ввод сохранён; error class и доступное следующее действие"
+
 R130SH -> Main: "result package после независимого испытания (M03)"
 Main -> Worker: "staged package after path/size gate"
 Worker -> Project: "checksums, validation, immutable import revision"
@@ -67,4 +84,4 @@ Project -> Main: "canonical report data"
 Main -> User: "preview/exported document + SHA-256"
 ```
 
-Browser preview воспроизводит renderer/project/diagnostics states через typed synthetic adapter. Он не запускает worker, не открывает файлы и не доказывает persistence; create/update/close/reopen подтверждают Electron E2E и packaged smoke.
+Browser preview воспроизводит renderer/project/diagnostics/document states через typed synthetic adapter. Он не запускает worker, не показывает file dialog, не открывает файлы и не доказывает persistence; create/update/attach/verify/archive/close/reopen подтверждают Electron E2E и packaged smoke.

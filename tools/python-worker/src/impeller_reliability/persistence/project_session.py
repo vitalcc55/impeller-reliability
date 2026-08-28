@@ -12,6 +12,7 @@ from impeller_reliability.persistence.analyst_dossier import (
     WheelModel,
 )
 from impeller_reliability.persistence.audit import audit_now, insert_audit
+from impeller_reliability.persistence.case_documents import CaseDocument, CaseDocumentRepository
 from impeller_reliability.persistence.project_database import (
     create_verified_backup,
     remove_backup,
@@ -53,6 +54,7 @@ class ProjectSession:
         manifest: ProjectManifest,
         connection: sqlite3.Connection,
         project_lock: ProjectLock,
+        deadline: RequestDeadline | None = None,
     ) -> None:
         self.path = path
         self.manifest = manifest
@@ -60,6 +62,8 @@ class ProjectSession:
         self._lock = project_lock
         self._closed = False
         self._dossier = AnalystDossierRepository(connection, manifest.projectId)
+        self._case_documents = CaseDocumentRepository(connection, path)
+        self._case_documents.recover_managed_files(deadline)
 
     def overview(self) -> ProjectOverview:
         row = self._connection.execute(
@@ -237,6 +241,119 @@ class ProjectSession:
 
     def set_specimen_archived(self, specimen_id: str, expected_revision: int, archived: bool, deadline: RequestDeadline | None) -> Specimen:
         return self._dossier.set_specimen_archived(specimen_id, expected_revision, archived, deadline)
+
+    def create_case_document(
+        self,
+        document_id: str,
+        values: dict[str, object],
+        wheel_model_ids: tuple[str, ...],
+        specimen_ids: tuple[str, ...],
+        deadline: RequestDeadline | None,
+    ) -> CaseDocument:
+        return self._case_documents.create(
+            document_id=document_id,
+            values=values,
+            wheel_model_ids=wheel_model_ids,
+            specimen_ids=specimen_ids,
+            deadline=deadline,
+        )
+
+    def create_case_document_with_file(
+        self,
+        document_id: str,
+        values: dict[str, object],
+        wheel_model_ids: tuple[str, ...],
+        specimen_ids: tuple[str, ...],
+        source_path: Path,
+        deadline: RequestDeadline | None,
+    ) -> CaseDocument:
+        return self._case_documents.create_with_file(
+            document_id=document_id,
+            values=values,
+            wheel_model_ids=wheel_model_ids,
+            specimen_ids=specimen_ids,
+            source_path=source_path,
+            deadline=deadline,
+        )
+
+    def list_case_documents(
+        self,
+        include_archived: bool,
+        document_kind: str | None,
+        deadline: RequestDeadline | None = None,
+    ) -> tuple[CaseDocument, ...]:
+        return self._case_documents.list(
+            include_archived=include_archived,
+            document_kind=document_kind,
+            deadline=deadline,
+        )
+
+    def get_case_document(
+        self,
+        document_id: str,
+        deadline: RequestDeadline | None = None,
+    ) -> CaseDocument:
+        return self._case_documents.get(document_id, deadline)
+
+    def update_case_document(
+        self,
+        document_id: str,
+        expected_revision: int,
+        values: dict[str, object],
+        wheel_model_ids: tuple[str, ...],
+        specimen_ids: tuple[str, ...],
+        deadline: RequestDeadline | None,
+    ) -> CaseDocument:
+        return self._case_documents.update(
+            document_id=document_id,
+            expected_revision=expected_revision,
+            values=values,
+            wheel_model_ids=wheel_model_ids,
+            specimen_ids=specimen_ids,
+            deadline=deadline,
+        )
+
+    def attach_case_document_file(
+        self,
+        document_id: str,
+        expected_revision: int,
+        source_path: Path,
+        deadline: RequestDeadline | None,
+    ) -> CaseDocument:
+        return self._case_documents.attach_file(
+            document_id=document_id,
+            expected_revision=expected_revision,
+            source_path=source_path,
+            deadline=deadline,
+        )
+
+    def verify_case_document_file(
+        self,
+        document_id: str,
+        deadline: RequestDeadline | None,
+    ) -> CaseDocument:
+        return self._case_documents.verify_file(document_id, deadline)
+
+    def set_case_document_archived(
+        self,
+        document_id: str,
+        expected_revision: int,
+        archived: bool,
+        deadline: RequestDeadline | None,
+    ) -> CaseDocument:
+        return self._case_documents.set_archived(
+            document_id=document_id,
+            expected_revision=expected_revision,
+            archived=archived,
+            deadline=deadline,
+        )
+
+    def resolve_case_document_file(
+        self,
+        document_id: str,
+        deadline: RequestDeadline | None,
+    ) -> Path:
+        return self._case_documents.resolve_file(document_id, deadline)
 
     def validate(self, deadline: RequestDeadline | None = None) -> None:
         validate_project_database(self._connection, self.manifest, deadline)
