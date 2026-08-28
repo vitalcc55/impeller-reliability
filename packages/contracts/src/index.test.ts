@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   parseWorkerResponse,
   customerUpsertPayloadSchema,
+  customerProfileSchema,
+  entityIdSchema,
+  projectIdSchema,
   projectBackupResultSchema,
   projectOverviewSchema,
   runtimeStatusSchema,
@@ -12,6 +15,25 @@ import {
 } from './index';
 
 describe('worker contracts', () => {
+  it('accepts canonical RFC 4122 project IDs across versions without weakening entity IDs', () => {
+    const projectId = '019c89f0-0b57-7ef5-9656-595184fcb272';
+    expect(projectIdSchema.parse(projectId)).toBe(projectId);
+    expect(entityIdSchema.safeParse(projectId).success).toBe(false);
+    expect(
+      customerProfileSchema.parse({
+        projectId,
+        fullName: 'Заказчик',
+        legalAddress: '',
+        actualAddress: '',
+        notes: '',
+        recordRevision: 1,
+        createdAtUtc: '2026-08-26T00:00:00.000Z',
+        updatedAtUtc: '2026-08-26T00:00:00.000Z',
+        warnings: [],
+      }).projectId,
+    ).toBe(projectId);
+  });
+
   it('rejects generic operations', () => {
     expect(
       workerRequestSchema.safeParse({

@@ -15,6 +15,11 @@ import type {
   WheelModelSummary,
 } from '@impeller-reliability/contracts';
 
+import {
+  formatOptionalPositiveInteger,
+  parseOptionalPositiveInteger,
+} from './optional-positive-integer';
+
 export type DossierSection = 'customer' | 'wheels' | 'specimens';
 
 interface AnalystDossierProps {
@@ -71,6 +76,8 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
     const [wheels, setWheels] = useState<readonly WheelModelSummary[]>([]);
     const [wheel, setWheel] = useState<WheelModel | null>(null);
     const [wheelDraft, setWheelDraft] = useState<WheelModelDraft>(emptyWheel);
+    const [nominalSpeedInput, setNominalSpeedInput] = useState('');
+    const [bladeCountInput, setBladeCountInput] = useState('');
     const [wheelCreateId, setWheelCreateId] = useState(() => crypto.randomUUID());
     const [specimens, setSpecimens] = useState<readonly SpecimenSummary[]>([]);
     const [specimen, setSpecimen] = useState<Specimen | null>(null);
@@ -88,7 +95,13 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
     const loadKey = `${projectId}:${section}:${includeArchived ? 'archived' : 'active'}`;
 
     const customerDirty = !sameCustomer(customerDraft, customer);
-    const wheelDirty = !sameWheel(wheelDraft, wheel);
+    const nominalSpeed = parseOptionalPositiveInteger(nominalSpeedInput);
+    const bladeCount = parseOptionalPositiveInteger(bladeCountInput);
+    const hasInvalidIntegerInput = nominalSpeed.kind === 'invalid' || bladeCount.kind === 'invalid';
+    const wheelDirty =
+      !sameWheel(wheelDraft, wheel) ||
+      nominalSpeedInput !== formatOptionalPositiveInteger(wheel?.nominalSpeedRpm ?? null) ||
+      bladeCountInput !== formatOptionalPositiveInteger(wheel?.bladeCount ?? null);
     const specimenDirty = JSON.stringify(specimenDraft) !== JSON.stringify(specimenBaseline);
     const activeDirty =
       section === 'customer' ? customerDirty : section === 'wheels' ? wheelDirty : specimenDirty;
@@ -145,6 +158,11 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
       });
       return operation;
     };
+    const resetWheelDraft = useCallback((value: WheelModel | null): void => {
+      setWheelDraft(value === null ? emptyWheel : wheelToDraft(value));
+      setNominalSpeedInput(formatOptionalPositiveInteger(value?.nominalSpeedRpm ?? null));
+      setBladeCountInput(formatOptionalPositiveInteger(value?.bladeCount ?? null));
+    }, []);
 
     const saveCustomer = (): Promise<void> =>
       trackSave(
@@ -176,6 +194,8 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
               if (!result.ok) return setError(result.error);
               setWheel(result.result);
               setWheelDraft(wheelToDraft(result.result));
+              setNominalSpeedInput(formatOptionalPositiveInteger(result.result.nominalSpeedRpm));
+              setBladeCountInput(formatOptionalPositiveInteger(result.result.bladeCount));
             } catch {
               if (selectionRevision === selectionRevisionRef.current) {
                 setError(unavailableError());
@@ -183,7 +203,7 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
             }
           })();
         },
-        () => setWheelDraft(wheel === null ? emptyWheel : wheelToDraft(wheel)),
+        () => resetWheelDraft(wheel),
       );
     };
     const newWheel = (): void => {
@@ -194,34 +214,47 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
           setConfirmArchiveKey(null);
           setWheel(null);
           setWheelDraft(emptyWheel);
+          setNominalSpeedInput('');
+          setBladeCountInput('');
           setWheelCreateId(crypto.randomUUID());
           setMessage(null);
           setError(null);
         },
-        () => setWheelDraft(wheel === null ? emptyWheel : wheelToDraft(wheel)),
+        () => resetWheelDraft(wheel),
       );
     };
-    const saveWheel = (): Promise<void> =>
-      trackSave(
+    const saveWheel = (): Promise<void> => {
+      if (nominalSpeed.kind === 'invalid' || bladeCount.kind === 'invalid') {
+        return Promise.resolve();
+      }
+      const normalizedDraft: WheelModelDraft = {
+        ...wheelDraft,
+        nominalSpeedRpm: nominalSpeed.value,
+        bladeCount: bladeCount.value,
+      };
+      return trackSave(
         run('wheel-save', async () => {
           const result =
             wheel === null
               ? await desktopApi.wheelModel.create({
                   wheelModelId: wheelCreateId,
-                  ...wheelDraft,
+                  ...normalizedDraft,
                 })
               : await desktopApi.wheelModel.update({
                   wheelModelId: wheel.wheelModelId,
                   expectedRevision: wheel.recordRevision,
-                  wheelModel: wheelDraft,
+                  wheelModel: normalizedDraft,
                 });
           if (!result.ok) return setError(result.error);
           setWheel(result.result);
           setWheelDraft(wheelToDraft(result.result));
+          setNominalSpeedInput(formatOptionalPositiveInteger(result.result.nominalSpeedRpm));
+          setBladeCountInput(formatOptionalPositiveInteger(result.result.bladeCount));
           await loadWheels();
           setMessage(`Модель сохранена. Редакция ${String(result.result.recordRevision)}.`);
         }),
       );
+    };
     const toggleWheelArchive = (): void => {
       if (wheel === null) return;
       const confirmationKey = `wheel:${wheel.wheelModelId}:${wheel.archivedAtUtc === null ? 'archive' : 'restore'}`;
@@ -244,10 +277,12 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
             if (!result.ok) return setError(result.error);
             setWheel(result.result);
             setWheelDraft(wheelToDraft(result.result));
+            setNominalSpeedInput(formatOptionalPositiveInteger(result.result.nominalSpeedRpm));
+            setBladeCountInput(formatOptionalPositiveInteger(result.result.bladeCount));
             setConfirmArchiveKey(null);
             await loadWheels();
           }),
-        () => setWheelDraft(wheelToDraft(wheel)),
+        () => resetWheelDraft(wheel),
       );
     };
 
@@ -358,8 +393,7 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
         discardActiveDraft: () => {
           if (section === 'customer')
             setCustomerDraft(customer === null ? emptyCustomer : customerToDraft(customer));
-          else if (section === 'wheels')
-            setWheelDraft(wheel === null ? emptyWheel : wheelToDraft(wheel));
+          else if (section === 'wheels') resetWheelDraft(wheel);
           else setSpecimenDraft(specimenBaseline);
         },
         waitForPendingSave: async () => {
@@ -382,7 +416,16 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
           return true;
         },
       }),
-      [activeDirty, customer, desktopApi, section, specimen, specimenBaseline, wheel],
+      [
+        activeDirty,
+        customer,
+        desktopApi,
+        resetWheelDraft,
+        section,
+        specimen,
+        specimenBaseline,
+        wheel,
+      ],
     );
 
     return (
@@ -519,29 +562,27 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
                 <TextInput
                   label="Номинальная частота вращения"
                   description="об/мин"
-                  value={wheelDraft.nominalSpeedRpm?.toString() ?? ''}
+                  value={nominalSpeedInput}
+                  error={
+                    nominalSpeed.kind === 'invalid'
+                      ? 'Введите целое положительное число.'
+                      : undefined
+                  }
                   disabled={
                     disabled || busy !== null || (wheel !== null && wheel.archivedAtUtc !== null)
                   }
-                  onChange={(event) =>
-                    setWheelDraft({
-                      ...wheelDraft,
-                      nominalSpeedRpm: positiveIntegerOrNull(event.currentTarget.value),
-                    })
-                  }
+                  onChange={(event) => setNominalSpeedInput(event.currentTarget.value)}
                 />
                 <TextInput
                   label="Количество лопастей"
-                  value={wheelDraft.bladeCount?.toString() ?? ''}
+                  value={bladeCountInput}
+                  error={
+                    bladeCount.kind === 'invalid' ? 'Введите целое положительное число.' : undefined
+                  }
                   disabled={
                     disabled || busy !== null || (wheel !== null && wheel.archivedAtUtc !== null)
                   }
-                  onChange={(event) =>
-                    setWheelDraft({
-                      ...wheelDraft,
-                      bladeCount: positiveIntegerOrNull(event.currentTarget.value),
-                    })
-                  }
+                  onChange={(event) => setBladeCountInput(event.currentTarget.value)}
                 />
                 <Textarea
                   label="Геометрия"
@@ -604,6 +645,7 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
                     disabled ||
                     busy !== null ||
                     wheelDraft.fullName.trim() === '' ||
+                    hasInvalidIntegerInput ||
                     (wheel !== null && wheel.archivedAtUtc !== null)
                   }
                 >
@@ -1033,11 +1075,6 @@ function sameWheel(draft: WheelModelDraft, value: WheelModel | null): boolean {
   return value === null
     ? JSON.stringify(draft) === JSON.stringify(emptyWheel)
     : JSON.stringify(draft) === JSON.stringify(wheelToDraft(value));
-}
-function positiveIntegerOrNull(value: string): number | null {
-  if (value.trim() === '') return null;
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 function unavailableError(): DesktopError {
   return {

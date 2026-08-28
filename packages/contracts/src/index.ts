@@ -61,6 +61,12 @@ export const storageHealthResultSchema = z
   .strict();
 
 export const projectStatusSchema = z.enum(['draft', 'active', 'completed', 'archived']);
+export const projectIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+export const entityIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
 const applicationVersionSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/u);
 export const projectDraftSchema = z
   .object({
@@ -99,7 +105,7 @@ const canonicalUtcTimestampSchema = z
   });
 export const projectOverviewSchema = z
   .object({
-    projectId: z.string().uuid(),
+    projectId: projectIdSchema,
     path: z.string().min(1),
     name: z.string().min(1).max(200),
     projectNumber: z.string().max(100),
@@ -127,9 +133,6 @@ export const completenessWarningSchema = z.enum([
   'wheel_nominal_speed_missing',
   'specimen_working_diameter_missing',
 ]);
-const entityIdSchema = z
-  .string()
-  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
 const optionalCanonicalDecimalSchema = z
   .union([z.string(), z.null()])
   .transform((value, context): string | null => {
@@ -183,7 +186,7 @@ export const customerUpsertPayloadSchema = z
   .strict();
 export const customerProfileSchema = customerDraftSchema
   .extend({
-    projectId: entityIdSchema,
+    projectId: projectIdSchema,
     recordRevision: z.number().int().positive(),
     createdAtUtc: canonicalUtcTimestampSchema,
     updatedAtUtc: canonicalUtcTimestampSchema,
