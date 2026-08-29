@@ -115,6 +115,32 @@ def test_discard_rejects_active_job(tmp_path: Path) -> None:
     _wait_for_terminal(manager, job_id)
 
 
+def test_terminal_job_is_replaced_atomically_but_active_job_is_preserved(tmp_path: Path) -> None:
+    first = build_synthetic_r130run(tmp_path / "first.r130run")
+    second = build_synthetic_r130run(tmp_path / "second.r130run")
+    manager = RunPackageValidationJobManager()
+    first_id = str(uuid4())
+    second_id = str(uuid4())
+    manager.start(first_id, first, 30_000)
+    _wait_for_terminal(manager, first_id)
+
+    replacement = manager.start(second_id, second, 30_000, replace_job_id=first_id)
+    assert replacement.jobId == second_id
+    _wait_for_terminal(manager, second_id)
+
+    gate = _GateValidator()
+    active_manager = RunPackageValidationJobManager(lambda: gate)
+    active_id = str(uuid4())
+    active_manager.start(active_id, first, 30_000)
+    assert gate.started.wait(1)
+    with pytest.raises(ProjectOperationError) as active:
+        active_manager.start(str(uuid4()), second, 30_000, replace_job_id=active_id)
+    assert active.value.code == "operation_in_progress"
+    assert active_manager.get(active_id).jobId == active_id
+    gate.release.set()
+    _wait_for_terminal(active_manager, active_id)
+
+
 def test_shutdown_requests_cancel_and_joins_within_bound(tmp_path: Path) -> None:
     package = build_synthetic_r130run(tmp_path / "valid.r130run")
     gate = _IgnoringCancelValidator()

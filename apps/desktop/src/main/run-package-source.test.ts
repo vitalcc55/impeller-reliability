@@ -80,7 +80,10 @@ describe('run-package source selection', () => {
     });
 
     await runPackageValidationStart(
-      { jobId: 'ec7cc676-e40d-4ad7-b038-83e0035dc212' },
+      {
+        jobId: 'ec7cc676-e40d-4ad7-b038-83e0035dc212',
+        replaceJobId: '31871fa4-2088-4f0d-bcb4-dd5454294edc',
+      },
       () =>
         selectRunPackageSource({
           automatedCancelled: false,
@@ -92,6 +95,7 @@ describe('run-package source selection', () => {
 
     expect(request).toHaveBeenCalledWith({
       jobId: 'ec7cc676-e40d-4ad7-b038-83e0035dc212',
+      replaceJobId: '31871fa4-2088-4f0d-bcb4-dd5454294edc',
       sourcePath,
       validationBudgetMs: RUN_PACKAGE_VALIDATION_BUDGET_MS,
     });

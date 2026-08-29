@@ -60,7 +60,13 @@ class RunPackageValidationJobManager:
         self._job: _JobRecord | None = None
         self._stopping = False
 
-    def start(self, job_id: str, source_path: Path, validation_budget_ms: int) -> RunPackageValidationJobSnapshot:
+    def start(
+        self,
+        job_id: str,
+        source_path: Path,
+        validation_budget_ms: int,
+        replace_job_id: str | None = None,
+    ) -> RunPackageValidationJobSnapshot:
         if validation_budget_ms < MIN_VALIDATION_BUDGET_MS or validation_budget_ms > MAX_VALIDATION_BUDGET_MS:
             raise ProjectOperationError("validation_error", "Срок проверки пакета находится вне допустимого диапазона.")
         try:
@@ -71,11 +77,15 @@ class RunPackageValidationJobManager:
             if self._stopping:
                 raise ProjectOperationError("worker_unavailable", "Worker завершает работу.", retryable=True)
             if self._job is not None:
-                if self._job.job_id != job_id:
+                if self._job.job_id == job_id:
+                    if self._job.fingerprint != fingerprint or self._job.budget_ms != validation_budget_ms:
+                        raise ProjectOperationError("job_id_conflict", "Идентификатор проверки уже связан с другим источником.")
+                    return self._snapshot(self._job)
+                if replace_job_id != self._job.job_id:
                     raise ProjectOperationError("operation_in_progress", "Другая проверка пакета ещё не освобождена.", retryable=True)
-                if self._job.fingerprint != fingerprint or self._job.budget_ms != validation_budget_ms:
-                    raise ProjectOperationError("job_id_conflict", "Идентификатор проверки уже связан с другим источником.")
-                return self._snapshot(self._job)
+                if self._job.state not in {"completed", "failed", "cancelled"} or (self._job.thread is not None and self._job.thread.is_alive()):
+                    raise ProjectOperationError("operation_in_progress", "Активную проверку нельзя заменить.", retryable=True)
+                self._job = None
             record = _JobRecord(
                 job_id=job_id,
                 source_path=source_path,

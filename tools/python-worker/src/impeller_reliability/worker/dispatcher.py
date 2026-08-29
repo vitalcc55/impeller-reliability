@@ -355,6 +355,7 @@ class Dispatcher:
                         request.payload.jobId,
                         Path(request.payload.sourcePath),
                         request.payload.validationBudgetMs,
+                        request.payload.replaceJobId,
                     ),
                 )
             case RunPackageValidationGetRequest():

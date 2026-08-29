@@ -383,6 +383,7 @@ class RunPackageValidationStartPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     jobId: EntityId
+    replaceJobId: EntityId | None = None
     sourcePath: str = Field(min_length=1, max_length=32_767)
     validationBudgetMs: int = Field(ge=1_000, le=1_800_000)
 

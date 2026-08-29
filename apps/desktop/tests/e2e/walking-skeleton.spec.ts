@@ -42,7 +42,15 @@ test('renderer reflects worker failure and controlled restart through the narrow
         const api: unknown = Reflect.get(window, 'impeller');
         return typeof api === 'object' && api !== null ? Reflect.ownKeys(api) : [];
       }),
-    ).toEqual(['system', 'project', 'caseCustomer', 'wheelModel', 'specimen', 'caseDocument']);
+    ).toEqual([
+      'system',
+      'project',
+      'caseCustomer',
+      'wheelModel',
+      'specimen',
+      'caseDocument',
+      'runPackageValidation',
+    ]);
     expect(
       await page.evaluate(() => {
         const api: unknown = Reflect.get(window, 'impeller');
@@ -945,3 +953,157 @@ test('reconciles a clean document after a committed attachment response is not a
     rmSync(evidenceRoot, { recursive: true, force: true });
   }
 });
+
+test('validates a synthetic R130SH package without importing or mutating the project', async () => {
+  const evidenceRoot = resolve(
+    import.meta.dirname,
+    '../../../../.tmp/.codex/evidence/m03a-r130run-e2e',
+  );
+  const projectPath = join(evidenceRoot, 'Validation project.irproj');
+  const userDataPath = join(evidenceRoot, 'user-data');
+  const packagePath = join(evidenceRoot, 'synthetic.r130run');
+  const largePackagePath = join(evidenceRoot, 'large-synthetic.r130run');
+  const invalidPackagePath = join(evidenceRoot, 'invalid.r130run');
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(evidenceRoot, { recursive: true });
+  buildSyntheticRunPackage(packagePath);
+  buildSyntheticRunPackage(largePackagePath, 64);
+  writeFileSync(invalidPackagePath, 'not a zip', 'utf8');
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: resolve(import.meta.dirname, '../../../..'),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
+      IMPELLER_AUTOMATED_R130RUN_PATH: packagePath,
+      IMPELLER_TEST_USER_DATA: userDataPath,
+    },
+  });
+  const consoleErrors: string[] = [];
+  let appClosed = false;
+  try {
+    const mainProcessId = app.process().pid;
+    if (mainProcessId === undefined) throw new Error('electron_main_process_missing');
+    const page = await app.firstWindow();
+    page.on('console', (message) => {
+      if (message.type() === 'error') consoleErrors.push(message.text());
+    });
+    page.on('pageerror', (error) => consoleErrors.push(error.message));
+    await page.getByRole('button', { name: 'Создать проект' }).click();
+    await expect(page.getByText('Номер проекта не задан · редакция 1')).toBeVisible();
+    await page.getByRole('button', { name: 'Диагностика' }).click();
+    await expect(page.getByRole('heading', { name: 'Проверка контракта R130SH' })).toBeVisible();
+    await expect(
+      page.getByText(
+        'Проверка не импортирует данные в дело и не подтверждает пригодность результата для расчётов. Используется синтетический контрактный baseline; production exporter и M9a golden packages ещё не готовы.',
+      ),
+    ).toBeVisible();
+    await page.getByRole('button', { name: 'Проверить пакет R130SH' }).click();
+    await expect(page.locator('[data-validation-state="completed"]')).toBeVisible();
+    await expect(page.getByText('Пройдена', { exact: true })).toBeVisible();
+    await expect(page.getByText('Частичное', { exact: true })).toBeVisible();
+    await expect(page.getByText('synthetic.r130run')).toBeVisible();
+    await expect(page.getByText('f02f6d954246a5ab6f57d33dac724ce03d7fb841')).toBeVisible();
+    await expect(page.getByRole('button', { name: /Импорт/u })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Повторить проверку' })).toBeFocused();
+    await page.setViewportSize({ width: 640, height: 900 });
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+    await page.setViewportSize({ width: 960, height: 680 });
+
+    await app.evaluate(() => {
+      delete process.env['IMPELLER_AUTOMATED_R130RUN_PATH'];
+      process.env['IMPELLER_AUTOMATED_R130RUN_CANCELLED'] = '1';
+    });
+    await page.getByRole('button', { name: 'Повторить проверку' }).click();
+    await expect(page.getByText('synthetic.r130run')).toBeVisible();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+
+    await app.evaluate(() => {
+      delete process.env['IMPELLER_AUTOMATED_R130RUN_CANCELLED'];
+      process.env['IMPELLER_AUTOMATED_R130RUN_DIALOG_REJECTED'] = '1';
+    });
+    await page.getByRole('button', { name: 'Повторить проверку' }).click();
+    await expect(page.getByRole('alert')).toContainText(
+      'Системный диалог выбора файла недоступен.',
+    );
+    await expect(page.getByText('synthetic.r130run')).toBeVisible();
+
+    await app.evaluate((_electron, path) => {
+      delete process.env['IMPELLER_AUTOMATED_R130RUN_DIALOG_REJECTED'];
+      process.env['IMPELLER_AUTOMATED_R130RUN_PATH'] = path;
+    }, invalidPackagePath);
+    await page.getByRole('button', { name: 'Повторить проверку' }).click();
+    await expect(page.locator('[data-validation-state="completed"]')).toBeVisible();
+    await expect(page.getByText('Не пройдена', { exact: true })).toBeVisible();
+
+    await app.evaluate((_electron, path) => {
+      process.env['IMPELLER_AUTOMATED_R130RUN_PATH'] = path;
+    }, largePackagePath);
+    await page.getByRole('button', { name: 'Повторить проверку' }).click();
+    await expect(page.getByRole('button', { name: 'Отменить проверку' })).toBeVisible();
+    const validationWorkerId = workerProcessIds(mainProcessId)[0];
+    if (validationWorkerId === undefined) throw new Error('validation_worker_process_missing');
+    process.kill(validationWorkerId);
+    await expect(
+      page.getByText('Worker недоступен. Откройте диагностику и перезапустите ядро.'),
+    ).toBeVisible();
+    await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
+    await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
+    await expect(page.getByRole('alert')).toContainText('Проверка была прервана');
+
+    await app.evaluate((_electron, path) => {
+      process.env['IMPELLER_AUTOMATED_R130RUN_PATH'] = path;
+    }, largePackagePath);
+    await page.getByRole('button', { name: 'Проверить пакет R130SH' }).click();
+    await page.getByRole('button', { name: 'Отменить проверку' }).click();
+    await expect(page.getByText('Проверка отменена', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Повторить проверку' })).toBeFocused();
+
+    await app.evaluate(() => {
+      delete process.env['IMPELLER_AUTOMATED_R130RUN_PATH'];
+      process.env['IMPELLER_AUTOMATED_R130RUN_CANCELLED'] = '1';
+    });
+    await page.getByRole('button', { name: 'Повторить проверку' }).click();
+    await expect(page.getByText('Проверка отменена', { exact: true })).toBeVisible();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Проекты' }).click();
+    await expect(page.getByText('Номер проекта не задан · редакция 1')).toBeVisible();
+    await page.getByRole('button', { name: 'Диагностика' }).click();
+    await page.getByRole('button', { name: 'Очистить результат' }).click();
+    await expect(page.getByRole('button', { name: 'Проверить пакет R130SH' })).toBeFocused();
+    await app.evaluate((_electron, path) => {
+      delete process.env['IMPELLER_AUTOMATED_R130RUN_CANCELLED'];
+      process.env['IMPELLER_AUTOMATED_R130RUN_PATH'] = path;
+    }, largePackagePath);
+    await page.getByRole('button', { name: 'Проверить пакет R130SH' }).click();
+    await expect(page.getByRole('button', { name: 'Отменить проверку' })).toBeVisible();
+    expect(consoleErrors).toEqual([]);
+    await app.close();
+    appClosed = true;
+    await expect.poll(() => workerProcessIds(mainProcessId)).toHaveLength(0);
+  } finally {
+    if (!appClosed) await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
+function buildSyntheticRunPackage(outputPath: string, largeCsvMib = 0): void {
+  const repositoryRoot = resolve(import.meta.dirname, '../../../..');
+  const argumentsList = [
+    'run',
+    '--project',
+    join(repositoryRoot, 'tools/python-worker'),
+    '--directory',
+    join(repositoryRoot, 'tools/python-worker/tests'),
+    'python',
+    '-m',
+    'support.build_r130run_cli',
+    outputPath,
+  ];
+  if (largeCsvMib > 0) argumentsList.push('--large-csv-mib', String(largeCsvMib));
+  execFileSync('uv', argumentsList, { cwd: repositoryRoot, encoding: 'utf8' });
+}

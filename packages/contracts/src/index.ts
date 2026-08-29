@@ -434,7 +434,9 @@ export const planIdSchema = runPackageSourceUuidSchema.brand<'PlanId'>();
 export const measurementIdSchema = runPackageSourceUuidSchema.brand<'MeasurementId'>();
 export const eventIdSchema = runPackageSourceUuidSchema.brand<'EventId'>();
 export const inspectionIdSchema = runPackageSourceUuidSchema.brand<'InspectionId'>();
-export const runPackageValidationStartCommandSchema = z.object({ jobId: entityIdSchema }).strict();
+export const runPackageValidationStartCommandSchema = z
+  .object({ jobId: entityIdSchema, replaceJobId: entityIdSchema.optional() })
+  .strict();
 export const runPackageValidationStartPayloadSchema = runPackageValidationStartCommandSchema
   .extend({
     sourcePath: z.string().min(1).max(32_767),

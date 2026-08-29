@@ -67,6 +67,7 @@ export async function runPackageValidationStart(
   selectSource: () => Promise<DesktopResult<string>>,
   request: (payload: {
     readonly jobId: string;
+    readonly replaceJobId?: string;
     readonly sourcePath: string;
     readonly validationBudgetMs: number;
   }) => Promise<DesktopResult<RunPackageValidationJob>>,
@@ -75,6 +76,7 @@ export async function runPackageValidationStart(
   if (!selected.ok) return { ok: false, error: selected.error };
   return request({
     jobId: command.jobId,
+    ...(command.replaceJobId === undefined ? {} : { replaceJobId: command.replaceJobId }),
     sourcePath: selected.result,
     validationBudgetMs: RUN_PACKAGE_VALIDATION_BUDGET_MS,
   });

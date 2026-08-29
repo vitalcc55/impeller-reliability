@@ -25,6 +25,8 @@ import {
   customerUpsertPayloadSchema,
   projectDraftSchema,
   projectUpdateMetadataPayloadSchema,
+  runPackageValidationJobPayloadSchema,
+  runPackageValidationStartCommandSchema,
   runtimeStatusSchema,
   specimenCreatePayloadSchema,
   specimenIdPayloadSchema,
@@ -42,6 +44,7 @@ import {
   type ProjectDraft,
   type ProjectOverview,
   type RecentProject,
+  type RunPackageValidationJob,
   type RuntimeStatus,
   type WorkerErrorResponse,
 } from '@impeller-reliability/contracts';
@@ -54,6 +57,7 @@ import {
 } from './case-document-source';
 import { JsonlLogger } from './logging';
 import { RecentProjectsStore } from './recent-projects';
+import { runPackageValidationStart, selectRunPackageSource } from './run-package-source';
 import { showSystemDialog } from './system-dialog';
 import { WorkerClient, type WorkerLifecycleEvent } from './worker-client';
 import { resolveWorkerLocation } from './worker-location';
@@ -504,6 +508,51 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       client.request('caseDocument.restore', parsed.data),
     );
   });
+  ipcMain.handle(IPC_CHANNELS.runPackageValidationStart, async (_event, raw: unknown) => {
+    const parsed = runPackageValidationStartCommandSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure<RunPackageValidationJob>();
+    return runPackageValidationStart(parsed.data, selectRunPackageSourceFromDialog, (payload) =>
+      runDiagnosticOperation(workerClient, async (client) =>
+        client.request('runPackageValidation.start', payload),
+      ),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.runPackageValidationGet, (_event, raw: unknown) => {
+    const parsed = runPackageValidationJobPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure<RunPackageValidationJob>();
+    return runDiagnosticOperation(workerClient, async (client) =>
+      client.request('runPackageValidation.get', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.runPackageValidationCancel, (_event, raw: unknown) => {
+    const parsed = runPackageValidationJobPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure<RunPackageValidationJob>();
+    return runDiagnosticOperation(workerClient, async (client) =>
+      client.request('runPackageValidation.cancel', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.runPackageValidationDiscard, (_event, raw: unknown) => {
+    const parsed = runPackageValidationJobPayloadSchema.safeParse(raw);
+    if (!parsed.success)
+      return validationFailure<{ readonly jobId: string; readonly discarded: true }>();
+    return runDiagnosticOperation(workerClient, async (client) =>
+      client.request('runPackageValidation.discard', parsed.data),
+    );
+  });
+}
+
+function selectRunPackageSourceFromDialog(): Promise<DesktopResult<string>> {
+  return selectRunPackageSource({
+    automatedCancelled: automatedRunPackageSelectionCancelled(),
+    automatedPath: approvedAutomatedRunPackagePath(),
+    showOpenDialog: (options) => {
+      if (automatedRunPackageDialogRejected())
+        return Promise.reject(new Error('automated_run_package_dialog_rejected'));
+      return mainWindow === null
+        ? dialog.showOpenDialog(options)
+        : dialog.showOpenDialog(mainWindow, options);
+    },
+  });
 }
 
 function selectCaseDocumentSourceFromDialog(): Promise<DesktopResult<string>> {
@@ -529,6 +578,26 @@ function automatedDocumentSelectionCancelled(): boolean {
   const isAutomated =
     process.env['NODE_ENV'] === 'test' || process.env['IMPELLER_SMOKE_OUTPUT'] !== undefined;
   return isAutomated && process.env['IMPELLER_AUTOMATED_DOCUMENT_CANCELLED'] === '1';
+}
+
+function approvedAutomatedRunPackagePath(): string | null {
+  const isAutomated =
+    process.env['NODE_ENV'] === 'test' || process.env['IMPELLER_SMOKE_OUTPUT'] !== undefined;
+  if (!isAutomated) return null;
+  const rawPath = process.env['IMPELLER_AUTOMATED_R130RUN_PATH'];
+  return rawPath === undefined ? null : resolve(rawPath);
+}
+
+function automatedRunPackageSelectionCancelled(): boolean {
+  const isAutomated =
+    process.env['NODE_ENV'] === 'test' || process.env['IMPELLER_SMOKE_OUTPUT'] !== undefined;
+  return isAutomated && process.env['IMPELLER_AUTOMATED_R130RUN_CANCELLED'] === '1';
+}
+
+function automatedRunPackageDialogRejected(): boolean {
+  const isAutomated =
+    process.env['NODE_ENV'] === 'test' || process.env['IMPELLER_SMOKE_OUTPUT'] !== undefined;
+  return isAutomated && process.env['IMPELLER_AUTOMATED_R130RUN_DIALOG_REJECTED'] === '1';
 }
 
 function approvedAutomatedProjectPath(): string | null {
@@ -638,6 +707,25 @@ async function runProjectOperation<TResult>(
       'worker_unavailable',
       'Операция с проектом не выполнена: локальный worker недоступен.',
     );
+  }
+}
+
+async function runDiagnosticOperation<TResult>(
+  client: WorkerClient | null,
+  operation: (readyClient: WorkerClient) => Promise<OperationResponse<TResult>>,
+): Promise<DesktopResult<TResult>> {
+  if (client === null) return failureResult('worker_unavailable', 'Расчётное ядро недоступно.');
+  try {
+    const response = await operation(client);
+    return response.ok ? { ok: true, result: response.result } : fromWorkerError(response);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message === 'worker_queue_full' || error.message === 'worker_stopping')
+    ) {
+      return failureResult('operation_in_progress', 'Дождитесь завершения текущей операции.');
+    }
+    return failureResult('worker_unavailable', 'Проверка прервана: локальный worker недоступен.');
   }
 }
 
@@ -770,6 +858,7 @@ async function runSmokeIfRequested(): Promise<void> {
   const ping = await workerClient?.request('system.ping', {});
   const automatedProjectPath = approvedAutomatedProjectPath();
   let projectScenarioPassed = false;
+  let runPackageValidationPassed = false;
   if (automatedProjectPath !== null && workerClient !== null) {
     const created = await workerClient.request('project.create', {
       path: automatedProjectPath,
@@ -915,6 +1004,43 @@ async function runSmokeIfRequested(): Promise<void> {
           documentAfter.result.file?.originalFileName === 'case-document-source.pdf' &&
           documentAfter.result.wheelModelIds[0] === smokeWheelId &&
           documentAfter.result.specimenIds[0] === smokeSpecimenId;
+        const runPackagePath = approvedAutomatedRunPackagePath();
+        if (runPackagePath !== null) {
+          const overviewBeforeValidation = await workerClient.request('project.getOverview', {});
+          const validationJobId = randomUUID();
+          const validationStarted = await workerClient.request('runPackageValidation.start', {
+            jobId: validationJobId,
+            sourcePath: runPackagePath,
+            validationBudgetMs: 180_000,
+          });
+          let validation = validationStarted;
+          const validationDeadline = performance.now() + 180_000;
+          while (
+            validation.ok &&
+            !['completed', 'failed', 'cancelled'].includes(validation.result.state) &&
+            performance.now() < validationDeadline
+          ) {
+            await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 25));
+            validation = await workerClient.request('runPackageValidation.get', {
+              jobId: validationJobId,
+            });
+          }
+          const overviewAfterValidation = await workerClient.request('project.getOverview', {});
+          const discarded = await workerClient.request('runPackageValidation.discard', {
+            jobId: validationJobId,
+          });
+          runPackageValidationPassed =
+            validation.ok &&
+            validation.result.state === 'completed' &&
+            validation.result.report?.structuralVerdict === 'passed' &&
+            validation.result.report.semanticVerdict === 'partial' &&
+            validation.result.report.contractSchema === 'r130sh.run-package.v1' &&
+            overviewBeforeValidation.ok &&
+            overviewAfterValidation.ok &&
+            overviewBeforeValidation.result.recordRevision ===
+              overviewAfterValidation.result.recordRevision &&
+            discarded.ok;
+        }
         await workerClient.request('project.close', {});
       }
     }
@@ -929,10 +1055,12 @@ async function runSmokeIfRequested(): Promise<void> {
           runtime.workerStatus === 'ready' &&
           runtime.sqliteStatus === 'ok' &&
           ping?.ok === true &&
-          projectScenarioPassed,
+          projectScenarioPassed &&
+          runPackageValidationPassed,
         runtime,
         pingOk: ping?.ok === true,
         projectScenarioPassed,
+        runPackageValidationPassed,
         elapsedMs: Math.round(performance.now() - startedAt),
         pid: process.pid,
         workerPid: workerClient?.processId ?? null,
