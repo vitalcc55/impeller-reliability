@@ -219,6 +219,25 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     const reattachAfterWorkerRestart = useCallback(async (): Promise<boolean> => {
       if (project === null) return true;
       if (desktopApi === null) return false;
+      let sessionOpened = false;
+      const closeOpenedSession = async (): Promise<DesktopError | null> => {
+        try {
+          const closeResult = await desktopApi.project.close();
+          if (!closeResult.ok) return closeResult.error;
+          if (!closeResult.result.closed) {
+            return {
+              code: 'storage_error',
+              message: 'Worker не подтвердил закрытие повторно открытой сессии проекта.',
+              details: {},
+              retryable: true,
+            };
+          }
+          sessionOpened = false;
+          return null;
+        } catch {
+          return unavailableError();
+        }
+      };
       try {
         const result = await desktopApi.project.openRecent(project.path);
         if (!result.ok) {
@@ -227,34 +246,46 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           setMessage(null);
           return false;
         }
+        sessionOpened = true;
         if (
           result.result.projectId !== project.projectId ||
           result.result.recordRevision !== project.recordRevision
         ) {
-          await desktopApi.project.close();
+          const cleanupError = await closeOpenedSession();
           setReattachBlocked(true);
-          setError({
-            code: 'revision_conflict',
-            message:
-              'Проект изменился после потери worker. Черновик сохранён локально; перечитайте проект и перенесите изменения явно.',
-            details: {
-              expectedRevision: project.recordRevision,
-              actualRevision: result.result.recordRevision,
+          setError(
+            cleanupError ?? {
+              code: 'revision_conflict',
+              message:
+                'Проект изменился после потери worker. Черновик сохранён локально; перечитайте проект и перенесите изменения явно.',
+              details: {
+                expectedRevision: project.recordRevision,
+                actualRevision: result.result.recordRevision,
+              },
+              retryable: false,
             },
-            retryable: false,
-          });
+          );
           return false;
         }
-        if (section !== 'overview' && !(await dossierRef.current?.verifyAfterReattach())) {
-          await desktopApi.project.close();
+        const dossierReattach =
+          section === 'overview'
+            ? { status: 'reconciled' as const }
+            : await dossierRef.current?.verifyAfterReattach();
+        if (dossierReattach?.status !== 'reconciled') {
+          const cleanupError = await closeOpenedSession();
           setReattachBlocked(true);
-          setError({
-            code: 'revision_conflict',
-            message:
-              'Сведения дела изменились после потери worker. Локальный черновик остался только в форме; перечитайте запись и перенесите изменения явно.',
-            details: {},
-            retryable: false,
-          });
+          setError(
+            cleanupError ??
+              (dossierReattach?.status === 'conflict'
+                ? {
+                    code: 'revision_conflict',
+                    message:
+                      'Сведения дела изменились после потери worker. Локальный черновик остался только в форме; перечитайте запись и перенесите изменения явно.',
+                    details: {},
+                    retryable: false,
+                  }
+                : (dossierReattach?.error ?? unavailableError())),
+          );
           return false;
         }
         setProject(result.result);
@@ -270,8 +301,9 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
         void refreshRecent();
         return true;
       } catch {
+        const cleanupError = sessionOpened ? await closeOpenedSession() : null;
         setReattachBlocked(true);
-        setError(unavailableError());
+        setError(cleanupError ?? unavailableError());
         return false;
       }
     }, [desktopApi, dirty, project, refreshRecent, section]);
@@ -298,6 +330,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           setConfirmReload(true);
           return;
         }
+        const closeResult = await desktopApi.project.close();
+        if (!closeResult.ok) return handleFailure(closeResult.error);
         const result = await desktopApi.project.openRecent(project.path);
         if (result.ok)
           acceptProject(
@@ -536,7 +570,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
             <button
               key={value}
               type="button"
-              disabled={busy !== null || dossierPending || pendingTransition !== null}
+              disabled={detached || busy !== null || dossierPending || pendingTransition !== null}
               aria-current={section === value ? 'page' : undefined}
               onClick={(event) => {
                 if (value === section) return;

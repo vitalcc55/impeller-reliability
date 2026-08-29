@@ -33,6 +33,7 @@ import {
   formatOptionalPositiveInteger,
   parseOptionalPositiveInteger,
 } from './optional-positive-integer';
+import { decideReattachEntity } from './reattach-reconciliation';
 
 export type DossierSection = 'customer' | 'wheels' | 'specimens' | 'documents';
 
@@ -49,8 +50,13 @@ interface AnalystDossierProps {
 export interface AnalystDossierHandle {
   discardActiveDraft(): void;
   waitForPendingSave(): Promise<void>;
-  verifyAfterReattach(): Promise<boolean>;
+  verifyAfterReattach(): Promise<DossierReattachResult>;
 }
+
+export type DossierReattachResult =
+  | { readonly status: 'reconciled' }
+  | { readonly status: 'conflict' }
+  | { readonly status: 'error'; readonly error: DesktopError };
 
 const emptyCustomer: CustomerDraft = {
   fullName: '',
@@ -657,6 +663,13 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
       );
     };
 
+    const finishReattach = useCallback((): DossierReattachResult => {
+      setError(null);
+      setMessage(null);
+      setConfirmArchiveKey(null);
+      return { status: 'reconciled' };
+    }, []);
+
     useImperativeHandle(
       ref,
       () => ({
@@ -671,24 +684,111 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
           if (pendingSaveRef.current !== null) await pendingSaveRef.current;
         },
         verifyAfterReattach: async () => {
-          if (!activeDirty) return true;
           if (section === 'customer') {
             const result = await desktopApi.caseCustomer.get();
-            return result.ok && result.result?.recordRevision === customer?.recordRevision;
+            if (!result.ok) return { status: 'error', error: result.error };
+            const decision = decideReattachEntity({
+              dirty: activeDirty,
+              localRevision: customer?.recordRevision ?? null,
+              remoteRevision: result.result?.recordRevision ?? null,
+            });
+            if (decision === 'conflict') return { status: 'conflict' };
+            setCustomer(result.result);
+            if (decision === 'adopt') {
+              setCustomerDraft(
+                result.result === null ? emptyCustomer : customerToDraft(result.result),
+              );
+            }
+            return finishReattach();
           }
-          if (section === 'wheels' && wheel !== null) {
-            const result = await desktopApi.wheelModel.get(wheel.wheelModelId);
-            return result.ok && result.result.recordRevision === wheel.recordRevision;
+          if (section === 'wheels') {
+            const result = await desktopApi.wheelModel.get(wheel?.wheelModelId ?? wheelCreateId);
+            const remote = result.ok ? result.result : null;
+            if (!result.ok) {
+              if (result.error.code !== 'entity_not_found') {
+                return { status: 'error', error: result.error };
+              }
+            }
+            const decision = decideReattachEntity({
+              dirty: activeDirty,
+              localRevision: wheel?.recordRevision ?? null,
+              remoteRevision: remote?.recordRevision ?? null,
+            });
+            if (decision === 'conflict') return { status: 'conflict' };
+            const list = await desktopApi.wheelModel.list(includeArchived);
+            if (!list.ok) return { status: 'error', error: list.error };
+            setWheels(list.result);
+            if (remote !== null) {
+              setWheel(remote);
+              if (decision === 'adopt') resetWheelDraft(remote);
+            }
+            return finishReattach();
           }
-          if (section === 'specimens' && specimen !== null) {
-            const result = await desktopApi.specimen.get(specimen.specimenId);
-            return result.ok && result.result.recordRevision === specimen.recordRevision;
+          if (section === 'specimens') {
+            const result = await desktopApi.specimen.get(specimen?.specimenId ?? specimenCreateId);
+            const remote = result.ok ? result.result : null;
+            if (!result.ok) {
+              if (result.error.code !== 'entity_not_found') {
+                return { status: 'error', error: result.error };
+              }
+            }
+            const decision = decideReattachEntity({
+              dirty: activeDirty,
+              localRevision: specimen?.recordRevision ?? null,
+              remoteRevision: remote?.recordRevision ?? null,
+            });
+            if (decision === 'conflict') return { status: 'conflict' };
+            const wheelList = await desktopApi.wheelModel.list(true);
+            if (!wheelList.ok) return { status: 'error', error: wheelList.error };
+            const specimenList = await desktopApi.specimen.list(includeArchived);
+            if (!specimenList.ok) return { status: 'error', error: specimenList.error };
+            setWheels(wheelList.result);
+            setSpecimens(specimenList.result);
+            if (remote !== null) {
+              setSpecimen(remote);
+              if (decision === 'adopt') {
+                const draft = specimenToDraft(remote);
+                setSpecimenDraft(draft);
+                setSpecimenBaseline(draft);
+              }
+            }
+            return finishReattach();
           }
-          if (section === 'documents' && document !== null) {
-            const result = await desktopApi.caseDocument.get(document.caseDocumentId);
-            return result.ok && result.result.recordRevision === document.recordRevision;
+          if (section === 'documents') {
+            const result = await desktopApi.caseDocument.get(
+              document?.caseDocumentId ?? documentCreateId,
+            );
+            const remote = result.ok ? result.result : null;
+            if (!result.ok) {
+              if (result.error.code !== 'entity_not_found') {
+                return { status: 'error', error: result.error };
+              }
+            }
+            const decision = decideReattachEntity({
+              dirty: activeDirty,
+              localRevision: document?.recordRevision ?? null,
+              remoteRevision: remote?.recordRevision ?? null,
+            });
+            if (decision === 'conflict') return { status: 'conflict' };
+            const wheelList = await desktopApi.wheelModel.list(true);
+            if (!wheelList.ok) return { status: 'error', error: wheelList.error };
+            const specimenList = await desktopApi.specimen.list(true);
+            if (!specimenList.ok) return { status: 'error', error: specimenList.error };
+            const documentList = await desktopApi.caseDocument.list({
+              includeArchived,
+              documentKind: documentKindFilter,
+            });
+            if (!documentList.ok) return { status: 'error', error: documentList.error };
+            setWheels(wheelList.result);
+            setSpecimens(specimenList.result);
+            setDocuments(documentList.result);
+            if (remote !== null) {
+              setDocument(remote);
+              if (decision === 'adopt') resetDocumentDraft(remote);
+            }
+            return finishReattach();
           }
-          return true;
+          return finishReattach();
         },
       }),
       [
@@ -696,12 +796,18 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
         customer,
         desktopApi,
         document,
+        documentCreateId,
+        documentKindFilter,
+        finishReattach,
+        includeArchived,
         resetWheelDraft,
         resetDocumentDraft,
         section,
         specimen,
         specimenBaseline,
+        specimenCreateId,
         wheel,
+        wheelCreateId,
       ],
     );
 

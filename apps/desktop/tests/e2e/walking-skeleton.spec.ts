@@ -826,3 +826,122 @@ test('closes within a bound when the renderer cannot acknowledge the close reque
     rmSync(evidenceRoot, { recursive: true, force: true });
   }
 });
+
+test('reconciles a clean document after a committed attachment response is not applied', async () => {
+  const evidenceRoot = resolve(
+    import.meta.dirname,
+    '../../../../.tmp/.codex/evidence/m02-2b-document-reattach',
+  );
+  const projectPath = join(evidenceRoot, 'Reconcile document.irproj');
+  const userDataPath = join(evidenceRoot, 'user-data');
+  const sourcePath = join(evidenceRoot, 'reattach-evidence.pdf');
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(evidenceRoot, { recursive: true });
+  writeFileSync(sourcePath, '%PDF-1.7\nReattach evidence\n', 'utf8');
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: resolve(import.meta.dirname, '../../../..'),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
+      IMPELLER_AUTOMATED_DOCUMENT_PATH: sourcePath,
+      IMPELLER_TEST_USER_DATA: userDataPath,
+    },
+  });
+  try {
+    const page = await app.firstWindow();
+    await page.getByRole('button', { name: 'Создать проект' }).click();
+    await page.getByRole('button', { name: 'Документы дела' }).click();
+    await page.getByRole('button', { name: 'Новый документ' }).click();
+    await page.getByLabel('Название').fill('Документ для сверки');
+    await page.getByRole('button', { name: 'Создать без файла' }).click();
+    await expect(page.getByText('Файл не прикреплён')).toBeVisible();
+
+    const attachedRevision: unknown = await page.evaluate(async () => {
+      const api: unknown = Reflect.get(window, 'impeller');
+      if (typeof api !== 'object' || api === null) throw new Error('api_missing');
+      const caseDocument: unknown = Reflect.get(api, 'caseDocument');
+      if (typeof caseDocument !== 'object' || caseDocument === null) {
+        throw new Error('case_document_api_missing');
+      }
+      const list: unknown = Reflect.get(caseDocument, 'list');
+      const attachFile: unknown = Reflect.get(caseDocument, 'attachFile');
+      if (typeof list !== 'function' || typeof attachFile !== 'function') {
+        throw new Error('case_document_method_missing');
+      }
+      const listed: unknown = await Reflect.apply(list, caseDocument, [
+        { includeArchived: true, documentKind: null },
+      ]);
+      if (typeof listed !== 'object' || listed === null || Reflect.get(listed, 'ok') !== true) {
+        throw new Error('document_list_failed');
+      }
+      const summaries: unknown = Reflect.get(listed, 'result');
+      const summary: unknown = Array.isArray(summaries) ? summaries[0] : undefined;
+      if (typeof summary !== 'object' || summary === null) throw new Error('document_missing');
+      const caseDocumentId: unknown = Reflect.get(summary, 'caseDocumentId');
+      const expectedRevision: unknown = Reflect.get(summary, 'recordRevision');
+      if (typeof caseDocumentId !== 'string' || typeof expectedRevision !== 'number') {
+        throw new Error('document_identity_invalid');
+      }
+      const attached: unknown = await Reflect.apply(attachFile, caseDocument, [
+        { caseDocumentId, expectedRevision },
+      ]);
+      if (
+        typeof attached !== 'object' ||
+        attached === null ||
+        Reflect.get(attached, 'ok') !== true
+      ) {
+        throw new Error('attachment_failed');
+      }
+      const result: unknown = Reflect.get(attached, 'result');
+      if (typeof result !== 'object' || result === null)
+        throw new Error('attachment_result_missing');
+      const recordRevision: unknown = Reflect.get(result, 'recordRevision');
+      if (typeof recordRevision !== 'number') throw new Error('attachment_revision_missing');
+      return recordRevision;
+    });
+    expect(attachedRevision).toBe(2);
+    await expect(page.getByText('Файл не прикреплён')).toBeVisible();
+
+    const mainProcessId = app.process().pid;
+    if (mainProcessId === undefined) throw new Error('electron_main_process_missing');
+    const workerId = workerProcessIds(mainProcessId)[0];
+    if (workerId === undefined) throw new Error('worker_process_missing');
+    process.kill(workerId);
+    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
+    await page.getByRole('button', { name: 'Диагностика' }).click();
+    await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
+    await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
+    await page.getByRole('button', { name: 'Проекты' }).click();
+
+    await expect(page.getByText('Целостность подтверждена')).toBeVisible();
+    await expect(page.getByText('Редакция: 2')).toBeVisible();
+
+    const documentRoot = readdirSync(join(projectPath, 'assets', 'documents'), {
+      withFileTypes: true,
+    }).find((entry) => entry.isDirectory() && entry.name !== '.staging');
+    if (documentRoot === undefined) throw new Error('managed_document_root_missing');
+    const managedRoot = join(projectPath, 'assets', 'documents', documentRoot.name);
+    const managedFileName = readdirSync(managedRoot)[0];
+    if (managedFileName === undefined) throw new Error('managed_document_file_missing');
+    await page.getByLabel('Примечание').fill('Черновик переживает повторную сверку');
+    rmSync(join(managedRoot, managedFileName));
+
+    const reattachedWorkerId = workerProcessIds(mainProcessId)[0];
+    if (reattachedWorkerId === undefined) throw new Error('reattached_worker_process_missing');
+    process.kill(reattachedWorkerId);
+    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
+    await page.getByRole('button', { name: 'Диагностика' }).click();
+    await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
+    await expect(page.getByRole('dialog', { name: 'Есть несохранённые изменения' })).toBeVisible();
+    await page.getByRole('button', { name: 'Перезапустить, не удаляя черновик' }).click();
+    await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
+    await page.getByRole('button', { name: 'Проекты' }).click();
+    await expect(page.getByLabel('Примечание')).toHaveValue('Черновик переживает повторную сверку');
+    await expect(page.getByText('Управляемый файл отсутствует')).toBeVisible();
+  } finally {
+    await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
