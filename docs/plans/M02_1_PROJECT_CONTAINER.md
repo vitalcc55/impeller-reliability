@@ -1,5 +1,7 @@
 # M02.1 — Project Container and Session
 
+> Контейнерные инварианты остаются актуальны. До первого выпуска schema v1 была расширена M02.2A/M02.2B dossier и CaseDocument tables в том же atomic `0001`; невыпущенные промежуточные варианты не являются поддерживаемыми форматами.
+
 ## Outcome contract
 
 M02.1 создаёт первый сохраняемый продуктовый поток:
@@ -157,7 +159,7 @@ project.updateMetadata { expectedRevision, patch }
 project.createBackup  {}
 ```
 
-Все payload/result имеют отдельные Zod/Pydantic-схемы. После открытия операции используют активную ProjectSession и не принимают путь. Worker error codes расширяются значениями `project_locked`, `corrupt_project`, `incompatible_schema`, `revision_conflict`; отмена системного диалога возвращается Renderer как typed `cancelled`, а не exception-shaped неизвестная ошибка.
+Все payload/result имеют отдельные Zod/Pydantic-схемы. После открытия операции используют активную ProjectSession и не принимают путь. Worker error codes расширяются значениями `project_locked`, `corrupt_project`, `incompatible_schema`, `revision_conflict`; отмена системного диалога возвращается Renderer как typed `cancelled`, а отказ Electron/OS открыть dialog — как typed `storage_error`. Ни один rejected dialog Promise не пересекает Preload boundary и worker после неуспешного выбора не вызывается.
 
 ## UI и визуальный источник
 
@@ -174,12 +176,13 @@ Desktop shell содержит start page с Create/Open/Recent/Diagnostics и �
 ## Failure model
 
 - `cancelled` — пользователь отменил системный диалог; состояние не меняется;
+- `storage_error` для dialog boundary — Electron/OS не смог открыть системный диалог; состояние не меняется и worker не вызывается;
 - `project_locked` — OS lock уже удерживается;
 - `corrupt_project` — manifest/SQLite/integrity/projectId не согласованы;
 - `incompatible_schema` — версия базы новее поддерживаемой;
 - `revision_conflict` — expected revision не равна сохранённой;
 - `operation_in_progress` — bounded transport не принял ещё одну операцию до завершения текущей очереди;
-- `storage_error` — атомарное создание, backup, migration или запись не завершены;
+- `storage_error` — системный dialog недоступен либо атомарное создание, backup, migration или запись не завершены;
 - worker crash переводит runtime в unavailable; OS lock освобождается процессом Windows.
 
 ## Verification

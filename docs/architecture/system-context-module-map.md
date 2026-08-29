@@ -23,17 +23,17 @@ TypeScript: "TypeScript packages" {
 
 Worker: "tools/python-worker" {
   Protocol: "operation-specific Pydantic JSONL envelopes"
-  Domain: "M02.2A analyst enrichment; future calculations"
+  Domain: "analyst enrichment: dossier + case documents; future calculations"
   Persistence: "sqlite3, migrations, repositories"
   Integration: "Future R130SH result import"
 }
 
 Project: "*.irproj — M02.1 container" {
   Manifest: "project-manifest.json: container identity"
-  Database: "project.sqlite: metadata, analyst enrichment, migrations, audit" { shape: cylinder }
+  Database: "project.sqlite: schema v1 metadata, analyst enrichment, file registry, audit" { shape: cylinder }
   Lock: ".project.lock: OS-held session lock"
-  Assets: "assets/documents (empty until M02.2)"
-  Backups: "verified SQLite backups"
+  Assets: "assets/documents: immutable managed copies"
+  Backups: "verified SQLite-only backups"
 }
 
 Engineer -> Desktop.Renderer
@@ -56,4 +56,4 @@ R130SH -> RunPackage
 RunPackage -> Desktop.Main
 ```
 
-M02.2A добавляет только редактируемые CustomerProfile/WheelModel/Specimen в `analyst_enrichment` schema v2. R130SH остаётся владельцем будущей package schema, первичных фактов и `ImportedRunPlanSnapshot`; `TestCampaign` будет downstream-группировкой импортов. SourceDocument, importer и расчётные модули остаются будущими границами, а не заглушками.
+Первая публикуемая schema v1 содержит Project metadata/audit и редактируемые CustomerProfile/WheelModel/Specimen/CaseDocument. Main владеет file dialog и external open; Python повторно проверяет источник, создаёт immutable managed copy и единолично владеет SQLite/file registry. Renderer не получает абсолютный путь. R130SH остаётся владельцем будущей package schema, первичных фактов и `ImportedRunPlanSnapshot`; importer, `TestCampaign` и расчётные модули остаются будущими границами, а не заглушками.

@@ -5,11 +5,11 @@
 ```d2
 direction: down
 
-Persisted: "M02.1 project source of truth" {
-  Sqlite: "project.sqlite: metadata, analyst_enrichment, record revisions, audit" { shape: cylinder }
+Persisted: "Project source of truth" {
+  Sqlite: "project.sqlite schema v1: metadata, analyst_enrichment, file registry, revisions, audit" { shape: cylinder }
   Manifest: "project-manifest.json: container identity"
-  Backups: "verified migration/manual SQLite backups"
-  Assets: "assets/documents: reserved for M02.2 sources"
+  Backups: "verified SQLite-only backups; future migration backups"
+  Assets: "assets/documents: immutable managed copies"
 }
 
 WorkerRuntime: "Python worker runtime" {
@@ -30,7 +30,7 @@ MainRuntime: "Electron Main runtime" {
 }
 
 RendererRuntime: "React runtime" {
-  Drafts: "unsaved form drafts survive detached worker state"
+  Drafts: "one active owner: clean/dirty/validating/saving/conflict/detached"
   QueryCache: "replaceable read-model cache"
   Shell: "navigation and temporary UI preferences"
   Preview: "DEV-only synthetic browser adapter"
@@ -59,4 +59,8 @@ Persisted.Assets -> Derived.Exports
 RendererRuntime.Preview -> RendererRuntime.QueryCache: "synthetic DEV state only"
 ```
 
-App-level `health.sqlite` остаётся отдельной инфраструктурной диагностикой. Project truth находится только в `.irproj`: schema v2 хранит metadata и редактируемый `analyst_enrichment`; будущие `r130sh_source` и `derived_analysis` будут отдельными владельцами. Renderer хранит общий активный draft, Main — разрешённые пути, lifecycle и очередь, Python — активную ProjectSession. Потеря worker не размонтирует форму; permanently detached draft можно удалить локально без изменения project truth или recent list. Browser preview ничего не сохраняет и не является evidence persistence.
+App-level `health.sqlite` остаётся отдельной инфраструктурной диагностикой. Project truth находится только в `.irproj`: первая публикуемая schema v1 хранит metadata, dossier, CaseDocument, immutable file registry и audit; будущие `r130sh_source` и `derived_analysis` будут отдельными владельцами. Невыпущенные промежуточные schema не мигрируются и не получают compatibility layer.
+
+Renderer хранит один активный draft-owner и replaceable query cache, Main — разрешённые пути, lifecycle и очередь, Python — активную сериализованную ProjectSession. Dirty draft проходит `validate → save → persisted revision`; validation/conflict/transport failure оставляют его dirty. Попытка navigation/select/attach/archive/close/open/restart/window close требует keep/discard/save решения по существующему общему guard. Потеря worker переводит draft в detached, но не размонтирует форму; permanently detached draft можно удалить локально без изменения project truth или recent list. Recovery checkpoint после crash всего Electron остаётся отдельным будущим уровнем и не является domain autosave.
+
+CaseDocument metadata и applicability меняются одной revision/audit transaction. Attach публикует staged managed file атомарным rename и регистрирует immutable row; успешный ответ означает существующие совпадающие DB/file size/hash. Failed response не оставляет зарегистрированной ссылки на непроверенный файл. Orphan staging не является persisted document и узко очищается при открытии. Missing/modified managed copy вычисляется как локальный integrity status после открытия ProjectSession и не делает всю schema/evidence corrupt. Browser preview ничего не сохраняет и не является evidence persistence.

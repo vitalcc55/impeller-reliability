@@ -12,6 +12,12 @@ ProjectErrorCode = Literal[
     "entity_archived",
     "entity_in_use",
     "duplicate_entity",
+    "duplicate_document_content",
+    "file_already_attached",
+    "unsupported_file_type",
+    "file_too_large",
+    "file_missing",
+    "file_integrity_mismatch",
     "validation_error",
     "storage_error",
 ]

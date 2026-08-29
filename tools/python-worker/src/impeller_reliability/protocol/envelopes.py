@@ -36,6 +36,16 @@ Operation = Literal[
     "specimen.update",
     "specimen.archive",
     "specimen.restore",
+    "caseDocument.create",
+    "caseDocument.createWithFile",
+    "caseDocument.list",
+    "caseDocument.get",
+    "caseDocument.update",
+    "caseDocument.attachFile",
+    "caseDocument.verifyFile",
+    "caseDocument.archive",
+    "caseDocument.restore",
+    "caseDocument.resolveFile",
 ]
 
 ProjectStatus = Literal["draft", "active", "completed", "archived"]
@@ -45,6 +55,19 @@ ProjectId = Annotated[str, AfterValidator(require_canonical_project_id)]
 EntityId = Annotated[str, AfterValidator(canonical_uuid4)]
 CanonicalDecimal = Annotated[str | None, AfterValidator(canonical_decimal)]
 CanonicalDate = Annotated[str | None, AfterValidator(canonical_date)]
+DocumentKind = Literal[
+    "technical_specification",
+    "individual_test_method",
+    "typical_test_method",
+    "customer_requirement",
+    "test_request",
+    "operational_documentation",
+    "standard",
+    "drawing",
+    "measurement_or_attestation_record",
+    "other",
+]
+IntegrityStatus = Literal["not_attached", "verified", "missing", "modified", "verification_error"]
 
 
 class EmptyPayload(BaseModel):
@@ -290,6 +313,64 @@ class SpecimenRevisionPayload(SpecimenIdPayload, EntityRevisionPayload):
     pass
 
 
+class CaseDocumentDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    documentKind: DocumentKind
+    title: str = Field(min_length=1, max_length=300)
+    designation: str = Field(max_length=200)
+    revisionLabel: str = Field(max_length=200)
+    documentDate: CanonicalDate = None
+    issuer: str = Field(max_length=300)
+    notes: str = Field(max_length=4_000)
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized == "":
+            raise ValueError("case_document_title_blank")
+        return normalized
+
+    @field_validator("designation", "revisionLabel", "issuer", "notes")
+    @classmethod
+    def normalize_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class CaseDocumentIdPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    caseDocumentId: EntityId
+
+
+class CaseDocumentCreatePayload(CaseDocumentIdPayload):
+    document: CaseDocumentDraft
+    wheelModelIds: list[EntityId]
+    specimenIds: list[EntityId]
+
+
+class CaseDocumentCreateWithFilePayload(CaseDocumentCreatePayload):
+    sourcePath: str = Field(min_length=1, max_length=32_767)
+
+
+class CaseDocumentListPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    includeArchived: bool = False
+    documentKind: DocumentKind | None = None
+
+
+class CaseDocumentUpdatePayload(CaseDocumentCreatePayload):
+    expectedRevision: int = Field(ge=1)
+
+
+class CaseDocumentAttachFilePayload(CaseDocumentIdPayload, EntityRevisionPayload):
+    sourcePath: str = Field(min_length=1, max_length=32_767)
+
+
+class CaseDocumentRevisionPayload(CaseDocumentIdPayload, EntityRevisionPayload):
+    pass
+
+
 class CustomerGetRequest(RequestBase):
     operation: Literal["caseCustomer.get"]
     payload: EmptyPayload
@@ -360,6 +441,56 @@ class SpecimenRestoreRequest(RequestBase):
     payload: SpecimenRevisionPayload
 
 
+class CaseDocumentCreateRequest(RequestBase):
+    operation: Literal["caseDocument.create"]
+    payload: CaseDocumentCreatePayload
+
+
+class CaseDocumentCreateWithFileRequest(RequestBase):
+    operation: Literal["caseDocument.createWithFile"]
+    payload: CaseDocumentCreateWithFilePayload
+
+
+class CaseDocumentListRequest(RequestBase):
+    operation: Literal["caseDocument.list"]
+    payload: CaseDocumentListPayload
+
+
+class CaseDocumentGetRequest(RequestBase):
+    operation: Literal["caseDocument.get"]
+    payload: CaseDocumentIdPayload
+
+
+class CaseDocumentUpdateRequest(RequestBase):
+    operation: Literal["caseDocument.update"]
+    payload: CaseDocumentUpdatePayload
+
+
+class CaseDocumentAttachFileRequest(RequestBase):
+    operation: Literal["caseDocument.attachFile"]
+    payload: CaseDocumentAttachFilePayload
+
+
+class CaseDocumentVerifyFileRequest(RequestBase):
+    operation: Literal["caseDocument.verifyFile"]
+    payload: CaseDocumentIdPayload
+
+
+class CaseDocumentArchiveRequest(RequestBase):
+    operation: Literal["caseDocument.archive"]
+    payload: CaseDocumentRevisionPayload
+
+
+class CaseDocumentRestoreRequest(RequestBase):
+    operation: Literal["caseDocument.restore"]
+    payload: CaseDocumentRevisionPayload
+
+
+class CaseDocumentResolveFileRequest(RequestBase):
+    operation: Literal["caseDocument.resolveFile"]
+    payload: CaseDocumentIdPayload
+
+
 type RequestEnvelope = Annotated[
     HandshakeRequest
     | PingRequest
@@ -384,7 +515,17 @@ type RequestEnvelope = Annotated[
     | SpecimenGetRequest
     | SpecimenUpdateRequest
     | SpecimenArchiveRequest
-    | SpecimenRestoreRequest,
+    | SpecimenRestoreRequest
+    | CaseDocumentCreateRequest
+    | CaseDocumentCreateWithFileRequest
+    | CaseDocumentListRequest
+    | CaseDocumentGetRequest
+    | CaseDocumentUpdateRequest
+    | CaseDocumentAttachFileRequest
+    | CaseDocumentVerifyFileRequest
+    | CaseDocumentArchiveRequest
+    | CaseDocumentRestoreRequest
+    | CaseDocumentResolveFileRequest,
     Field(discriminator="operation"),
 ]
 REQUEST_ENVELOPE_ADAPTER: TypeAdapter[RequestEnvelope] = TypeAdapter(RequestEnvelope)
@@ -553,6 +694,71 @@ class SpecimenListResult(BaseModel):
     items: list[SpecimenSummaryResult]
 
 
+CaseDocumentWarningCode = Literal[
+    "case_document_file_missing",
+    "case_document_designation_missing",
+    "case_document_revision_missing",
+]
+
+
+class CaseDocumentFileResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    originalFileName: str = Field(min_length=1, max_length=255)
+    mediaType: str = Field(min_length=1, max_length=128)
+    sizeBytes: int = Field(gt=0, le=100 * 1024 * 1024)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    attachedAtUtc: CanonicalUtcTimestamp
+
+    @field_validator("originalFileName")
+    @classmethod
+    def validate_original_file_name(cls, value: str) -> str:
+        if value in {".", ".."} or "/" in value or "\\" in value:
+            raise ValueError("invalid_original_file_name")
+        return value
+
+
+class CaseDocumentResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    caseDocumentId: EntityId
+    documentKind: DocumentKind
+    title: str
+    designation: str
+    revisionLabel: str
+    documentDate: CanonicalDate
+    issuer: str
+    notes: str
+    recordRevision: int = Field(ge=1)
+    archivedAtUtc: CanonicalUtcTimestamp | None
+    createdAtUtc: CanonicalUtcTimestamp
+    updatedAtUtc: CanonicalUtcTimestamp
+    file: CaseDocumentFileResult | None
+    integrityStatus: IntegrityStatus
+    wheelModelIds: list[EntityId]
+    specimenIds: list[EntityId]
+    warnings: list[CaseDocumentWarningCode]
+
+
+class CaseDocumentSummaryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    caseDocumentId: EntityId
+    documentKind: DocumentKind
+    title: str
+    designation: str
+    recordRevision: int = Field(ge=1)
+    archivedAtUtc: CanonicalUtcTimestamp | None
+    warnings: list[CaseDocumentWarningCode]
+
+
+class CaseDocumentListResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    items: list[CaseDocumentSummaryResult]
+
+
+class CaseDocumentResolveFileResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    absolutePath: str = Field(min_length=1, max_length=32_767)
+
+
 class ErrorPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -572,6 +778,12 @@ class ErrorPayload(BaseModel):
         "entity_archived",
         "entity_in_use",
         "duplicate_entity",
+        "duplicate_document_content",
+        "file_already_attached",
+        "unsupported_file_type",
+        "file_too_large",
+        "file_missing",
+        "file_integrity_mismatch",
         "internal_error",
     ]
     message: str
@@ -606,6 +818,9 @@ type SuccessResponseType = (
     | SuccessResponse[WheelModelListResult]
     | SuccessResponse[SpecimenResult]
     | SuccessResponse[SpecimenListResult]
+    | SuccessResponse[CaseDocumentResult]
+    | SuccessResponse[CaseDocumentListResult]
+    | SuccessResponse[CaseDocumentResolveFileResult]
 )
 
 

@@ -12,12 +12,12 @@ from urllib.parse import quote
 
 from impeller_reliability.persistence.analyst_dossier import validate_dossier_evidence
 from impeller_reliability.persistence.audit import insert_audit
+from impeller_reliability.persistence.case_documents import validate_case_document_evidence
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_manifest import ProjectManifest
 from impeller_reliability.persistence.project_schema import (
     PROJECT_SCHEMA_VERSION,
     create_schema_v1_objects,
-    create_schema_v2_objects,
     validate_project_evidence,
     validate_published_schema,
 )
@@ -78,8 +78,8 @@ def probe_project_database_identity(
             manifest.createdWithApplicationVersion,
             deadline,
         )
-        if schema_version == 2:
-            validate_dossier_evidence(connection, manifest.projectId, deadline)
+        validate_dossier_evidence(connection, manifest.projectId, deadline)
+        validate_case_document_evidence(connection, deadline)
         return ProjectDatabaseIdentity(
             application_id=application_id,
             schema_version=schema_version,
@@ -152,14 +152,6 @@ def _migration_0001(
     )
 
 
-def _migration_0002(
-    connection: sqlite3.Connection,
-    _manifest: ProjectManifest,
-    _initial_metadata: ProjectMetadataSeed | None,
-) -> None:
-    create_schema_v2_objects(connection)
-
-
 @dataclass(frozen=True, slots=True)
 class Migration:
     version: int
@@ -167,10 +159,7 @@ class Migration:
     apply: Callable[[sqlite3.Connection, ProjectManifest, ProjectMetadataSeed | None], None]
 
 
-MIGRATIONS: tuple[Migration, ...] = (
-    Migration(1, "create_project_container", _migration_0001),
-    Migration(2, "create_analyst_dossier", _migration_0002),
-)
+MIGRATIONS: tuple[Migration, ...] = (Migration(1, "create_project_database", _migration_0001),)
 
 
 class ProjectMigrator:
@@ -385,8 +374,8 @@ def _validate_open_connection_identity(
         manifest.createdWithApplicationVersion,
         deadline,
     )
-    if schema_version == 2:
-        validate_dossier_evidence(connection, manifest.projectId, deadline)
+    validate_dossier_evidence(connection, manifest.projectId, deadline)
+    validate_case_document_evidence(connection, deadline)
 
 
 def validate_project_database(
@@ -415,6 +404,7 @@ def validate_project_database(
         deadline,
     )
     validate_dossier_evidence(connection, manifest.projectId, deadline)
+    validate_case_document_evidence(connection, deadline)
 
 
 def quick_check_with_deadline(

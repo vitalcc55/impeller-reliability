@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { _electron as electron, expect, test } from '@playwright/test';
@@ -42,7 +42,7 @@ test('renderer reflects worker failure and controlled restart through the narrow
         const api: unknown = Reflect.get(window, 'impeller');
         return typeof api === 'object' && api !== null ? Reflect.ownKeys(api) : [];
       }),
-    ).toEqual(['system', 'project', 'caseCustomer', 'wheelModel', 'specimen']);
+    ).toEqual(['system', 'project', 'caseCustomer', 'wheelModel', 'specimen', 'caseDocument']);
     expect(
       await page.evaluate(() => {
         const api: unknown = Reflect.get(window, 'impeller');
@@ -120,13 +120,13 @@ test('renderer reflects worker failure and controlled restart through the narrow
     await expect(page.getByText('Изменения сохранены. Редакция 2.')).toBeVisible();
     await expect(page.getByText('ИР-2026-001 · редакция 2')).toBeVisible();
     await page.getByRole('button', { name: 'Закрыть проект' }).click();
-    await expect(page.getByText('Проект закрыт. Данные сохранены в его контейнере.')).toBeVisible();
+    await expect(page.getByText('Проект закрыт.')).toBeVisible();
     await page.getByRole('button', { name: /Проект надёжности РК/u }).click();
     await expect(page.getByRole('heading', { name: 'Проект надёжности РК' })).toBeVisible();
     await expect(page.getByLabel('Номер проекта')).toHaveValue('ИР-2026-001');
     await page.getByLabel('Название проекта').fill('Несохранённый draft');
     await page.getByRole('button', { name: 'Закрыть проект' }).click();
-    await expect(page.getByText('Есть несохранённые изменения')).toBeVisible();
+    await expect(page.getByText('Есть несохранённые изменения', { exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Проект надёжности РК' })).toBeVisible();
     await page.getByRole('button', { name: 'Продолжить редактирование' }).click();
     const dirtyWorkerId = workerProcessIds(mainProcessId)[0];
@@ -137,12 +137,12 @@ test('renderer reflects worker failure and controlled restart through the narrow
     await page.getByRole('button', { name: 'Диагностика' }).click();
     await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
     await expect(page.getByRole('dialog', { name: 'Есть несохранённые изменения' })).toBeVisible();
-    await page.getByRole('button', { name: 'Перезапустить и сохранить черновик' }).click();
+    await page.getByRole('button', { name: 'Перезапустить, не удаляя черновик' }).click();
     await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
     await page.getByRole('button', { name: 'Проекты' }).click();
     await expect(page.getByLabel('Название проекта')).toHaveValue('Несохранённый draft');
     await expect(
-      page.getByText('Ядро перезапущено. Несохранённый черновик сохранён.'),
+      page.getByText('Ядро перезапущено. Черновик остался только в форме и не записан в проект.'),
     ).toBeVisible();
 
     await app.evaluate(({ BrowserWindow }) => {
@@ -171,11 +171,11 @@ test('renderer reflects worker failure and controlled restart through the narrow
     await page.getByRole('button', { name: 'Диагностика' }).click();
     await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
     await expect(page.getByRole('dialog', { name: 'Есть несохранённые изменения' })).toBeVisible();
-    await page.getByRole('button', { name: 'Перезапустить и сохранить черновик' }).click();
+    await page.getByRole('button', { name: 'Перезапустить, не удаляя черновик' }).click();
     await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
     await page.getByRole('button', { name: 'Проекты' }).click();
     await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
-    await expect(page.getByText(/Локальный черновик сохранён/u)).toBeVisible();
+    await expect(page.getByText(/Локальный черновик остался только в форме/u)).toBeVisible();
     await expect(page.getByLabel('Название проекта')).toHaveValue('Несохранённый draft');
     await page.getByRole('button', { name: 'Отказаться от локального черновика' }).click();
     await expect(page.getByLabel('Название проекта')).toHaveValue('Несохранённый draft');
@@ -219,7 +219,9 @@ test('persists customer wheel model and specimen dossier with one draft guard', 
     await page.getByLabel('Полное наименование').fill('АО «Заказчик»');
     await page.getByRole('button', { name: 'Модели колёс' }).click();
     await expect(page.getByText('Сначала решите, что делать с черновиком')).toBeVisible();
+    await expect(page.getByLabel('Полное наименование')).toBeDisabled();
     await page.getByRole('button', { name: 'Остаться здесь' }).click();
+    await expect(page.getByLabel('Полное наименование')).toBeEnabled();
     await page.getByLabel('Юридический адрес').fill('Москва');
     await page.getByLabel('Фактический адрес').fill('Москва');
     await page.getByRole('button', { name: 'Сохранить заказчика' }).click();
@@ -227,6 +229,7 @@ test('persists customer wheel model and specimen dossier with one draft guard', 
 
     await page.getByRole('button', { name: 'Модели колёс' }).click();
     await page.getByRole('button', { name: 'Новая модель' }).click();
+    await expect(page.getByLabel('Полное наименование')).toBeFocused();
     await page.getByLabel('Полное наименование').fill('Рабочее колесо ВР-1');
     await page.getByLabel('Обозначение').fill('ВР-1');
     await page.getByLabel('Номинальный диаметр').fill('500,0');
@@ -260,6 +263,7 @@ test('persists customer wheel model and specimen dossier with one draft guard', 
 
     await page.getByRole('button', { name: 'Образцы' }).click();
     await page.getByRole('button', { name: 'Новый образец' }).click();
+    await expect(page.getByLabel('Идентификационный номер')).toBeFocused();
     await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
     await page.getByRole('option', { name: 'Рабочее колесо ВР-1 · ВР-1' }).click();
     await page.getByRole('button', { name: 'Модели колёс' }).click();
@@ -317,9 +321,187 @@ test('persists customer wheel model and specimen dossier with one draft guard', 
     await page.getByRole('button', { name: 'Диагностика' }).click();
     await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
     await expect(page.getByRole('dialog', { name: 'Есть несохранённые изменения' })).toBeVisible();
-    await page.getByRole('button', { name: 'Перезапустить и сохранить черновик' }).click();
+    await page.getByRole('button', { name: 'Перезапустить, не удаляя черновик' }).click();
     await page.getByRole('button', { name: 'Проекты' }).click();
     await expect(page.getByLabel('Обозначение')).toHaveValue('UNSAVED-WHEEL');
+  } finally {
+    await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
+test('persists a managed case document with applicability and integrity', async () => {
+  const evidenceRoot = resolve(
+    import.meta.dirname,
+    '../../../../.tmp/.codex/evidence/m02-2b-document-e2e',
+  );
+  const projectPath = join(evidenceRoot, 'Дело с документом.irproj');
+  const userDataPath = join(evidenceRoot, 'user-data');
+  const sourcePath = join(evidenceRoot, 'ТУ-001.pdf');
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(evidenceRoot, { recursive: true });
+  writeFileSync(sourcePath, '%PDF-1.7\nSynthetic normative source\n', 'utf8');
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: resolve(import.meta.dirname, '../../../..'),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
+      IMPELLER_AUTOMATED_DOCUMENT_PATH: sourcePath,
+      IMPELLER_TEST_USER_DATA: userDataPath,
+    },
+  });
+  try {
+    const page = await app.firstWindow();
+    await page.getByRole('button', { name: 'Создать проект' }).click();
+
+    await page.getByRole('button', { name: 'Модели колёс' }).click();
+    await page.getByRole('button', { name: 'Новая модель' }).click();
+    await page.getByLabel('Полное наименование').fill('Рабочее колесо ВР-1');
+    await page.getByLabel('Обозначение').fill('ВР-1');
+    await page.getByRole('button', { name: 'Сохранить модель' }).click();
+    await expect(page.getByText(/Модель сохранена/u)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Образцы' }).click();
+    await page.getByRole('button', { name: 'Новый образец' }).click();
+    await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
+    await page.getByRole('option', { name: 'Рабочее колесо ВР-1 · ВР-1' }).click();
+    await page.getByLabel('Идентификационный номер').fill('SN-DOC');
+    await page.getByRole('button', { name: 'Сохранить образец' }).click();
+    await expect(page.getByText(/Образец сохранён/u)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Документы дела' }).click();
+    await page.getByRole('button', { name: 'Новый документ' }).click();
+    await expect(page.getByLabel('Название')).toBeFocused();
+    await page.getByRole('combobox', { name: 'Вид документа' }).click();
+    await page.getByRole('option', { name: 'Нормативный документ' }).click();
+    await page.getByLabel('Название').fill('Технические условия ТУ-001');
+    await page.getByLabel('Обозначение').fill('ТУ-001');
+    await page.getByLabel('Редакция').fill('Ред. 1');
+    await page.getByRole('checkbox', { name: 'Рабочее колесо ВР-1', exact: true }).check();
+    await page.getByRole('checkbox', { name: /SN-DOC/u }).check();
+    await page.getByRole('button', { name: 'Создать с файлом' }).click();
+    await expect(page.getByText('Целостность подтверждена')).toBeVisible();
+    await expect(page.getByText('ТУ-001.pdf')).toBeVisible();
+    await expect(page.getByText('application/pdf')).toBeVisible();
+    await expect(page.getByText(/Редакция: 1/u)).toBeVisible();
+
+    await page.getByLabel('Примечание').fill('Несохранённый документный черновик');
+    await page.getByRole('button', { name: 'Обзор', exact: true }).click();
+    await expect(page.getByText('Сначала решите, что делать с черновиком')).toBeVisible();
+    await page.getByRole('button', { name: 'Остаться здесь' }).click();
+    await expect(page.getByRole('button', { name: 'Обзор', exact: true })).toBeFocused();
+    await expect(page.getByLabel('Примечание')).toHaveValue('Несохранённый документный черновик');
+    await page.getByRole('button', { name: 'Сохранить документ' }).click();
+    await expect(page.getByText(/Документ сохранён\. Редакция 2/u)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Проверить целостность' }).click();
+    await expect(page.getByText('Проверка управляемой копии завершена.')).toBeVisible();
+    await page.getByRole('button', { name: 'Открыть управляемую копию' }).click();
+    await expect(page.getByText('Управляемая копия передана системному приложению.')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Архивировать' }).click();
+    await page.getByRole('button', { name: 'Подтвердить действие' }).click();
+    await page.getByRole('button', { name: 'Восстановить' }).click();
+    await page.getByRole('button', { name: 'Подтвердить действие' }).click();
+
+    await page.getByRole('button', { name: 'Закрыть проект' }).click();
+    await page.getByRole('button', { name: 'Новый проект' }).click();
+    await page.getByRole('button', { name: 'Документы дела' }).click();
+    await expect(page.getByText('Загрузка сведений дела…')).toBeHidden();
+    await expect(page.getByText('Технические условия ТУ-001', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: /Технические условия ТУ-001/u }).click();
+    await expect(page.getByText('Целостность подтверждена')).toBeVisible();
+    await expect(page.getByLabel('Примечание')).toHaveValue('Несохранённый документный черновик');
+    await expect(
+      page.getByRole('checkbox', { name: 'Рабочее колесо ВР-1', exact: true }),
+    ).toBeChecked();
+    await expect(page.getByRole('checkbox', { name: /SN-DOC/u })).toBeChecked();
+  } finally {
+    await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
+test('handles document cancellation, unsupported and duplicate files, and local integrity loss', async () => {
+  const evidenceRoot = resolve(
+    import.meta.dirname,
+    '../../../../.tmp/.codex/evidence/m02-2b-document-failures-e2e',
+  );
+  const projectPath = join(evidenceRoot, 'Ошибки документов.irproj');
+  const userDataPath = join(evidenceRoot, 'user-data');
+  const sourcePath = join(evidenceRoot, 'evidence.pdf');
+  const unsupportedPath = join(evidenceRoot, 'script.ps1');
+  const sourceContent = '%PDF-1.7\nSynthetic evidence\n';
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(evidenceRoot, { recursive: true });
+  writeFileSync(sourcePath, sourceContent, 'utf8');
+  writeFileSync(unsupportedPath, 'Write-Host unsafe', 'utf8');
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: resolve(import.meta.dirname, '../../../..'),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
+      IMPELLER_AUTOMATED_DOCUMENT_PATH: sourcePath,
+      IMPELLER_TEST_USER_DATA: userDataPath,
+    },
+  });
+  try {
+    const page = await app.firstWindow();
+    await page.getByRole('button', { name: 'Создать проект' }).click();
+    await page.getByRole('button', { name: 'Документы дела' }).click();
+    await page.getByRole('button', { name: 'Новый документ' }).click();
+    await page.getByLabel('Название').fill('Metadata-only документ');
+    await page.getByRole('button', { name: 'Создать без файла' }).click();
+    await expect(page.getByText('Файл не прикреплён')).toBeVisible();
+    await page.getByRole('button', { name: 'Прикрепить файл' }).click();
+    await expect(page.getByText('Целостность подтверждена')).toBeVisible();
+
+    const documentRoots = readdirSync(join(projectPath, 'assets', 'documents'), {
+      withFileTypes: true,
+    }).filter((entry) => entry.isDirectory() && entry.name !== '.staging');
+    expect(documentRoots).toHaveLength(1);
+    const documentRoot = documentRoots[0];
+    if (documentRoot === undefined) throw new Error('managed_document_root_missing');
+    const managedRoot = join(projectPath, 'assets', 'documents', documentRoot.name);
+    const managedFileName = readdirSync(managedRoot)[0];
+    if (managedFileName === undefined) throw new Error('managed_document_file_missing');
+    const managedFile = join(managedRoot, managedFileName);
+    writeFileSync(managedFile, '%PDF-1.7\nModified evidence\n', 'utf8');
+    await page.getByRole('button', { name: 'Проверить целостность' }).click();
+    await expect(page.getByText('Содержимое управляемого файла изменено')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Новый документ' }).click();
+    await page.getByLabel('Название').fill('Дубликат');
+    await page.getByRole('button', { name: 'Создать с файлом' }).click();
+    await expect(
+      page.getByText('Файл с таким содержимым уже зарегистрирован в проекте.'),
+    ).toBeVisible();
+
+    await app.evaluate((_electron, path) => {
+      process.env['IMPELLER_AUTOMATED_DOCUMENT_PATH'] = path;
+    }, unsupportedPath);
+    await page.getByRole('button', { name: 'Создать с файлом' }).click();
+    await expect(page.getByText('Этот тип файла не поддерживается.')).toBeVisible();
+
+    await app.evaluate(() => {
+      delete process.env['IMPELLER_AUTOMATED_DOCUMENT_PATH'];
+      process.env['IMPELLER_AUTOMATED_DOCUMENT_CANCELLED'] = '1';
+    });
+    await page.getByRole('button', { name: 'Создать с файлом' }).click();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.getByLabel('Название')).toHaveValue('Дубликат');
+
+    await page.getByRole('button', { name: /Metadata-only документ/u }).click();
+    await page.getByRole('button', { name: 'Удалить черновик и перейти' }).click();
+    await expect(page.getByRole('button', { name: 'Проверить целостность' })).toBeVisible();
+    rmSync(managedFile);
+    await page.getByRole('button', { name: 'Проверить целостность' }).click();
+    await expect(page.getByText('Управляемый файл отсутствует')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Открыть управляемую копию' })).toBeDisabled();
   } finally {
     await app.close();
     rmSync(evidenceRoot, { recursive: true, force: true });
@@ -402,7 +584,7 @@ test('reattaches the active project when the optional recent-projects store is c
     await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
     await page.getByRole('button', { name: 'Диагностика' }).click();
     await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
-    await page.getByRole('button', { name: 'Перезапустить и сохранить черновик' }).click();
+    await page.getByRole('button', { name: 'Перезапустить, не удаляя черновик' }).click();
     await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
     await page.getByRole('button', { name: 'Проекты' }).click();
     await expect(page.getByLabel('Название проекта')).toHaveValue('Локальный черновик recovery');
@@ -641,6 +823,125 @@ test('closes within a bound when the renderer cannot acknowledge the close reque
     exited = true;
   } finally {
     if (!exited) await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
+test('reconciles a clean document after a committed attachment response is not applied', async () => {
+  const evidenceRoot = resolve(
+    import.meta.dirname,
+    '../../../../.tmp/.codex/evidence/m02-2b-document-reattach',
+  );
+  const projectPath = join(evidenceRoot, 'Reconcile document.irproj');
+  const userDataPath = join(evidenceRoot, 'user-data');
+  const sourcePath = join(evidenceRoot, 'reattach-evidence.pdf');
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(evidenceRoot, { recursive: true });
+  writeFileSync(sourcePath, '%PDF-1.7\nReattach evidence\n', 'utf8');
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: resolve(import.meta.dirname, '../../../..'),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
+      IMPELLER_AUTOMATED_DOCUMENT_PATH: sourcePath,
+      IMPELLER_TEST_USER_DATA: userDataPath,
+    },
+  });
+  try {
+    const page = await app.firstWindow();
+    await page.getByRole('button', { name: 'Создать проект' }).click();
+    await page.getByRole('button', { name: 'Документы дела' }).click();
+    await page.getByRole('button', { name: 'Новый документ' }).click();
+    await page.getByLabel('Название').fill('Документ для сверки');
+    await page.getByRole('button', { name: 'Создать без файла' }).click();
+    await expect(page.getByText('Файл не прикреплён')).toBeVisible();
+
+    const attachedRevision: unknown = await page.evaluate(async () => {
+      const api: unknown = Reflect.get(window, 'impeller');
+      if (typeof api !== 'object' || api === null) throw new Error('api_missing');
+      const caseDocument: unknown = Reflect.get(api, 'caseDocument');
+      if (typeof caseDocument !== 'object' || caseDocument === null) {
+        throw new Error('case_document_api_missing');
+      }
+      const list: unknown = Reflect.get(caseDocument, 'list');
+      const attachFile: unknown = Reflect.get(caseDocument, 'attachFile');
+      if (typeof list !== 'function' || typeof attachFile !== 'function') {
+        throw new Error('case_document_method_missing');
+      }
+      const listed: unknown = await Reflect.apply(list, caseDocument, [
+        { includeArchived: true, documentKind: null },
+      ]);
+      if (typeof listed !== 'object' || listed === null || Reflect.get(listed, 'ok') !== true) {
+        throw new Error('document_list_failed');
+      }
+      const summaries: unknown = Reflect.get(listed, 'result');
+      const summary: unknown = Array.isArray(summaries) ? summaries[0] : undefined;
+      if (typeof summary !== 'object' || summary === null) throw new Error('document_missing');
+      const caseDocumentId: unknown = Reflect.get(summary, 'caseDocumentId');
+      const expectedRevision: unknown = Reflect.get(summary, 'recordRevision');
+      if (typeof caseDocumentId !== 'string' || typeof expectedRevision !== 'number') {
+        throw new Error('document_identity_invalid');
+      }
+      const attached: unknown = await Reflect.apply(attachFile, caseDocument, [
+        { caseDocumentId, expectedRevision },
+      ]);
+      if (
+        typeof attached !== 'object' ||
+        attached === null ||
+        Reflect.get(attached, 'ok') !== true
+      ) {
+        throw new Error('attachment_failed');
+      }
+      const result: unknown = Reflect.get(attached, 'result');
+      if (typeof result !== 'object' || result === null)
+        throw new Error('attachment_result_missing');
+      const recordRevision: unknown = Reflect.get(result, 'recordRevision');
+      if (typeof recordRevision !== 'number') throw new Error('attachment_revision_missing');
+      return recordRevision;
+    });
+    expect(attachedRevision).toBe(2);
+    await expect(page.getByText('Файл не прикреплён')).toBeVisible();
+
+    const mainProcessId = app.process().pid;
+    if (mainProcessId === undefined) throw new Error('electron_main_process_missing');
+    const workerId = workerProcessIds(mainProcessId)[0];
+    if (workerId === undefined) throw new Error('worker_process_missing');
+    process.kill(workerId);
+    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
+    await page.getByRole('button', { name: 'Диагностика' }).click();
+    await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
+    await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
+    await page.getByRole('button', { name: 'Проекты' }).click();
+
+    await expect(page.getByText('Целостность подтверждена')).toBeVisible();
+    await expect(page.getByText('Редакция: 2')).toBeVisible();
+
+    const documentRoot = readdirSync(join(projectPath, 'assets', 'documents'), {
+      withFileTypes: true,
+    }).find((entry) => entry.isDirectory() && entry.name !== '.staging');
+    if (documentRoot === undefined) throw new Error('managed_document_root_missing');
+    const managedRoot = join(projectPath, 'assets', 'documents', documentRoot.name);
+    const managedFileName = readdirSync(managedRoot)[0];
+    if (managedFileName === undefined) throw new Error('managed_document_file_missing');
+    await page.getByLabel('Примечание').fill('Черновик переживает повторную сверку');
+    rmSync(join(managedRoot, managedFileName));
+
+    const reattachedWorkerId = workerProcessIds(mainProcessId)[0];
+    if (reattachedWorkerId === undefined) throw new Error('reattached_worker_process_missing');
+    process.kill(reattachedWorkerId);
+    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
+    await page.getByRole('button', { name: 'Диагностика' }).click();
+    await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
+    await expect(page.getByRole('dialog', { name: 'Есть несохранённые изменения' })).toBeVisible();
+    await page.getByRole('button', { name: 'Перезапустить, не удаляя черновик' }).click();
+    await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
+    await page.getByRole('button', { name: 'Проекты' }).click();
+    await expect(page.getByLabel('Примечание')).toHaveValue('Черновик переживает повторную сверку');
+    await expect(page.getByText('Управляемый файл отсутствует')).toBeVisible();
+  } finally {
+    await app.close();
     rmSync(evidenceRoot, { recursive: true, force: true });
   }
 });

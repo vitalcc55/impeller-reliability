@@ -2,7 +2,10 @@
 
 ## Unreleased
 
-- M02.1: добавлены атомарный `.irproj`, ProjectSession/lock, schema v1, metadata revision, append-only audit, migration backup, typed project IPC и первый продуктовый shell на визуальной системе ЛИЦ ВВУ.
+- Первый публикуемый формат `.irproj` сведён к чистой schema v1: Project metadata/audit, CustomerProfile, WheelModel, Specimen и CaseDocument создаются атомарно без поддержки невыпущенных промежуточных схем.
+- M02.2B: добавлены документы аналитического дела, однократно прикрепляемые управляемые копии с SHA-256, applicability к моделям/образцам, integrity status, completeness warnings, optimistic revision/audit и полный typed Electron↔Python поток без передачи абсолютных путей Renderer.
+- Ручная операция честно названа резервной копией базы проекта; полный перенос до `.irpkg` выполняется копированием закрытого каталога `.irproj`.
+- Закреплены interaction-state, draft, focus, keyboard и responsive-контракты текущего engineering workspace; последующее развитие commands/jobs/tables/charts/recovery распределено по предметным этапам.
 
 ## 0.1.0 — 2026-08-25
 

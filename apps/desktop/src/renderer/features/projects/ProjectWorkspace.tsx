@@ -51,12 +51,14 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     const [confirmDiscardLocal, setConfirmDiscardLocal] = useState(false);
     const [section, setSection] = useState<WorkspaceSection>('overview');
     const [dossierDirty, setDossierDirty] = useState(false);
+    const [dossierPending, setDossierPending] = useState(false);
     const [pendingTransition, setPendingTransition] = useState<{
       readonly action: () => void;
       readonly discard: () => void;
+      readonly returnFocus: HTMLElement | null;
     } | null>(null);
     const metadataDirty = isDraftDirty(project, draft);
-    const dirty = section === 'overview' ? metadataDirty : dossierDirty;
+    const dirty = project !== null && (section === 'overview' ? metadataDirty : dossierDirty);
     const dirtyRef = useRef(dirty);
     const pendingSaveRef = useRef<Promise<void> | null>(null);
     const dossierRef = useRef<AnalystDossierHandle>(null);
@@ -110,6 +112,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
       setConfirmDiscardLocal(false);
       setSection('overview');
       setDossierDirty(false);
+      setDossierPending(false);
       setPendingTransition(null);
       setMessage(notice);
       void refreshRecent();
@@ -185,7 +188,16 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
         if (result.ok) {
           setProject(null);
           setDraft(newProjectDraft);
-          setMessage('Проект закрыт. Данные сохранены в его контейнере.');
+          setSection('overview');
+          setDossierDirty(false);
+          setDossierPending(false);
+          setPendingTransition(null);
+          setConfirmClose(false);
+          setMessage(
+            dirty
+              ? 'Проект закрыт. Несохранённый локальный черновик не записан.'
+              : 'Проект закрыт.',
+          );
           void refreshRecent();
         } else handleFailure(result.error);
       });
@@ -193,7 +205,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
       run('backup', async () => {
         if (desktopApi === null || project === null) return;
         const result = await desktopApi.project.createBackup();
-        if (result.ok) setMessage(`Резервная копия создана: ${result.result.fileName}`);
+        if (result.ok)
+          setMessage(`Резервная копия базы проекта создана: ${result.result.fileName}`);
         else handleFailure(result.error);
       });
     const changeDraft = (nextDraft: ProjectDraft): void => {
@@ -206,6 +219,25 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     const reattachAfterWorkerRestart = useCallback(async (): Promise<boolean> => {
       if (project === null) return true;
       if (desktopApi === null) return false;
+      let sessionOpened = false;
+      const closeOpenedSession = async (): Promise<DesktopError | null> => {
+        try {
+          const closeResult = await desktopApi.project.close();
+          if (!closeResult.ok) return closeResult.error;
+          if (!closeResult.result.closed) {
+            return {
+              code: 'storage_error',
+              message: 'Worker не подтвердил закрытие повторно открытой сессии проекта.',
+              details: {},
+              retryable: true,
+            };
+          }
+          sessionOpened = false;
+          return null;
+        } catch {
+          return unavailableError();
+        }
+      };
       try {
         const result = await desktopApi.project.openRecent(project.path);
         if (!result.ok) {
@@ -214,34 +246,46 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           setMessage(null);
           return false;
         }
+        sessionOpened = true;
         if (
           result.result.projectId !== project.projectId ||
           result.result.recordRevision !== project.recordRevision
         ) {
-          await desktopApi.project.close();
+          const cleanupError = await closeOpenedSession();
           setReattachBlocked(true);
-          setError({
-            code: 'revision_conflict',
-            message:
-              'Проект изменился после потери worker. Черновик сохранён локально; перечитайте проект и перенесите изменения явно.',
-            details: {
-              expectedRevision: project.recordRevision,
-              actualRevision: result.result.recordRevision,
+          setError(
+            cleanupError ?? {
+              code: 'revision_conflict',
+              message:
+                'Проект изменился после потери worker. Черновик сохранён локально; перечитайте проект и перенесите изменения явно.',
+              details: {
+                expectedRevision: project.recordRevision,
+                actualRevision: result.result.recordRevision,
+              },
+              retryable: false,
             },
-            retryable: false,
-          });
+          );
           return false;
         }
-        if (section !== 'overview' && !(await dossierRef.current?.verifyAfterReattach())) {
-          await desktopApi.project.close();
+        const dossierReattach =
+          section === 'overview'
+            ? { status: 'reconciled' as const }
+            : await dossierRef.current?.verifyAfterReattach();
+        if (dossierReattach?.status !== 'reconciled') {
+          const cleanupError = await closeOpenedSession();
           setReattachBlocked(true);
-          setError({
-            code: 'revision_conflict',
-            message:
-              'Сведения дела изменились после потери worker. Локальный черновик сохранён; перечитайте запись и перенесите изменения явно.',
-            details: {},
-            retryable: false,
-          });
+          setError(
+            cleanupError ??
+              (dossierReattach?.status === 'conflict'
+                ? {
+                    code: 'revision_conflict',
+                    message:
+                      'Сведения дела изменились после потери worker. Локальный черновик остался только в форме; перечитайте запись и перенесите изменения явно.',
+                    details: {},
+                    retryable: false,
+                  }
+                : (dossierReattach?.error ?? unavailableError())),
+          );
           return false;
         }
         setProject(result.result);
@@ -251,14 +295,15 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
         setError(null);
         setMessage(
           dirty
-            ? 'Ядро перезапущено. Несохранённый черновик сохранён.'
+            ? 'Ядро перезапущено. Черновик остался только в форме и не записан в проект.'
             : 'Проект снова подключён к worker.',
         );
         void refreshRecent();
         return true;
       } catch {
+        const cleanupError = sessionOpened ? await closeOpenedSession() : null;
         setReattachBlocked(true);
-        setError(unavailableError());
+        setError(cleanupError ?? unavailableError());
         return false;
       }
     }, [desktopApi, dirty, project, refreshRecent, section]);
@@ -285,6 +330,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           setConfirmReload(true);
           return;
         }
+        const closeResult = await desktopApi.project.close();
+        if (!closeResult.ok) return handleFailure(closeResult.error);
         const result = await desktopApi.project.openRecent(project.path);
         if (result.ok)
           acceptProject(
@@ -294,37 +341,30 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
         else handleFailure(result.error);
       });
 
-    const discardLocalWorkspace = async (): Promise<void> => {
+    const discardLocalWorkspace = (): Promise<void> => {
       if (!confirmDiscardLocal) {
         setConfirmDiscardLocal(true);
         setMessage(null);
-        return;
+        return Promise.resolve();
       }
-      if (desktopApi !== null) {
-        try {
+      return run('discard-local', async () => {
+        if (desktopApi !== null) {
           await desktopApi.project.releaseLocalWorkspace();
-        } catch {
-          setError({
-            code: 'storage_error',
-            message: 'Не удалось освободить локальное состояние проекта.',
-            details: {},
-            retryable: true,
-          });
-          return;
         }
-      }
-      setProject(null);
-      setDraft(newProjectDraft);
-      setError(null);
-      setConfirmClose(false);
-      setReattachBlocked(false);
-      setConfirmReload(false);
-      setConfirmDiscardLocal(false);
-      setSection('overview');
-      setDossierDirty(false);
-      setPendingTransition(null);
-      setMessage('Локальный черновик удалён. Файлы проекта не изменялись.');
-      void refreshRecent();
+        setProject(null);
+        setDraft(newProjectDraft);
+        setError(null);
+        setConfirmClose(false);
+        setReattachBlocked(false);
+        setConfirmReload(false);
+        setConfirmDiscardLocal(false);
+        setSection('overview');
+        setDossierDirty(false);
+        setDossierPending(false);
+        setPendingTransition(null);
+        setMessage('Локальный черновик удалён. Файлы проекта не изменялись.');
+        void refreshRecent();
+      });
     };
 
     if (project === null)
@@ -413,27 +453,31 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
             <Button
               variant="default"
               loading={busy === 'backup'}
-              disabled={detached || busy !== null}
+              disabled={detached || busy !== null || dossierPending || pendingTransition !== null}
               onClick={() => void createBackup()}
             >
-              Создать резервную копию
+              Создать резервную копию базы проекта
             </Button>
             <Button
               variant="subtle"
               loading={busy === 'close'}
-              disabled={detached || busy !== null}
+              disabled={detached || busy !== null || dossierPending || pendingTransition !== null}
               onClick={() => void closeProject()}
             >
               {confirmClose ? 'Закрыть без сохранения' : 'Закрыть проект'}
             </Button>
           </Group>
         </header>
+        <Text className="backup-scope-note" size="sm">
+          Копия содержит project.sqlite и не содержит assets/documents. Для полного переноса
+          закройте проект и скопируйте весь каталог *.irproj.
+        </Text>
         {detached ? (
           <div className="feedback feedback--warning" role="alert">
             <strong>Проект отсоединён от worker</strong>
             <span>
               {reattachBlocked
-                ? 'Локальный черновик сохранён. Worker session не подключена: редакция не совпала или повторное подключение не завершилось. Черновик не будет записан автоматически.'
+                ? 'Локальный черновик остался только в форме. Worker session не подключена: редакция не совпала или повторное подключение не завершилось. Черновик не будет записан автоматически.'
                 : 'Введённые значения сохранены в форме. Перезапустите ядро; запись станет доступна только после сверки проекта и редакции.'}
             </span>
             {workerReady && reattachBlocked ? (
@@ -443,7 +487,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                   variant={confirmReload ? 'filled' : 'subtle'}
                   color={confirmReload ? 'red' : 'navy'}
                   loading={busy === 'reload'}
-                  disabled={busy !== null}
+                  disabled={busy !== null || dossierPending}
                   onClick={() => void reloadAfterConflict()}
                 >
                   {confirmReload ? 'Перечитать и удалить черновик' : 'Перечитать проект'}
@@ -452,6 +496,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                   <Button
                     size="compact-sm"
                     variant="subtle"
+                    disabled={busy !== null || dossierPending}
                     onClick={() => setConfirmReload(false)}
                   >
                     Оставить черновик
@@ -472,6 +517,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                     size="compact-sm"
                     variant={confirmDiscardLocal ? 'filled' : 'subtle'}
                     color="red"
+                    disabled={busy !== null || dossierPending}
                     onClick={() => void discardLocalWorkspace()}
                   >
                     {confirmDiscardLocal
@@ -482,6 +528,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                     <Button
                       size="compact-sm"
                       variant="subtle"
+                      disabled={busy !== null || dossierPending}
                       onClick={() => setConfirmDiscardLocal(false)}
                     >
                       Оставить черновик
@@ -496,12 +543,20 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           <div className="feedback feedback--warning" role="alert">
             <strong>Есть несохранённые изменения</strong>
             <span>Повторно нажмите «Закрыть без сохранения» или продолжите редактирование.</span>
-            <Button size="compact-sm" variant="subtle" onClick={() => setConfirmClose(false)}>
+            <Button
+              size="compact-sm"
+              variant="subtle"
+              disabled={busy !== null}
+              onClick={() => setConfirmClose(false)}
+            >
               Продолжить редактирование
             </Button>
           </div>
         ) : null}
         <Feedback message={message} error={error} />
+        <Text className="draft-state" role="status" size="sm">
+          {dirty ? 'Есть несохранённые изменения.' : 'Изменения текущего раздела сохранены.'}
+        </Text>
         <nav className="project-sections" aria-label="Разделы аналитического дела">
           {(
             [
@@ -509,13 +564,15 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
               ['customer', 'Заказчик'],
               ['wheels', 'Модели колёс'],
               ['specimens', 'Образцы'],
+              ['documents', 'Документы дела'],
             ] as const
           ).map(([value, label]) => (
             <button
               key={value}
               type="button"
+              disabled={detached || busy !== null || dossierPending || pendingTransition !== null}
               aria-current={section === value ? 'page' : undefined}
-              onClick={() => {
+              onClick={(event) => {
                 if (value === section) return;
                 const action = (): void => setSection(value);
                 const discard = (): void => {
@@ -528,7 +585,12 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                     });
                   } else dossierRef.current?.discardActiveDraft();
                 };
-                if (dirty) setPendingTransition({ action, discard });
+                if (dirty)
+                  setPendingTransition({
+                    action,
+                    discard,
+                    returnFocus: event.currentTarget,
+                  });
                 else action();
               }}
             >
@@ -545,14 +607,24 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                 size="compact-sm"
                 color="red"
                 onClick={() => {
+                  const returnFocus = pendingTransition.returnFocus;
                   pendingTransition.discard();
                   pendingTransition.action();
                   setPendingTransition(null);
+                  window.setTimeout(() => returnFocus?.focus(), 0);
                 }}
               >
                 Удалить черновик и перейти
               </Button>
-              <Button size="compact-sm" variant="subtle" onClick={() => setPendingTransition(null)}>
+              <Button
+                size="compact-sm"
+                variant="subtle"
+                onClick={() => {
+                  const returnFocus = pendingTransition.returnFocus;
+                  setPendingTransition(null);
+                  window.setTimeout(() => returnFocus?.focus(), 0);
+                }}
+              >
                 Остаться здесь
               </Button>
             </Group>
@@ -578,14 +650,14 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                   required
                   maxLength={200}
                   value={draft.name}
-                  disabled={detached || busy !== null}
+                  disabled={detached || busy !== null || pendingTransition !== null}
                   onChange={(event) => changeDraft({ ...draft, name: event.currentTarget.value })}
                 />
                 <TextInput
                   label="Номер проекта"
                   maxLength={100}
                   value={draft.projectNumber}
-                  disabled={detached || busy !== null}
+                  disabled={detached || busy !== null || pendingTransition !== null}
                   onChange={(event) =>
                     changeDraft({ ...draft, projectNumber: event.currentTarget.value })
                   }
@@ -595,7 +667,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                   data={statusOptions}
                   allowDeselect={false}
                   value={draft.status}
-                  disabled={detached || busy !== null}
+                  disabled={detached || busy !== null || pendingTransition !== null}
                   onChange={(value) => {
                     if (
                       value === 'draft' ||
@@ -612,7 +684,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                   minRows={5}
                   maxLength={4000}
                   value={draft.description}
-                  disabled={detached || busy !== null}
+                  disabled={detached || busy !== null || pendingTransition !== null}
                   onChange={(event) =>
                     changeDraft({ ...draft, description: event.currentTarget.value })
                   }
@@ -640,7 +712,12 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                 <Button
                   type="submit"
                   loading={busy === 'save'}
-                  disabled={detached || busy !== null || draft.name.trim() === ''}
+                  disabled={
+                    detached ||
+                    busy !== null ||
+                    pendingTransition !== null ||
+                    draft.name.trim() === ''
+                  }
                 >
                   Сохранить изменения
                 </Button>
@@ -650,15 +727,21 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           </section>
         ) : desktopApi === null ? null : (
           <AnalystDossier
-            key={`${project.projectId}:${section}`}
             ref={dossierRef}
             desktopApi={desktopApi}
             projectId={project.projectId}
             section={section}
-            disabled={detached || busy !== null}
+            disabled={detached || busy !== null || pendingTransition !== null}
             onDirtyChange={setDossierDirty}
+            onPendingChange={setDossierPending}
             requestTransition={(hasDirty, action, discard) => {
-              if (hasDirty) setPendingTransition({ action, discard });
+              if (hasDirty)
+                setPendingTransition({
+                  action,
+                  discard,
+                  returnFocus:
+                    document.activeElement instanceof HTMLElement ? document.activeElement : null,
+                });
               else action();
             }}
           />

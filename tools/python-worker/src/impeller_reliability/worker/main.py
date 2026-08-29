@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 from typing import Protocol, runtime_checkable
@@ -90,8 +91,8 @@ def run_worker(state_directory: Path) -> int:
                     request,
                     RequestDeadline.start(request.deadlineMs),
                 )
-            except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, ValueError) as error:
-                response = _contract_error(request_id, revision, f"Некорректный запрос: {error}")
+            except UnicodeDecodeError, json.JSONDecodeError, ValidationError, ValueError:
+                response = _contract_error(request_id, revision, "Некорректный запрос.")
             except ProjectOperationError as error:
                 response = ErrorResponse(
                     requestId=request_id,
@@ -103,8 +104,19 @@ def run_worker(state_directory: Path) -> int:
                         retryable=error.retryable,
                     ),
                 )
+            except OSError, sqlite3.DatabaseError:
+                response = ErrorResponse(
+                    requestId=request_id,
+                    revision=revision,
+                    error=ErrorPayload(
+                        code="storage_error",
+                        message="Локальное хранилище не завершило операцию.",
+                        details={},
+                        retryable=True,
+                    ),
+                )
             except Exception as error:
-                print(f"worker_internal_error:{type(error).__name__}:{error}", file=sys.stderr, flush=True)
+                print(f"worker_internal_error:{type(error).__name__}", file=sys.stderr, flush=True)
                 response = ErrorResponse(
                     requestId=request_id,
                     revision=revision,

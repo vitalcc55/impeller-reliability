@@ -24,7 +24,7 @@ from impeller_reliability.persistence.sqlite_deadline import (
 from impeller_reliability.persistence.timestamps import parse_canonical_utc_timestamp
 from impeller_reliability.worker.deadline import RequestDeadline
 
-PROJECT_SCHEMA_VERSION: Final = 2
+PROJECT_SCHEMA_VERSION: Final = 1
 PROJECT_METADATA_FIELDS: Final = ("name", "projectNumber", "description", "status")
 MAX_SCHEMA_SCALAR_BYTES: Final = 4_096
 MAX_PROJECT_ID_BYTES: Final = 36
@@ -116,6 +116,55 @@ WHEEL_MODELS_NAME_INDEX_SQL: Final = "CREATE INDEX wheel_models_name_idx ON whee
 SPECIMENS_ARCHIVED_INDEX_SQL: Final = "CREATE INDEX specimens_archived_idx ON specimens(archived_at_utc)"
 SPECIMENS_MODEL_INDEX_SQL: Final = "CREATE INDEX specimens_model_idx ON specimens(wheel_model_id)"
 SPECIMENS_IDENTIFICATION_INDEX_SQL: Final = "CREATE INDEX specimens_identification_idx ON specimens(identification_number)"
+CASE_DOCUMENTS_TABLE_SQL: Final = """
+CREATE TABLE case_documents (
+    case_document_id TEXT PRIMARY KEY,
+    document_kind TEXT NOT NULL CHECK (document_kind IN ('technical_specification', 'individual_test_method', 'typical_test_method', 'customer_requirement', 'test_request', 'operational_documentation', 'standard', 'drawing', 'measurement_or_attestation_record', 'other')),
+    title TEXT NOT NULL CHECK (length(trim(title)) BETWEEN 1 AND 300),
+    designation TEXT NOT NULL DEFAULT '' CHECK (length(designation) <= 200),
+    revision_label TEXT NOT NULL DEFAULT '' CHECK (length(revision_label) <= 200),
+    document_date TEXT NULL,
+    issuer TEXT NOT NULL DEFAULT '' CHECK (length(issuer) <= 300),
+    notes TEXT NOT NULL DEFAULT '' CHECK (length(notes) <= 4000),
+    record_revision INTEGER NOT NULL CHECK (record_revision >= 1),
+    archived_at_utc TEXT NULL,
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+)
+"""
+CASE_DOCUMENT_FILES_TABLE_SQL: Final = """
+CREATE TABLE case_document_files (
+    case_document_id TEXT PRIMARY KEY REFERENCES case_documents(case_document_id),
+    original_file_name TEXT NOT NULL,
+    stored_relative_path TEXT NOT NULL UNIQUE,
+    media_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 104857600),
+    sha256 TEXT NOT NULL UNIQUE,
+    attached_at_utc TEXT NOT NULL
+)
+"""
+CASE_DOCUMENT_WHEEL_MODELS_TABLE_SQL: Final = """
+CREATE TABLE case_document_wheel_models (
+    case_document_id TEXT NOT NULL REFERENCES case_documents(case_document_id),
+    wheel_model_id TEXT NOT NULL REFERENCES wheel_models(wheel_model_id),
+    PRIMARY KEY (case_document_id, wheel_model_id)
+)
+"""
+CASE_DOCUMENT_SPECIMENS_TABLE_SQL: Final = """
+CREATE TABLE case_document_specimens (
+    case_document_id TEXT NOT NULL REFERENCES case_documents(case_document_id),
+    specimen_id TEXT NOT NULL REFERENCES specimens(specimen_id),
+    PRIMARY KEY (case_document_id, specimen_id)
+)
+"""
+CASE_DOCUMENT_FILES_NO_UPDATE_TRIGGER_SQL: Final = "CREATE TRIGGER case_document_files_no_update BEFORE UPDATE ON case_document_files BEGIN SELECT RAISE(ABORT, 'case_document_file_immutable'); END"
+CASE_DOCUMENT_FILES_NO_DELETE_TRIGGER_SQL: Final = "CREATE TRIGGER case_document_files_no_delete BEFORE DELETE ON case_document_files BEGIN SELECT RAISE(ABORT, 'case_document_file_immutable'); END"
+CASE_DOCUMENTS_KIND_INDEX_SQL: Final = "CREATE INDEX case_documents_kind_idx ON case_documents(document_kind)"
+CASE_DOCUMENTS_ARCHIVED_INDEX_SQL: Final = "CREATE INDEX case_documents_archived_idx ON case_documents(archived_at_utc)"
+CASE_DOCUMENTS_TITLE_INDEX_SQL: Final = "CREATE INDEX case_documents_title_idx ON case_documents(title, designation)"
+CASE_DOCUMENT_FILES_SHA256_INDEX_SQL: Final = "CREATE INDEX case_document_files_sha256_idx ON case_document_files(sha256)"
+CASE_DOCUMENT_WHEEL_MODELS_TARGET_INDEX_SQL: Final = "CREATE INDEX case_document_wheel_models_target_idx ON case_document_wheel_models(wheel_model_id)"
+CASE_DOCUMENT_SPECIMENS_TARGET_INDEX_SQL: Final = "CREATE INDEX case_document_specimens_target_idx ON case_document_specimens(specimen_id)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,19 +181,12 @@ class PublishedSchemaContract:
     migrations: tuple[tuple[int, str], ...]
 
 
-SCHEMA_V1_CONTRACT: Final = PublishedSchemaContract(
-    version=1,
-    objects=(
-        SchemaObject("table", "schema_migrations", SCHEMA_MIGRATIONS_TABLE_SQL),
-        SchemaObject("table", "project_metadata", PROJECT_METADATA_TABLE_SQL),
-        SchemaObject("table", "project_audit_events", PROJECT_AUDIT_EVENTS_TABLE_SQL),
-        SchemaObject("trigger", "project_audit_events_no_update", PROJECT_AUDIT_NO_UPDATE_TRIGGER_SQL),
-        SchemaObject("trigger", "project_audit_events_no_delete", PROJECT_AUDIT_NO_DELETE_TRIGGER_SQL),
-    ),
-    migrations=((1, "create_project_container"),),
-)
-
-SCHEMA_V2_ADDITIONAL_OBJECTS: Final = (
+SCHEMA_V1_OBJECTS: Final = (
+    SchemaObject("table", "schema_migrations", SCHEMA_MIGRATIONS_TABLE_SQL),
+    SchemaObject("table", "project_metadata", PROJECT_METADATA_TABLE_SQL),
+    SchemaObject("table", "project_audit_events", PROJECT_AUDIT_EVENTS_TABLE_SQL),
+    SchemaObject("trigger", "project_audit_events_no_update", PROJECT_AUDIT_NO_UPDATE_TRIGGER_SQL),
+    SchemaObject("trigger", "project_audit_events_no_delete", PROJECT_AUDIT_NO_DELETE_TRIGGER_SQL),
     SchemaObject("table", "customer_profile", CUSTOMER_PROFILE_TABLE_SQL),
     SchemaObject("table", "wheel_models", WHEEL_MODELS_TABLE_SQL),
     SchemaObject("table", "specimens", SPECIMENS_TABLE_SQL),
@@ -153,21 +195,36 @@ SCHEMA_V2_ADDITIONAL_OBJECTS: Final = (
     SchemaObject("index", "specimens_archived_idx", SPECIMENS_ARCHIVED_INDEX_SQL),
     SchemaObject("index", "specimens_model_idx", SPECIMENS_MODEL_INDEX_SQL),
     SchemaObject("index", "specimens_identification_idx", SPECIMENS_IDENTIFICATION_INDEX_SQL),
+    SchemaObject("table", "case_documents", CASE_DOCUMENTS_TABLE_SQL),
+    SchemaObject("table", "case_document_files", CASE_DOCUMENT_FILES_TABLE_SQL),
+    SchemaObject("table", "case_document_wheel_models", CASE_DOCUMENT_WHEEL_MODELS_TABLE_SQL),
+    SchemaObject("table", "case_document_specimens", CASE_DOCUMENT_SPECIMENS_TABLE_SQL),
+    SchemaObject("trigger", "case_document_files_no_update", CASE_DOCUMENT_FILES_NO_UPDATE_TRIGGER_SQL),
+    SchemaObject("trigger", "case_document_files_no_delete", CASE_DOCUMENT_FILES_NO_DELETE_TRIGGER_SQL),
+    SchemaObject("index", "case_documents_kind_idx", CASE_DOCUMENTS_KIND_INDEX_SQL),
+    SchemaObject("index", "case_documents_archived_idx", CASE_DOCUMENTS_ARCHIVED_INDEX_SQL),
+    SchemaObject("index", "case_documents_title_idx", CASE_DOCUMENTS_TITLE_INDEX_SQL),
+    SchemaObject("index", "case_document_files_sha256_idx", CASE_DOCUMENT_FILES_SHA256_INDEX_SQL),
+    SchemaObject(
+        "index",
+        "case_document_wheel_models_target_idx",
+        CASE_DOCUMENT_WHEEL_MODELS_TARGET_INDEX_SQL,
+    ),
+    SchemaObject(
+        "index",
+        "case_document_specimens_target_idx",
+        CASE_DOCUMENT_SPECIMENS_TARGET_INDEX_SQL,
+    ),
 )
-SCHEMA_V2_CONTRACT: Final = PublishedSchemaContract(
-    version=2,
-    objects=SCHEMA_V1_CONTRACT.objects + SCHEMA_V2_ADDITIONAL_OBJECTS,
-    migrations=((1, "create_project_container"), (2, "create_analyst_dossier")),
+SCHEMA_V1_CONTRACT: Final = PublishedSchemaContract(
+    version=1,
+    objects=SCHEMA_V1_OBJECTS,
+    migrations=((1, "create_project_database"),),
 )
 
 
 def create_schema_v1_objects(connection: sqlite3.Connection) -> None:
     for schema_object in SCHEMA_V1_CONTRACT.objects:
-        connection.execute(schema_object.sql)
-
-
-def create_schema_v2_objects(connection: sqlite3.Connection) -> None:
-    for schema_object in SCHEMA_V2_ADDITIONAL_OBJECTS:
         connection.execute(schema_object.sql)
 
 
@@ -346,6 +403,11 @@ def _validate_audit_stream(connection: sqlite3.Connection, deadline: RequestDead
         "specimen.updated",
         "specimen.archived",
         "specimen.restored",
+        "case_document.created",
+        "case_document.updated",
+        "case_document.file_attached",
+        "case_document.archived",
+        "case_document.restored",
     }
     rows = sqlite_query_rows_with_deadline(
         connection,
@@ -454,8 +516,6 @@ def _validate_audit_rows(
 def _contract_for(schema_version: int) -> PublishedSchemaContract:
     if schema_version == SCHEMA_V1_CONTRACT.version:
         return SCHEMA_V1_CONTRACT
-    if schema_version == SCHEMA_V2_CONTRACT.version:
-        return SCHEMA_V2_CONTRACT
     raise ProjectOperationError(
         "corrupt_project",
         "Для версии project.sqlite отсутствует опубликованный schema contract.",

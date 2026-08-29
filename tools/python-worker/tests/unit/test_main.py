@@ -50,14 +50,17 @@ def test_worker_rejects_oversized_non_finite_and_invalid_utf8(tmp_path: Path, mo
     assert all('"ok":false' in response for response in responses)
 
 
-def test_worker_converts_unexpected_storage_failure_to_internal_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_converts_unexpected_storage_failure_to_typed_storage_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     state_file = tmp_path / "state-file"
     state_file.write_text("not a directory", encoding="utf-8")
     request = b'{"protocolVersion":1,"requestId":"health","kind":"request","operation":"storage.health","revision":0,"deadlineMs":5000,"payload":{}}\n'
     responses = _run(request, state_file, monkeypatch)
     assert '"requestId":"health"' in responses[0]
-    assert '"code":"internal_error"' in responses[0]
-    assert '"message":"Внутренняя ошибка worker."' in responses[0]
+    assert '"code":"storage_error"' in responses[0]
+    assert '"retryable":true' in responses[0]
 
 
 def test_self_test_and_cli_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

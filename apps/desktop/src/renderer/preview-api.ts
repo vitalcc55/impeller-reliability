@@ -1,4 +1,7 @@
 import type {
+  CaseDocument,
+  CaseDocumentCreateCommand,
+  CaseDocumentSummary,
   DesktopResult,
   CustomerProfile,
   ImpellerApi,
@@ -44,6 +47,7 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
   let customer: CustomerProfile | null = null;
   const wheels = new Map<string, WheelModel>();
   const specimens = new Map<string, Specimen>();
+  const documents = new Map<string, CaseDocument>();
   const recentProject: RecentProject = {
     path: 'C:\\Проекты\\Надёжность рабочего колеса.irproj',
     name: 'Надёжность рабочего колеса',
@@ -261,6 +265,127 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
           ),
         ),
     },
+    caseDocument: {
+      create: (command) => {
+        const current = documents.get(command.caseDocumentId);
+        if (current !== undefined) return Promise.resolve(success(current));
+        const created = previewCaseDocument(command, false);
+        documents.set(command.caseDocumentId, created);
+        return Promise.resolve(success(created));
+      },
+      createWithFile: (command) => {
+        const current = documents.get(command.caseDocumentId);
+        if (current !== undefined) return Promise.resolve(success(current));
+        const created = previewCaseDocument(command, true);
+        documents.set(command.caseDocumentId, created);
+        return Promise.resolve(success(created));
+      },
+      list: ({ includeArchived, documentKind }) =>
+        Promise.resolve(
+          success(
+            [...documents.values()]
+              .filter(
+                (item) =>
+                  (includeArchived || item.archivedAtUtc === null) &&
+                  (documentKind === null || item.documentKind === documentKind),
+              )
+              .sort((left, right) => {
+                const archiveOrder =
+                  Number(left.archivedAtUtc !== null) - Number(right.archivedAtUtc !== null);
+                return archiveOrder !== 0
+                  ? archiveOrder
+                  : left.title.localeCompare(right.title, 'ru');
+              })
+              .map((item): CaseDocumentSummary => ({
+                caseDocumentId: item.caseDocumentId,
+                documentKind: item.documentKind,
+                title: item.title,
+                designation: item.designation,
+                recordRevision: item.recordRevision,
+                archivedAtUtc: item.archivedAtUtc,
+                warnings: item.warnings,
+              })),
+          ),
+        ),
+      get: (caseDocumentId) => Promise.resolve(entityResult(documents.get(caseDocumentId))),
+      update: ({ caseDocumentId, expectedRevision, document, wheelModelIds, specimenIds }) => {
+        const current = documents.get(caseDocumentId);
+        if (current === undefined) return Promise.resolve(notFound());
+        if (current.recordRevision !== expectedRevision) return Promise.resolve(conflict());
+        const updated: CaseDocument = {
+          ...current,
+          ...document,
+          wheelModelIds,
+          specimenIds,
+          recordRevision: expectedRevision + 1,
+          updatedAtUtc: '2026-08-28T12:00:00.000Z',
+          warnings: documentWarnings(document, current.integrityStatus),
+        };
+        documents.set(caseDocumentId, updated);
+        return Promise.resolve(success(updated));
+      },
+      attachFile: ({ caseDocumentId, expectedRevision }) => {
+        const current = documents.get(caseDocumentId);
+        if (current === undefined) return Promise.resolve(notFound());
+        if (current.recordRevision !== expectedRevision) return Promise.resolve(conflict());
+        if (current.file !== null) {
+          return Promise.resolve({
+            ok: false,
+            error: {
+              code: 'file_already_attached',
+              message: 'К документу уже прикреплён файл.',
+              details: {},
+              retryable: false,
+            },
+          });
+        }
+        const updated: CaseDocument = {
+          ...current,
+          file: previewFile(),
+          integrityStatus: 'verified',
+          recordRevision: expectedRevision + 1,
+          updatedAtUtc: '2026-08-28T12:00:00.000Z',
+          warnings: documentWarnings(current, 'verified'),
+        };
+        documents.set(caseDocumentId, updated);
+        return Promise.resolve(success(updated));
+      },
+      verifyFile: (caseDocumentId) => Promise.resolve(entityResult(documents.get(caseDocumentId))),
+      openFile: (caseDocumentId) => {
+        const current = documents.get(caseDocumentId);
+        if (current === undefined) return Promise.resolve(notFound());
+        if (current.integrityStatus !== 'verified') {
+          return Promise.resolve({
+            ok: false,
+            error: {
+              code: 'file_missing',
+              message: 'Управляемый файл отсутствует.',
+              details: {},
+              retryable: false,
+            },
+          });
+        }
+        return Promise.resolve(success({ opened: true }));
+      },
+      archive: (command) =>
+        Promise.resolve(
+          setPreviewDocumentArchived(
+            documents,
+            command.caseDocumentId,
+            command.expectedRevision,
+            true,
+          ),
+        ),
+      restore: (command) =>
+        Promise.resolve(
+          setPreviewDocumentArchived(
+            documents,
+            command.caseDocumentId,
+            command.expectedRevision,
+            false,
+          ),
+        ),
+    },
   };
 }
 
@@ -281,7 +406,7 @@ function projectOverview(
     createdAtUtc: '2026-08-25T15:00:00.000Z',
     updatedAtUtc: '2026-08-25T15:00:00.000Z',
     createdWithApplicationVersion: '0.1.0',
-    schemaVersion: 2,
+    schemaVersion: 1,
   };
 }
 
@@ -322,6 +447,56 @@ function previewSpecimen(
     updatedAtUtc: '2026-08-26T12:00:00.000Z',
     warnings: draft.workingDiameterMm === null ? ['specimen_working_diameter_missing'] : [],
   };
+}
+
+function previewCaseDocument(command: CaseDocumentCreateCommand, withFile: boolean): CaseDocument {
+  const integrityStatus = withFile ? 'verified' : 'not_attached';
+  return {
+    caseDocumentId: command.caseDocumentId,
+    ...command.document,
+    recordRevision: 1,
+    archivedAtUtc: null,
+    createdAtUtc: '2026-08-28T12:00:00.000Z',
+    updatedAtUtc: '2026-08-28T12:00:00.000Z',
+    file: withFile ? previewFile() : null,
+    integrityStatus,
+    wheelModelIds: command.wheelModelIds,
+    specimenIds: command.specimenIds,
+    warnings: documentWarnings(command.document, integrityStatus),
+  };
+}
+
+function previewFile(): NonNullable<CaseDocument['file']> {
+  return {
+    originalFileName: 'ГОСТ-синтетический.pdf',
+    mediaType: 'application/pdf',
+    sizeBytes: 2_048,
+    sha256: 'a'.repeat(64),
+    attachedAtUtc: '2026-08-28T12:00:00.000Z',
+  };
+}
+
+function documentWarnings(
+  document: Pick<CaseDocument, 'documentKind' | 'designation' | 'revisionLabel'>,
+  integrityStatus: CaseDocument['integrityStatus'],
+): CaseDocument['warnings'] {
+  const normative = [
+    'technical_specification',
+    'individual_test_method',
+    'typical_test_method',
+    'standard',
+  ].includes(document.documentKind);
+  return [
+    ...(integrityStatus === 'not_attached' || integrityStatus === 'missing'
+      ? (['case_document_file_missing'] as const)
+      : []),
+    ...(normative && document.designation === ''
+      ? (['case_document_designation_missing'] as const)
+      : []),
+    ...(normative && document.revisionLabel === ''
+      ? (['case_document_revision_missing'] as const)
+      : []),
+  ];
 }
 
 function entityResult<TResult>(value: TResult | undefined): DesktopResult<TResult> {
@@ -385,6 +560,25 @@ function setPreviewSpecimenArchived(
     recordRevision: expectedRevision + 1,
     archivedAtUtc: archived ? '2026-08-26T12:00:00.000Z' : null,
     updatedAtUtc: '2026-08-26T12:00:00.000Z',
+  };
+  items.set(id, updated);
+  return success(updated);
+}
+
+function setPreviewDocumentArchived(
+  items: Map<string, CaseDocument>,
+  id: string,
+  expectedRevision: number,
+  archived: boolean,
+): DesktopResult<CaseDocument> {
+  const current = items.get(id);
+  if (current === undefined) return notFound();
+  if (current.recordRevision !== expectedRevision) return conflict();
+  const updated: CaseDocument = {
+    ...current,
+    recordRevision: expectedRevision + 1,
+    archivedAtUtc: archived ? '2026-08-28T12:00:00.000Z' : null,
+    updatedAtUtc: '2026-08-28T12:00:00.000Z',
   };
   items.set(id, updated);
   return success(updated);

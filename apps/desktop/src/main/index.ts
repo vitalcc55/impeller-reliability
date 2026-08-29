@@ -7,6 +7,7 @@ import {
   protocol,
   shell,
   type OpenDialogOptions,
+  type OpenDialogReturnValue,
   type SaveDialogOptions,
 } from 'electron';
 import { randomUUID } from 'node:crypto';
@@ -15,6 +16,12 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
+  caseDocumentAttachFileCommandSchema,
+  caseDocumentCreateCommandSchema,
+  caseDocumentIdPayloadSchema,
+  caseDocumentListPayloadSchema,
+  caseDocumentRevisionPayloadSchema,
+  caseDocumentUpdatePayloadSchema,
   customerUpsertPayloadSchema,
   projectDraftSchema,
   projectUpdateMetadataPayloadSchema,
@@ -31,6 +38,7 @@ import {
   wheelModelUpdatePayloadSchema,
   type DesktopError,
   type DesktopResult,
+  type CaseDocument,
   type ProjectDraft,
   type ProjectOverview,
   type RecentProject,
@@ -39,8 +47,14 @@ import {
 } from '@impeller-reliability/contracts';
 
 import { IPC_CHANNELS } from './channels';
+import {
+  runCaseDocumentAttachFile,
+  runCaseDocumentCreateWithFile,
+  selectCaseDocumentSource,
+} from './case-document-source';
 import { JsonlLogger } from './logging';
 import { RecentProjectsStore } from './recent-projects';
+import { showSystemDialog } from './system-dialog';
 import { WorkerClient, type WorkerLifecycleEvent } from './worker-client';
 import { resolveWorkerLocation } from './worker-location';
 
@@ -108,7 +122,7 @@ function applyWorkerLifecycle(event: WorkerLifecycleEvent): void {
     status.message = 'Локальный контур готов к работе.';
   } else if (event.state === 'unavailable') {
     status.sqliteStatus = 'error';
-    status.message = `Worker недоступен${event.reason === null ? '.' : `: ${event.reason}`}`;
+    status.message = 'Worker недоступен. Откройте диагностику и перезапустите ядро.';
   } else if (event.state === 'stopping') {
     status.message = 'Остановка локального расчётного контура…';
   } else {
@@ -133,10 +147,10 @@ async function refreshStatus(): Promise<RuntimeStatus> {
     status.workerStatus = 'ready';
     status.message = 'Локальный контур готов к работе.';
     client.markReady();
-  } catch (error) {
+  } catch {
     status.workerStatus = 'unavailable';
     status.sqliteStatus = 'error';
-    status.message = `Worker недоступен: ${String(error)}`;
+    status.message = 'Worker недоступен. Откройте диагностику и перезапустите ядро.';
     emitStatus();
   }
   return snapshotStatus();
@@ -200,10 +214,13 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       filters: [{ name: 'Проект Impeller Reliability', extensions: ['irproj'] }],
       properties: ['createDirectory', 'showOverwriteConfirmation'],
     };
-    const selection =
+    const dialogResult = await showSystemDialog(() =>
       mainWindow === null
-        ? await dialog.showSaveDialog(options)
-        : await dialog.showSaveDialog(mainWindow, options);
+        ? dialog.showSaveDialog(options)
+        : dialog.showSaveDialog(mainWindow, options),
+    );
+    if (!dialogResult.ok) return { ok: false, error: dialogResult.error };
+    const selection = dialogResult.result;
     if (selection.canceled || selection.filePath === '') return cancelledResult<ProjectOverview>();
     const path = selection.filePath.toLowerCase().endsWith('.irproj')
       ? selection.filePath
@@ -220,10 +237,13 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       buttonLabel: 'Открыть проект',
       properties: ['openDirectory'],
     };
-    const selection =
+    const dialogResult = await showSystemDialog(() =>
       mainWindow === null
-        ? await dialog.showOpenDialog(options)
-        : await dialog.showOpenDialog(mainWindow, options);
+        ? dialog.showOpenDialog(options)
+        : dialog.showOpenDialog(mainWindow, options),
+    );
+    if (!dialogResult.ok) return { ok: false, error: dialogResult.error };
+    const selection: OpenDialogReturnValue = dialogResult.result;
     if (selection.canceled || selection.filePaths[0] === undefined) {
       return cancelledResult<ProjectOverview>();
     }
@@ -388,6 +408,127 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       client.request('specimen.restore', parsed.data),
     );
   });
+  ipcMain.handle(IPC_CHANNELS.caseDocumentCreate, (_event, raw: unknown) => {
+    const parsed = caseDocumentCreateCommandSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('caseDocument.create', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.caseDocumentCreateWithFile, async (_event, raw: unknown) => {
+    const parsed = caseDocumentCreateCommandSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure<CaseDocument>();
+    return runCaseDocumentCreateWithFile(
+      parsed.data,
+      selectCaseDocumentSourceFromDialog,
+      (payload) =>
+        runProjectOperation(workerClient, async (client) =>
+          client.request('caseDocument.createWithFile', payload),
+        ),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.caseDocumentList, (_event, raw: unknown) => {
+    const parsed = caseDocumentListPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('caseDocument.list', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.caseDocumentGet, (_event, raw: unknown) => {
+    const parsed = caseDocumentIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('caseDocument.get', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.caseDocumentUpdate, (_event, raw: unknown) => {
+    const parsed = caseDocumentUpdatePayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('caseDocument.update', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.caseDocumentAttachFile, async (_event, raw: unknown) => {
+    const parsed = caseDocumentAttachFileCommandSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure<CaseDocument>();
+    return runCaseDocumentAttachFile(parsed.data, selectCaseDocumentSourceFromDialog, (payload) =>
+      runProjectOperation(workerClient, async (client) =>
+        client.request('caseDocument.attachFile', payload),
+      ),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.caseDocumentVerifyFile, (_event, raw: unknown) => {
+    const parsed = caseDocumentIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('caseDocument.verifyFile', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.caseDocumentOpenFile, async (_event, raw: unknown) => {
+    const parsed = caseDocumentIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure<{ readonly opened: boolean }>();
+    const resolved = await runProjectOperation(workerClient, async (client) =>
+      client.request('caseDocument.resolveFile', parsed.data),
+    );
+    if (!resolved.ok) return resolved;
+    if (process.env['NODE_ENV'] === 'test') {
+      return { ok: true, result: { opened: true } };
+    }
+    try {
+      const shellError = await shell.openPath(resolved.result.absolutePath);
+      if (shellError !== '') {
+        return failureResult<{ readonly opened: boolean }>(
+          'storage_error',
+          'Управляемую копию документа не удалось открыть.',
+        );
+      }
+      return { ok: true, result: { opened: true } };
+    } catch {
+      return failureResult<{ readonly opened: boolean }>(
+        'storage_error',
+        'Управляемую копию документа не удалось открыть.',
+      );
+    }
+  });
+  ipcMain.handle(IPC_CHANNELS.caseDocumentArchive, (_event, raw: unknown) => {
+    const parsed = caseDocumentRevisionPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('caseDocument.archive', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.caseDocumentRestore, (_event, raw: unknown) => {
+    const parsed = caseDocumentRevisionPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('caseDocument.restore', parsed.data),
+    );
+  });
+}
+
+function selectCaseDocumentSourceFromDialog(): Promise<DesktopResult<string>> {
+  return selectCaseDocumentSource({
+    automatedCancelled: automatedDocumentSelectionCancelled(),
+    automatedPath: approvedAutomatedDocumentPath(),
+    showOpenDialog: (options) =>
+      mainWindow === null
+        ? dialog.showOpenDialog(options)
+        : dialog.showOpenDialog(mainWindow, options),
+  });
+}
+
+function approvedAutomatedDocumentPath(): string | null {
+  const isAutomated =
+    process.env['NODE_ENV'] === 'test' || process.env['IMPELLER_SMOKE_OUTPUT'] !== undefined;
+  if (!isAutomated) return null;
+  const rawPath = process.env['IMPELLER_AUTOMATED_DOCUMENT_PATH'];
+  return rawPath === undefined ? null : resolve(rawPath);
+}
+
+function automatedDocumentSelectionCancelled(): boolean {
+  const isAutomated =
+    process.env['NODE_ENV'] === 'test' || process.env['IMPELLER_SMOKE_OUTPUT'] !== undefined;
+  return isAutomated && process.env['IMPELLER_AUTOMATED_DOCUMENT_CANCELLED'] === '1';
 }
 
 function approvedAutomatedProjectPath(): string | null {
@@ -495,7 +636,7 @@ async function runProjectOperation<TResult>(
     }
     return failureResult(
       'worker_unavailable',
-      `Операция с проектом не выполнена: ${String(error)}`,
+      'Операция с проектом не выполнена: локальный worker недоступен.',
     );
   }
 }
@@ -668,6 +809,7 @@ async function runSmokeIfRequested(): Promise<void> {
         });
         const smokeWheelId = randomUUID();
         const smokeSpecimenId = randomUUID();
+        const smokeDocumentId = randomUUID();
         const wheel = await workerClient.request('wheelModel.create', {
           wheelModelId: smokeWheelId,
           fullName: 'Smoke wheel',
@@ -694,6 +836,26 @@ async function runSmokeIfRequested(): Promise<void> {
               notes: '',
             })
           : null;
+        const smokeDocumentSource = resolve(dirname(smokeOutput), 'case-document-source.pdf');
+        await writeFile(smokeDocumentSource, '%PDF-1.7\nPackaged managed document\n', 'utf8');
+        const document =
+          wheel.ok && specimen?.ok === true
+            ? await workerClient.request('caseDocument.createWithFile', {
+                caseDocumentId: smokeDocumentId,
+                document: {
+                  documentKind: 'technical_specification',
+                  title: 'Smoke technical specification',
+                  designation: 'SM-TU-1',
+                  revisionLabel: 'Revision 1',
+                  documentDate: '2026-08-28',
+                  issuer: 'Smoke laboratory',
+                  notes: '',
+                },
+                wheelModelIds: [smokeWheelId],
+                specimenIds: [smokeSpecimenId],
+                sourcePath: smokeDocumentSource,
+              })
+            : null;
         const dossierClosed = await workerClient.request('project.close', {});
         const dossierReopened = await workerClient.request('project.open', {
           path: automatedProjectPath,
@@ -712,6 +874,13 @@ async function runSmokeIfRequested(): Promise<void> {
         const specimenAfter = await workerClient.request('specimen.get', {
           specimenId: smokeSpecimenId,
         });
+        const documentsAfter = await workerClient.request('caseDocument.list', {
+          includeArchived: false,
+          documentKind: 'technical_specification',
+        });
+        const documentAfter = await workerClient.request('caseDocument.verifyFile', {
+          caseDocumentId: smokeDocumentId,
+        });
         projectScenarioPassed =
           updated.result.recordRevision === 2 &&
           reopened.result.name === 'Packaged smoke project updated' &&
@@ -720,6 +889,7 @@ async function runSmokeIfRequested(): Promise<void> {
           customer.ok &&
           wheel.ok &&
           specimen?.ok === true &&
+          document?.ok === true &&
           dossierClosed.ok &&
           dossierReopened.ok &&
           customerAfter.ok &&
@@ -736,7 +906,15 @@ async function runSmokeIfRequested(): Promise<void> {
           specimenAfter.result.identificationNumber === 'SMOKE-SN-1' &&
           specimenAfter.result.wheelModelId === smokeWheelId &&
           specimenAfter.result.workingDiameterMm === '499.5' &&
-          specimenAfter.result.recordRevision === 1;
+          specimenAfter.result.recordRevision === 1 &&
+          documentsAfter.ok &&
+          documentsAfter.result.items.length === 1 &&
+          documentAfter.ok &&
+          documentAfter.result.recordRevision === 1 &&
+          documentAfter.result.integrityStatus === 'verified' &&
+          documentAfter.result.file?.originalFileName === 'case-document-source.pdf' &&
+          documentAfter.result.wheelModelIds[0] === smokeWheelId &&
+          documentAfter.result.specimenIds[0] === smokeSpecimenId;
         await workerClient.request('project.close', {});
       }
     }

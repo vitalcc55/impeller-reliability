@@ -11,7 +11,7 @@
 - Browser dev preview — основная интерактивная поверхность разработки renderer;
 - PyInstaller onedir внутри electron-builder portable — Windows x64 поставка.
 
-M00–M01 реализуют walking skeleton; M02.1 добавляет `.irproj` и ProjectSession. M02.2A добавляет schema v2 и редактируемый analyst dossier: CustomerProfile, WheelModel и Specimen. TestCampaign, SourceDocument, РБД, РПТ, ПМН, FMEA, статистика, Марков, Монте-Карло, вибрация и импорт результатов R130SH не считаются реализованными до появления утверждённых контрактов и тестов.
+M00–M01 реализуют walking skeleton. Первый публикуемый `.irproj` использует чистую schema v1 с ProjectSession, Project metadata/audit, CustomerProfile, WheelModel, Specimen и CaseDocument с optional managed file. Невыпущенные промежуточные schema не поддерживаются как legacy formats. TestCampaign, импорт `.r130run`, SourceReference, РБД, РПТ, ПМН, FMEA, статистика, Марков, Монте-Карло, вибрация и отчётность не считаются реализованными до появления утверждённых контрактов и тестов.
 
 ## Scope
 

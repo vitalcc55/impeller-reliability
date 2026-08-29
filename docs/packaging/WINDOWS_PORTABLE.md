@@ -4,6 +4,6 @@
 
 Текущий GitHub quality workflow намеренно не собирает PyInstaller worker, `win-unpacked` и portable: packaging уже подтверждён локальным полным gate и остаётся обязательной локальной проверкой для затрагивающих поставку изменений. Отдельный manual/release workflow рационально добавить ближе к производственной поставке после выбора installer/installed/portable, а не расширять обычный quality check на M02.
 
-Начиная с M02.1 оба packaged smoke выполняют Project container scenario через bundled worker: создать → изменить → закрыть → открыть и сверить редакцию/данные. Временный `.irproj` находится внутри точного smoke-каталога; network/orphan проверки продолжают относиться только к дереву запущенного экземпляра.
+Оба packaged smoke выполняют полный текущий Project scenario через bundled worker: создать/изменить Project → создать Customer/WheelModel/Specimen → создать CaseDocument с managed PDF и applicability → закрыть → открыть → сверить revisions, связи и `verified` integrity. Временный `.irproj` и document fixture находятся внутри точного smoke-каталога; network/orphan проверки продолжают относиться только к дереву запущенного экземпляра.
 
-M02.1 final measurement на той же Windows 11: portable 121,490,180 bytes, SHA-256 `F01CAB7B5FC38572A27438C7F406894090775B8881C575977961ECB70E027FE8`; launcher readiness `win-unpacked` 8.734 s, portable 25.567 s. Оба smoke вернули `projectScenarioPassed=true`.
+Размер/hash/timing конкретного старого артефакта не являются текущим контрактом и измеряются заново полным packaging gate каждого затрагивающего поставку этапа. Успех обоих smoke требует `projectScenarioPassed=true`.

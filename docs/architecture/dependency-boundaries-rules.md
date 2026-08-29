@@ -53,3 +53,5 @@ WorkerApplication -> StandControl: "FORBIDDEN" { style.stroke-dash: 5 }
 ```
 
 Изменение направления зависимости требует обновления этой карты и ADR. Browser preview заменяет только preload API синтетическим typed adapter в `import.meta.env.DEV`; production graph не меняется.
+
+Renderer владеет navigation state, локальными drafts, focus orchestration и presentation interaction states, но не определяет persisted success. `packages/application` становится владельцем общих commands/jobs только вместе с первым повторяемым cross-surface сценарием; до этого локальные действия не образуют параллельный framework. Main владеет file dialogs, external open и process lifecycle, Python — validation, revisions, audit, managed-file integrity и сериализованной ProjectSession. Renderer не запускает параллельные запросы к одной сессии как способ обойти её bounded operation contract.
