@@ -1,0 +1,54 @@
+{
+  "schema_version": "r130sh.run-provenance.v1",
+  "run_id": "019d3c80-3d21-7a65-8e5a-222222222222",
+  "producer": {
+    "name": "R130SH",
+    "version": "0.9.44",
+    "build_id": "r130sh-0.9.44-example",
+    "git_commit": "de10ff83a2a4e3074d2030bb6a7af69c180a998e"
+  },
+  "database_schema_version": 7,
+  "stand": {
+    "name": "Стенд Р130Ш",
+    "serial_number": "example",
+    "stand_spec_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "register_map_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "direction_binding_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "time_source": {
+    "wall_clock": "system_utc",
+    "duration_clock": "process_monotonic_with_epochs"
+  },
+  "measurement_systems": [
+    {
+      "instrument_id": "synthetic-rpm-instrument",
+      "name": "Синтетический канал частоты вращения",
+      "model": "SYNTHETIC-RPM",
+      "serial_number": "SYNTHETIC-RPM-001",
+      "firmware_version": "example",
+      "measurement_role": "rpm",
+      "verification_certificate": "SYNTHETIC-VERIFICATION-RPM",
+      "verification_valid_from": "2026-01-01",
+      "verification_valid_until": "2026-12-31",
+      "settings_snapshot": {
+        "source": "tx01_filtered"
+      }
+    },
+    {
+      "instrument_id": "synthetic-vibration-instrument",
+      "name": "Синтетическая система виброизмерения",
+      "model": "SYNTHETIC-VIBRATION",
+      "serial_number": "SYNTHETIC-VIB-001",
+      "firmware_version": "example",
+      "measurement_role": "vibration_xyz",
+      "verification_certificate": "SYNTHETIC-VERIFICATION-VIB",
+      "verification_valid_from": "2026-01-01",
+      "verification_valid_until": "2026-12-31",
+      "settings_snapshot": {
+        "metric_type": "velocity_rms",
+        "unit": "mm/s",
+        "axis_polling": "round_robin"
+      }
+    }
+  ]
+}

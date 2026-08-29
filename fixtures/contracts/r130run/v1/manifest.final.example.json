@@ -1,0 +1,98 @@
+{
+  "schema_version": "r130sh.run-package.v1",
+  "package_id": "019d3c80-3d21-7a65-8e5a-111111111111",
+  "export_revision": 1,
+  "run_id": "019d3c80-3d21-7a65-8e5a-222222222222",
+  "package_kind": "final",
+  "created_at_utc": "2026-08-26T12:00:00Z",
+  "source_snapshot_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "producer": {
+    "name": "R130SH",
+    "version": "0.9.44",
+    "build_id": "r130sh-0.9.44-example",
+    "git_commit": "de10ff83a2a4e3074d2030bb6a7af69c180a998e"
+  },
+  "files": [
+    {
+      "path": "plan/original.json",
+      "media_type": "application/json",
+      "size": 1024,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "path": "plan/effective.json",
+      "media_type": "application/json",
+      "size": 1024,
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "path": "plan/amendments.jsonl",
+      "media_type": "application/x-ndjson",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "row_count": 0
+    },
+    {
+      "path": "run-summary.json",
+      "media_type": "application/json",
+      "size": 768,
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "path": "environment.json",
+      "media_type": "application/json",
+      "size": 512,
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    {
+      "path": "provenance.json",
+      "media_type": "application/json",
+      "size": 1536,
+      "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    {
+      "path": "events.jsonl",
+      "media_type": "application/x-ndjson",
+      "size": 1024,
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "row_count": 4
+    },
+    {
+      "path": "measurements.csv",
+      "media_type": "text/csv",
+      "size": 2048,
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "row_count": 1
+    },
+    {
+      "path": "measurement-descriptors.json",
+      "media_type": "application/json",
+      "size": 768,
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    {
+      "path": "accepted-summary.json",
+      "media_type": "application/json",
+      "size": 512,
+      "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    {
+      "path": "vibration-baseline.json",
+      "media_type": "application/json",
+      "size": 512,
+      "sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    {
+      "path": "inspections.json",
+      "media_type": "application/json",
+      "size": 1024,
+      "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+    },
+    {
+      "path": "attachments/index.json",
+      "media_type": "application/json",
+      "size": 128,
+      "sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+    }
+  ]
+}

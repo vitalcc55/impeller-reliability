@@ -1,0 +1,89 @@
+{
+  "schema_version": "r130sh.m09a-expectations.v1",
+  "note": "Expected assertions are authored from fixture source facts; real package hashes are generated in M9a.",
+  "fixtures": [
+    {
+      "name": "normal_final_pmn",
+      "expected": {"package_kind": "final", "technical_status": "completed", "termination_reason": "normal_done", "specimen_outcome": "passed", "run_validity": "valid", "data_completeness": "complete"}
+    },
+    {
+      "name": "normal_final_rpt_one_percent",
+      "expected": {"package_kind": "final", "lower_rpm_policy": "one_percent", "technical_status": "completed", "termination_reason": "normal_done", "run_validity": "valid", "data_completeness": "complete"}
+    },
+    {
+      "name": "normal_final_rpt_full_stop",
+      "expected": {"package_kind": "final", "lower_rpm_policy": "full_stop", "technical_status": "completed", "termination_reason": "normal_done", "run_validity": "valid", "data_completeness": "complete"}
+    },
+    {
+      "name": "normal_final_rbd",
+      "expected": {"package_kind": "final", "technical_status": "completed", "termination_reason": "normal_done", "specimen_outcome": "passed", "run_validity": "valid", "data_completeness": "complete", "laboratory_conclusion_present": true},
+      "downstream_rules_required": true
+    },
+    {
+      "name": "first_vibration_trip_inspection_amendment_completion",
+      "expected": {"vibration_trip_count": 1, "inspection_count": 1, "threshold_adjustment_count": 1, "old_threshold_less_than_new_threshold": true, "technical_status": "completed", "termination_reason": "normal_done"}
+    },
+    {
+      "name": "repeated_vibration_trip",
+      "expected": {"package_kind": "final", "technical_status": "interrupted", "termination_reason": "repeated_vibration_trip", "resume_available": false},
+      "downstream_rules_required": true
+    },
+    {
+      "name": "manual_stop",
+      "expected": {"technical_status": "interrupted", "termination_reason": "manual_stop", "specimen_outcome": "not_assessed"}
+    },
+    {
+      "name": "device_failure",
+      "expected": {"technical_status": "error", "termination_reason": "device_error", "specimen_outcome": "not_assessed"},
+      "downstream_rules_required": true
+    },
+    {
+      "name": "communication_loss",
+      "expected": {"technical_status": "error", "termination_reason": "communication_loss", "specimen_outcome": "not_assessed"},
+      "downstream_rules_required": true
+    },
+    {
+      "name": "storage_failure_data_gap",
+      "expected": {"technical_status": "error", "data_completeness": "gaps_detected", "integrity_conflicts_present": true}
+    },
+    {
+      "name": "environment_deviation_confirmation",
+      "expected": {"operator_confirmation_present": true, "actor_present": true, "reason_present": true, "run_validity": "valid"}
+    },
+    {
+      "name": "non_synchronous_xyz_rpm_fallback",
+      "expected": {"axis_synchrony": "non_synchronous", "rpm_fallback_active": true, "per_axis_timestamps_distinct": true}
+    },
+    {
+      "name": "diagnostic_partial",
+      "expected": {"package_kind": "diagnostic_partial", "data_completeness": "partial", "partial_reasons": ["run_not_terminal", "pending_durable_facts"]},
+      "downstream_rules_required": true
+    },
+    {
+      "name": "exact_methodical_rounding",
+      "expected": {"required_cycles_exact": "1500.3", "target_cycles": 1501, "rounding_policy": "ceiling", "required_steady_duration_s_exact": "60.012", "target_steady_duration_s": "60.04"}
+    },
+    {
+      "name": "shared_specimen_pmn_rpt_rbd",
+      "expected": {"run_count": 3, "modes": ["pmn", "rpt", "rbd"], "distinct_specimen_id_count": 1}
+    },
+    {
+      "name": "same_marking_distinct_specimens",
+      "expected": {"same_wheel_identifier": true, "distinct_specimen_id_count": 2}
+    },
+    {
+      "name": "measurement_retained_after_attempt_rejection",
+      "expected": {"primary_measurement_row_retained": true, "attempt_disposition": "rejected", "primary_measurement_rewritten": false, "accepted_projection_excludes_measurement": true}
+    },
+    {
+      "name": "duplicate_import_key",
+      "expected": {"idempotency_key_fields": ["package_id", "export_revision", "outer_package_sha256"], "same_key_second_import": "no_op", "same_package_revision_different_outer_sha": "integrity_conflict"}
+    }
+  ],
+  "non_package_test_expectations": [
+    {
+      "name": "incompatible_prerelease_sqlite_rejected_before_export",
+      "expected": {"package_created": false, "database_modified": false, "migration_attempted": false}
+    }
+  ]
+}

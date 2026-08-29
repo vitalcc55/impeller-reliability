@@ -1,0 +1,46 @@
+{
+  "schema_version": "r130sh.measurement.v1",
+  "measurement_id": "019d3c80-3d21-7a65-8e5a-555555555555",
+  "run_id": "019d3c80-3d21-7a65-8e5a-222222222222",
+  "measurement_sequence": 42,
+  "attempt_id": "019d3c80-3d21-7a65-8e5a-666666666666",
+  "segment_id": "019d3c80-3d21-7a65-8e5a-777777777777",
+  "sampled_at_utc": "2026-08-26T12:00:08.400Z",
+  "clock_epoch_id": "019d3c80-3d21-7a65-8e5a-888888888888",
+  "epoch_monotonic_elapsed_s": "8.4",
+  "run_elapsed_s": "8.4",
+  "attempt_elapsed_s": "8.4",
+  "segment_elapsed_s": "8.4",
+  "phase": "steady",
+  "attempt_disposition": "active",
+  "segment_disposition": "included",
+  "axis_synchrony": "non_synchronous",
+  "vibration_max_axis_mm_s": "3.1",
+  "active_vibration_criterion_id": "absolute_steady",
+  "active_vibration_criterion_role": "steady",
+  "rpm": {
+    "plan": "1500",
+    "fact": "1498.5",
+    "quality": "ok",
+    "source": "tx01_filtered",
+    "source_timestamp_utc": "2026-08-26T12:00:08.400Z",
+    "fallback_active": false
+  },
+  "vibration": {
+    "x": {
+      "value_mm_s": "2.7",
+      "quality": "ok",
+      "source_timestamp_utc": "2026-08-26T12:00:08.400Z"
+    },
+    "y": {
+      "value_mm_s": "2.2",
+      "quality": "ok",
+      "source_timestamp_utc": "2026-08-26T12:00:08.200Z"
+    },
+    "z": {
+      "value_mm_s": "3.1",
+      "quality": "ok",
+      "source_timestamp_utc": "2026-08-26T12:00:08.000Z"
+    }
+  }
+}

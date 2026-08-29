@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/vitalcc55/R130SH",
+  "commit": "f02f6d954246a5ab6f57d33dac724ce03d7fb841",
+  "snapshotCreatedAtUtc": "2026-08-29T19:36:09.996Z",
+  "statement": "synthetic target examples, not M9a golden packages",
+  "files": [
+    {
+      "snapshotPath": "README.md",
+      "originalPath": "docs/contracts/r130run/v1/README.md",
+      "gitBlobSha": "bf9f5396a1a99e3c9a389d1a6eac0d06d8de9d5e",
+      "sha256": "8f0f8c2b10a9b7e8c0b525d020b5f8f3566e7c0c793561fe8de91e29b5328319"
+    },
+    {
+      "snapshotPath": "manifest.final.example.json",
+      "originalPath": "docs/contracts/r130run/v1/manifest.final.example.json",
+      "gitBlobSha": "a0e2285c3360756076e08d1eb8ea75578d3d3f38",
+      "sha256": "4655435dfcd08e831ed2f7757966e17ff50bc1fd1a8c36b4b0e0a47381b4e540"
+    },
+    {
+      "snapshotPath": "plan.rbd-rounding.example.json",
+      "originalPath": "docs/contracts/r130run/v1/plan.rbd-rounding.example.json",
+      "gitBlobSha": "80bc4e3b277cfc7e55100cdd924051b7dde3ea17",
+      "sha256": "3c8436a92db33cf55f0ea82f79ff889eb99e912a6095d38089fa3cb20e54f650"
+    },
+    {
+      "snapshotPath": "measurement.example.json",
+      "originalPath": "docs/contracts/r130run/v1/measurement.example.json",
+      "gitBlobSha": "fe834e4f65ebfb5bc657c73dee1145053a4ccf0a",
+      "sha256": "225d2231449e37b3a90981a6c518d369fd4910d6dbe58fcee5b6bf03d50c811d"
+    },
+    {
+      "snapshotPath": "accepted-projection.example.json",
+      "originalPath": "docs/contracts/r130run/v1/accepted-projection.example.json",
+      "gitBlobSha": "4f3d4ffffaa1a4d62bbe6919d36e2ebfdb78e15b",
+      "sha256": "b121fd15865e0da95a40a79aea6640f49879104bc2845e47d6b76a72ff70a3a6"
+    },
+    {
+      "snapshotPath": "event.example.json",
+      "originalPath": "docs/contracts/r130run/v1/event.example.json",
+      "gitBlobSha": "4c551ac9d3c5e3223636e857ad20188c6dc3ef90",
+      "sha256": "75a95417206a97f37e4ad5e4b754144b9b922cef72211ecc9ea0f2338043097e"
+    },
+    {
+      "snapshotPath": "inspection.example.json",
+      "originalPath": "docs/contracts/r130run/v1/inspection.example.json",
+      "gitBlobSha": "89cb6022057f7c3ce837b1daa6b9d5aad75ec324",
+      "sha256": "06d3bc874d1729e545780a8fa8dff84aad98b5e079647e22ba70d631589098de"
+    },
+    {
+      "snapshotPath": "provenance.example.json",
+      "originalPath": "docs/contracts/r130run/v1/provenance.example.json",
+      "gitBlobSha": "bc16f167c19b39d7703617c030a6d9c0f2ea67eb",
+      "sha256": "5307a70233e50c0863d055c35ec3d893bf40a7f8a9edce5c28fd572063ffc7e1"
+    },
+    {
+      "snapshotPath": "m09a-expected-fixtures.json",
+      "originalPath": "docs/contracts/r130run/v1/m09a-expected-fixtures.json",
+      "gitBlobSha": "d302ee2a48a9a1469fb1cd7fe644bff138cd9ba4",
+      "sha256": "f1e1e6bdf6f4dbdf687831debeaeaa7f26bb95c4e0c6553fee3aa54e37fbf9a2"
+    }
+  ]
+}

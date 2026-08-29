@@ -1,0 +1,12 @@
+{
+  "schema_version": "r130sh.accepted-projection.v1",
+  "run_id": "019d3c80-3d21-7a65-8e5a-222222222222",
+  "mode": "rbd",
+  "crediting_policy": "rbd.v1",
+  "points": [
+    {
+      "measurement_id": "019d3c80-3d21-7a65-8e5a-555555555555",
+      "accepted_elapsed_s": "8.4"
+    }
+  ]
+}
