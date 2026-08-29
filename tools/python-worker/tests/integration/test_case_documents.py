@@ -886,6 +886,104 @@ def test_attached_file_noop_mutations_return_fresh_integrity_status(tmp_path: Pa
         connection.close()
 
 
+@pytest.mark.parametrize(
+    "operation",
+    ["update", "noop_update", "conflict", "archive", "restore", "entity_archived"],
+)
+def test_metadata_mutations_after_reopen_do_not_hash_attached_file(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    project_path = tmp_path / f"metadata-no-hash-{operation}.irproj"
+    service = _create_project(project_path)
+    service.close()
+    source = tmp_path / f"metadata-no-hash-{operation}.pdf"
+    source.write_bytes(b"%PDF-1.7\nmetadata only\n" + b"x" * COPY_CHUNK_BYTES)
+    connection, repository = _open_repository(project_path)
+    document_id = str(uuid4())
+    try:
+        created = repository.create_with_file(
+            document_id=document_id,
+            values=_document_values(),
+            wheel_model_ids=(),
+            specimen_ids=(),
+            source_path=source,
+            deadline=None,
+        )
+        current_revision = created.record_revision
+        if operation in {"restore", "entity_archived"}:
+            archived = repository.set_archived(
+                document_id=document_id,
+                expected_revision=current_revision,
+                archived=True,
+                deadline=None,
+            )
+            current_revision = archived.record_revision
+    finally:
+        connection.close()
+
+    connection, repository = _open_repository(project_path)
+    event_count_before = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM project_audit_events WHERE event_type LIKE 'case_document.%'",
+        ).fetchone()[0]
+    )
+
+    def unexpected_sha256(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("metadata mutations must not hash managed files")
+
+    try:
+        with patch(
+            "impeller_reliability.persistence.case_documents.hashlib.sha256",
+            side_effect=unexpected_sha256,
+        ):
+            if operation in {"update", "noop_update", "conflict", "entity_archived"}:
+                expected_revision = 0 if operation == "conflict" else current_revision
+                values = {**_document_values(), "notes": "Metadata changed"} if operation == "update" else _document_values()
+                if operation in {"conflict", "entity_archived"}:
+                    with pytest.raises(ProjectOperationError) as raised:
+                        repository.update(
+                            document_id=document_id,
+                            expected_revision=expected_revision,
+                            values=values,
+                            wheel_model_ids=(),
+                            specimen_ids=(),
+                            deadline=None,
+                        )
+                    assert raised.value.code == ("revision_conflict" if operation == "conflict" else "entity_archived")
+                    result = None
+                else:
+                    result = repository.update(
+                        document_id=document_id,
+                        expected_revision=expected_revision,
+                        values=values,
+                        wheel_model_ids=(),
+                        specimen_ids=(),
+                        deadline=None,
+                    )
+            else:
+                result = repository.set_archived(
+                    document_id=document_id,
+                    expected_revision=current_revision,
+                    archived=operation == "archive",
+                    deadline=None,
+                )
+
+        event_count_after = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM project_audit_events WHERE event_type LIKE 'case_document.%'",
+            ).fetchone()[0]
+        )
+        if result is None:
+            assert event_count_after == event_count_before
+        else:
+            assert result.integrity_status == "verification_error"
+            expected_increment = 0 if operation == "noop_update" else 1
+            assert event_count_after == event_count_before + expected_increment
+    finally:
+        connection.close()
+
+
 def test_project_reopens_when_registered_document_file_is_missing(tmp_path: Path) -> None:
     project_path = tmp_path / "reopen-missing.irproj"
     service = _create_project(project_path)

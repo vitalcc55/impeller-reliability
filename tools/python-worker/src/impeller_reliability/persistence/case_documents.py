@@ -644,11 +644,6 @@ class CaseDocumentRepository:
         specimen_ids = _normalize_ids(specimen_ids)
         self._require_targets(wheel_ids, specimen_ids)
         current = self._require(document_id, verify_file=False, deadline=deadline)
-        if current.file is not None and current.integrity_status == "verification_error":
-            current = _with_integrity(
-                current,
-                self._integrity_status(current.case_document_id, current.file, deadline),
-            )
         if current.archived_at_utc is not None:
             raise ProjectOperationError("entity_archived", "Архивный документ нельзя изменять.")
         if expected_revision != current.record_revision:
@@ -665,7 +660,7 @@ class CaseDocumentRepository:
         }
         changes = _changes(before, after)
         if not changes:
-            return self.get(current.case_document_id, deadline)
+            return current
 
         now = audit_now(self._connection)
         next_revision = current.record_revision + 1
@@ -722,15 +717,10 @@ class CaseDocumentRepository:
         deadline: RequestDeadline | None,
     ) -> CaseDocument:
         current = self._require(document_id, verify_file=False, deadline=deadline)
-        if current.file is not None and current.integrity_status == "verification_error":
-            current = _with_integrity(
-                current,
-                self._integrity_status(current.case_document_id, current.file, deadline),
-            )
         if expected_revision != current.record_revision:
             raise _revision_conflict(expected_revision, current.record_revision)
         if archived == (current.archived_at_utc is not None):
-            return self.get(current.case_document_id, deadline)
+            return current
         now = audit_now(self._connection)
         archived_at = now if archived else None
         next_revision = current.record_revision + 1

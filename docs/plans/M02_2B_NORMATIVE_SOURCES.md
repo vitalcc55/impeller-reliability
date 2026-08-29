@@ -208,7 +208,7 @@ modified
 verification_error
 ```
 
-`get` и explicit `verifyFile` вычисляют статус конкретного документа с bounded streaming verification; list не хеширует весь каталог. Дешёвая presence-проверка всегда заново выполняет `lstat`, проверяет containment, ordinary/non-reparse type и размер. Ранее подтверждённый hash-статус используется только при совпадении registry snapshot и текущей физической сигнатуры `(size, mtime_ns)` с полной проверкой; удаление, замена, изменение размера или времени модификации немедленно инвалидируют `verified`. Verify не меняет revision и не пишет audit. Missing/modified не переписывает сохранённый hash, не удаляет файл и не считается корректным доказательным источником.
+`get` и explicit `verifyFile` вычисляют статус конкретного документа с bounded streaming verification; list не хеширует весь каталог. Дешёвая presence-проверка всегда заново выполняет `lstat`, проверяет containment, ordinary/non-reparse type и размер. Ранее подтверждённый hash-статус используется только при совпадении registry snapshot и текущей физической сигнатуры `(size, mtime_ns)` с полной проверкой; удаление, замена, изменение размера или времени модификации немедленно инвалидируют `verified`. Metadata update/archive/restore остаются presence-only и никогда не запускают полный SHA-256 под коротким stateful deadline: при пустом cache они честно возвращают `verification_error` до явного `get`/`verifyFile`/`openFile`. Verify не меняет revision и не пишет audit. Missing/modified не переписывает сохранённый hash, не удаляет файл и не считается корректным доказательным источником.
 
 `resolveFile` принимает только `caseDocumentId`, читает relative path из Python-owned registry, проверяет POSIX grammar, containment внутри `assets/documents`, regular/non-reparse file, size и SHA-256. Только verified result возвращает абсолютный managed path внутреннему Main handler. Main вызывает `shell.openPath`; Renderer получает только typed opened/error result, никогда path.
 
@@ -358,6 +358,7 @@ Security controls M02.2B:
 - crash staging/final orphan recovery contract;
 - missing/modified while project remains open;
 - invalidation cached `verified` после delete, same-size rewrite, reparse и close/reopen без повторного bulk SHA-256 неизменённых файлов;
+- changed/no-op/conflict/update/archive/restore после reopen не выполняют SHA-256 под коротким stateful deadline и сохраняют revision/audit postconditions;
 - resolve containment/reparse and close/reopen persistence.
 
 ### TypeScript
