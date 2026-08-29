@@ -96,7 +96,7 @@ def test_rejects_unsafe_package_paths(tmp_path: Path, unsafe_name: str, expected
     assert "\\" not in report.findings[0].location
 
 
-@pytest.mark.parametrize("unsafe_name", ["./entry.json", "folder//entry.json", ".", "\ufeffentry.json"])
+@pytest.mark.parametrize("unsafe_name", ["./entry.json", "folder//entry.json", ".", "\ufeffentry.json", "e\u0301.json"])
 def test_rejects_lexical_path_aliases(tmp_path: Path, unsafe_name: str) -> None:
     package = build_synthetic_r130run(
         tmp_path / "lexical-alias.r130run",
@@ -119,6 +119,7 @@ def test_rejects_windows_unsafe_path_segments(tmp_path: Path, unsafe_name: str) 
     report = RunPackageValidator().validate(package, _control())
 
     assert report.findings[0].code == "path_windows_unsafe"
+    assert report.findings[0].location == "archive.entry_name"
 
 
 def test_rejects_case_insensitive_name_collisions(tmp_path: Path) -> None:

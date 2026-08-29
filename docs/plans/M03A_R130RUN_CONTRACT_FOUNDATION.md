@@ -4,7 +4,7 @@
 
 Инженер выбирает candidate `.r130run` в системном диалоге → Electron Main разрешает один конкретный ordinary file → Python worker запускает одну ограниченную по ресурсам read-only job → пакет потоково проверяется без извлечения → Renderer показывает ход, contract provenance, structural/semantic verdict и ограниченный список findings.
 
-M03A ничего не импортирует, не меняет `.irproj`, `project.sqlite`, manifest, assets, revisions или audit и не определяет пригодность результата для расчётов. Результат job существует только в памяти worker и является заменяемой диагностикой. `r130sh_source`, import receipts, TestCampaign, ImportedTestRun, source/enrichment resolution, AnalysisInputSnapshot и CalculationSnapshot относятся к M03B/M04 и не создаются. Project schema остаётся чистой pre-release v1; migration отсутствует.
+M03A ничего не импортирует, не меняет `.irproj`, `project.sqlite`, manifest, assets, revisions или audit и не определяет пригодность результата для расчётов. Job существует только в памяти worker, а Renderer держит заменяемую transient-копию snapshot/report для отображения; persisted evidence не создаётся. `r130sh_source`, import receipts, TestCampaign, ImportedTestRun, source/enrichment resolution, AnalysisInputSnapshot и CalculationSnapshot относятся к M03B/M04 и не создаются. Project schema остаётся чистой pre-release v1; M03A не добавляет и не запускает новую forward migration или import/source tables.
 
 ## Владение контрактом и snapshot
 
@@ -57,7 +57,7 @@ Manifest проверяет:
 - producer name/version/build/commit;
 - уникальный нормализованный inventory.
 
-Worker независимо вычисляет `outerPackageSha256`. Будущий idempotency tuple `package_id + export_revision + outerPackageSha256` только отображается; receipt/deduplication не создаются.
+Worker независимо вычисляет `outerPackageSha256`. Компоненты будущего idempotency tuple `package_id + export_revision + outerPackageSha256` уже отображаются в M03A report, но не сохраняются как receipt и не запускают deduplication/import.
 
 Frozen final core: `manifest.json`, `plan/original.json`, `plan/effective.json`, `plan/amendments.jsonl`, `run-summary.json`, `environment.json`, `provenance.json`, `events.jsonl`, `measurements.csv`, `measurement-descriptors.json`, `accepted-summary.json`, `vibration-baseline.json`, `inspections.json`, `attachments/index.json`, `checksums.sha256`. Допустимые optional prefixes из upstream target — `attachments/` и `protocol/`, но их index/release schemas пока `not_available`; произвольные undeclared entries запрещены. Для `final` отсутствие core path — semantic failure. Для `diagnostic_partial` точные mandatory/partial-reasons rules ещё не заморожены: integrity заявленного inventory проверяется полностью, а completeness получает `contract_gap` и semantic `partial`, не вымышленную acceptance rule.
 
@@ -119,14 +119,14 @@ Worker operations:
 
 Renderer-facing API:
 
-- `runPackageValidation.selectAndStart({ jobId })`;
+- `runPackageValidation.selectAndStart({ jobId, replaceJobId? })`;
 - `get(jobId)`;
 - `cancel(jobId)`;
 - `discard(jobId)`.
 
 Operation-specific schemas:
 
-- public `selectAndStart`: `{ jobId: UUIDv4 }`; internal Main→worker `start`: `{ jobId, sourcePath, validationBudgetMs }`, где `sourcePath` отсутствует во всех public DTO;
+- public `selectAndStart`: `{ jobId: UUIDv4, replaceJobId?: UUIDv4 }`; internal Main→worker `start`: `{ jobId, replaceJobId?, sourcePath, validationBudgetMs }`, где `sourcePath` отсутствует во всех public DTO. `replaceJobId` разрешает атомарно заменить только указанную terminal job после успешного выбора файла; active job сохраняется;
 - `get/cancel/discard`: `{ jobId: UUIDv4 }`;
 - `start/get/cancel`: `RunPackageValidationJobSnapshot`; `discard`: `{ jobId, discarded: true }`;
 - snapshot: identity/state/phase/progress/timestamps и ровно одно из terminal `report`/`typedError` по state invariant;
@@ -188,7 +188,7 @@ Packaged: worker onedir; WinUnpacked/Portable validation smoke with downstream s
 5. One-job lifecycle typed, idempotent и отзывчив для get/cancel/discard.
 6. Main/Preload/Renderer не раскрывают path; dialog outcomes typed.
 7. Report не содержит import/readiness claim и остаётся меньше 1 MiB.
-8. Project schema остаётся v1; migration/table/receipt/project write отсутствуют; global job не создаёт второго persisted owner.
+8. Project schema остаётся v1; M03A не добавляет/не запускает новую forward migration и не создаёт import/source table, receipt или project write; global job не создаёт второго persisted owner.
 9. Diagnostics UI доступен с клавиатуры, корректен на 640 px и честно сообщает ограничения.
 10. Owner-документы, четыре architecture maps, traceability и security/testing contracts синхронизированы без нового ADR/status layer: Python владеет execution/cancellation state, Renderer — только typed polling/read model, Main — dialog/path/process lifecycle; `packages/application` не получает premature second job machine.
 11. Full local packaging gate и GitHub Quality зелёные; подтверждённые P1/P2 review закрыты.

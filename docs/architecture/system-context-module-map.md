@@ -7,12 +7,12 @@ direction: down
 
 Engineer: "Инженер / специалист лаборатории"
 R130SH: "R130SH — отдельная программа стенда"
-RunPackage: "R130SH result package (future M03)"
+RunPackage: "candidate .r130run (M03A read-only validation)"
 
 Desktop: "apps/desktop" {
   Renderer: "React Renderer: формы, таблицы, графики, browser preview"
   Preload: "Sandboxed Preload: narrow commands + status event"
-  Main: "Electron Main: windows, lifecycle/restart, app protocol, CSP/fuses, PDF"
+  Main: "Electron Main: windows, dialogs, lifecycle/restart, app protocol, CSP/fuses"
 }
 
 TypeScript: "TypeScript packages" {
@@ -25,10 +25,10 @@ Worker: "tools/python-worker" {
   Protocol: "operation-specific Pydantic JSONL envelopes"
   Domain: "analyst enrichment: dossier + case documents; future calculations"
   Persistence: "sqlite3, migrations, repositories"
-  Integration: "Future R130SH result import"
+  Integration: "R130SH contract snapshot + read-only validator/job; future import"
 }
 
-Project: "*.irproj — M02.1 container" {
+Project: "*.irproj — schema v1 project container" {
   Manifest: "project-manifest.json: container identity"
   Database: "project.sqlite: schema v1 metadata, analyst enrichment, file registry, audit" { shape: cylinder }
   Lock: ".project.lock: OS-held session lock"
@@ -54,6 +54,8 @@ TypeScript.Reporting -> Project.Exports
 
 R130SH -> RunPackage
 RunPackage -> Desktop.Main
+Desktop.Main -> Worker.Protocol: "approved path over typed JSONL"
+Worker.Protocol -> Worker.Integration: "validate job; no extraction"
 ```
 
-Первая публикуемая schema v1 содержит Project metadata/audit и редактируемые CustomerProfile/WheelModel/Specimen/CaseDocument. Main владеет file dialog и external open; Python повторно проверяет источник, создаёт immutable managed copy и единолично владеет SQLite/file registry. Renderer не получает абсолютный путь. R130SH остаётся владельцем будущей package schema, первичных фактов и `ImportedRunPlanSnapshot`; importer, `TestCampaign` и расчётные модули остаются будущими границами, а не заглушками.
+Первая публикуемая schema v1 содержит Project metadata/audit и редактируемые CustomerProfile/WheelModel/Specimen/CaseDocument. Main владеет file dialog и external open; Python единолично владеет SQLite/file registry. M03A Integration читает candidate `.r130run` отдельно от ProjectSession, не извлекает его и возвращает transient report; стрелки к Project storage у этого потока нет. Renderer не получает абсолютный путь. R130SH остаётся владельцем package schema, первичных фактов и будущего `ImportedRunPlanSnapshot`; importer, `TestCampaign` и расчётные модули остаются будущими границами, а не заглушками.

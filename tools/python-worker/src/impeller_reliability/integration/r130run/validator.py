@@ -842,8 +842,7 @@ def _validate_package_path(value: str, flags: int) -> str:
     if path.is_absolute() or any(part in {"", ".", ".."} for part in raw_parts) or str(path) != value:
         raise _invalid("path_traversal", value, "ZIP path выходит за package root.", "m03a-safety-profile")
     for part in path.parts:
-        stem = part.split(".", 1)[0].casefold()
-        if ":" in part or part.endswith((".", " ")) or stem in {"con", "prn", "aux", "nul", *(f"com{index}" for index in range(1, 10)), *(f"lpt{index}" for index in range(1, 10))}:
+        if _windows_unsafe_segment(part):
             raise _invalid("path_windows_unsafe", value, "ZIP path несовместим с безопасным Windows profile.", "m03a-safety-profile")
     return value
 
@@ -1202,6 +1201,7 @@ def _finding(code: str, severity: FindingSeverity, location: str, message: str, 
 
 
 def _safe_finding_location(value: str) -> str:
+    parts = value.split("/")
     if (
         value.startswith(("/", "\\"))
         or "\\" in value
@@ -1209,10 +1209,17 @@ def _safe_finding_location(value: str) -> str:
         or "\x00" in value
         or any(ord(character) < 32 or ord(character) == 127 for character in value)
         or (len(value) >= 2 and value[1] == ":")
-        or any(part in {"", ".", ".."} for part in value.split("/"))
+        or value != unicodedata.normalize("NFC", value)
+        or any(part in {"", ".", ".."} for part in parts)
+        or any(_windows_unsafe_segment(part) for part in parts)
     ):
         return "archive.entry_name"
     return value
+
+
+def _windows_unsafe_segment(value: str) -> bool:
+    stem = value.split(".", 1)[0].casefold()
+    return ":" in value or value.endswith((".", " ")) or stem in {"con", "prn", "aux", "nul", *(f"com{index}" for index in range(1, 10)), *(f"lpt{index}" for index in range(1, 10))}
 
 
 def _source_uuid(value: object, location: str) -> str:

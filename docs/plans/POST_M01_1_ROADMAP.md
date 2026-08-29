@@ -18,7 +18,7 @@ M02.2B одновременно закрепляет только текущий
 
 ## M03A/M03B — входной результат R130SH
 
-M03A создаёт только contract/validation foundation по frozen synthetic examples: read-only bounded validation не меняет проект и не считается импортом или допуском к расчёту. M03B заблокирован до R130SH M9a independent golden matrix; только он реализует полный импорт: staging → immutable `r130sh_source` → source/enrichment resolution → повторное открытие. Прямое чтение SQLite R130SH, исходящий план и управление стендом запрещены. Общий job/error/provenance UX начинается с реального длительного validation-сценария M03A и расширяется для изменяющего проект импорта только в M03B.
+M03A создаёт только contract/validation foundation по frozen synthetic examples: pinned offline snapshot, read-only bounded validation job и diagnostics report не меняют Project schema v1 и не считаются импортом или допуском к расчёту. M03A не добавляет и не запускает новую forward migration; существующие clean schema v1 и initial ledger не меняются. Staging/assets, `r130sh_source`, import receipt и compatibility tables не создаются. M03B заблокирован до R130SH M9a independent golden matrix; только он реализует полный импорт: staging → immutable `r130sh_source` → source/enrichment resolution → повторное открытие. Прямое чтение SQLite R130SH, исходящий план и управление стендом запрещены. Общий job/error/provenance UX начинается с реального длительного validation-сценария M03A и расширяется для изменяющего Project импорта только в M03B.
 
 ## M04 — расчёты испытаний
 
