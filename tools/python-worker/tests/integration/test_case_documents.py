@@ -3,9 +3,11 @@ from __future__ import annotations
 from contextlib import closing
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
+from unittest.mock import patch
 from uuid import uuid4
 import zipfile
 
@@ -410,6 +412,272 @@ def test_verify_and_resolve_report_missing_and_modified_without_changing_registr
         connection.close()
 
 
+@pytest.mark.parametrize("attachment", ["create_with_file", "attach_file"])
+@pytest.mark.parametrize("operation", ["list", "update", "archive", "restore"])
+def test_cached_verified_is_invalidated_immediately_when_managed_file_is_deleted(
+    tmp_path: Path,
+    attachment: str,
+    operation: str,
+) -> None:
+    project_path = tmp_path / f"cached-delete-{attachment}-{operation}.irproj"
+    service = _create_project(project_path)
+    service.close()
+    source = tmp_path / f"cached-delete-{attachment}-{operation}.pdf"
+    source.write_bytes(b"%PDF-1.7\ncached delete\n")
+    connection, repository = _open_repository(project_path)
+    document_id = str(uuid4())
+    try:
+        if attachment == "create_with_file":
+            created = repository.create_with_file(
+                document_id=document_id,
+                values=_document_values(),
+                wheel_model_ids=(),
+                specimen_ids=(),
+                source_path=source,
+                deadline=None,
+            )
+        else:
+            repository.create(
+                document_id=document_id,
+                values=_document_values(),
+                wheel_model_ids=(),
+                specimen_ids=(),
+                deadline=None,
+            )
+            created = repository.attach_file(
+                document_id=document_id,
+                expected_revision=1,
+                source_path=source,
+                deadline=None,
+            )
+        assert created.file is not None
+        managed = project_path.joinpath(*created.file.stored_relative_path.split("/"))
+        expected_revision = created.record_revision
+        if operation == "restore":
+            archived = repository.set_archived(
+                document_id=document_id,
+                expected_revision=expected_revision,
+                archived=True,
+                deadline=None,
+            )
+            assert archived.integrity_status == "verified"
+            expected_revision = archived.record_revision
+        managed.unlink()
+
+        if operation == "list":
+            result = repository.list(include_archived=False, document_kind=None)[0]
+        elif operation == "update":
+            result = repository.update(
+                document_id=document_id,
+                expected_revision=expected_revision,
+                values={**_document_values(), "notes": "Changed after deletion"},
+                wheel_model_ids=(),
+                specimen_ids=(),
+                deadline=None,
+            )
+        elif operation == "archive":
+            result = repository.set_archived(
+                document_id=document_id,
+                expected_revision=expected_revision,
+                archived=True,
+                deadline=None,
+            )
+        else:
+            result = repository.set_archived(
+                document_id=document_id,
+                expected_revision=expected_revision,
+                archived=False,
+                deadline=None,
+            )
+
+        assert result.integrity_status == "missing"
+        assert "case_document_file_missing" in result.warnings
+        assert repository.get(document_id).integrity_status == "missing"
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("attachment", ["create_with_file", "attach_file"])
+@pytest.mark.parametrize("operation", ["list", "update", "archive", "restore"])
+def test_same_size_rewrite_invalidates_verified_presence_before_full_hash(
+    tmp_path: Path,
+    attachment: str,
+    operation: str,
+) -> None:
+    project_path = tmp_path / f"cached-same-size-{attachment}-{operation}.irproj"
+    service = _create_project(project_path)
+    service.close()
+    source = tmp_path / f"cached-same-size-{attachment}-{operation}.pdf"
+    source.write_bytes(b"%PDF-1.7\nAAAA\n")
+    connection, repository = _open_repository(project_path)
+    document_id = str(uuid4())
+    try:
+        if attachment == "create_with_file":
+            created = repository.create_with_file(
+                document_id=document_id,
+                values=_document_values(),
+                wheel_model_ids=(),
+                specimen_ids=(),
+                source_path=source,
+                deadline=None,
+            )
+        else:
+            repository.create(
+                document_id=document_id,
+                values=_document_values(),
+                wheel_model_ids=(),
+                specimen_ids=(),
+                deadline=None,
+            )
+            created = repository.attach_file(
+                document_id=document_id,
+                expected_revision=1,
+                source_path=source,
+                deadline=None,
+            )
+        assert created.file is not None
+        managed = project_path.joinpath(*created.file.stored_relative_path.split("/"))
+        expected_revision = created.record_revision
+        if operation == "restore":
+            archived = repository.set_archived(
+                document_id=document_id,
+                expected_revision=expected_revision,
+                archived=True,
+                deadline=None,
+            )
+            expected_revision = archived.record_revision
+        initial = managed.stat()
+        managed.write_bytes(b"%PDF-1.7\nBBBB\n")
+        os.utime(managed, ns=(initial.st_atime_ns, initial.st_mtime_ns + 2_000_000_000))
+
+        if operation == "list":
+            result = repository.list(include_archived=False, document_kind=None)[0]
+        elif operation == "update":
+            result = repository.update(
+                document_id=document_id,
+                expected_revision=expected_revision,
+                values={**_document_values(), "notes": "Changed after rewrite"},
+                wheel_model_ids=(),
+                specimen_ids=(),
+                deadline=None,
+            )
+        elif operation == "archive":
+            result = repository.set_archived(
+                document_id=document_id,
+                expected_revision=expected_revision,
+                archived=True,
+                deadline=None,
+            )
+        else:
+            result = repository.set_archived(
+                document_id=document_id,
+                expected_revision=expected_revision,
+                archived=False,
+                deadline=None,
+            )
+
+        assert result.integrity_status != "verified"
+        assert repository.verify_file(document_id, deadline=None).integrity_status == "modified"
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("operation", ["create_with_file", "attach_file"])
+def test_ambiguous_rename_failure_cleans_operation_owned_final_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    project_path = tmp_path / f"ambiguous-rename-{operation}.irproj"
+    service = _create_project(project_path)
+    service.close()
+    source = tmp_path / f"ambiguous-rename-{operation}.pdf"
+    source.write_bytes(b"%PDF-1.7\nrename cleanup\n")
+    connection, repository = _open_repository(project_path)
+    document_id = str(uuid4())
+    if operation == "attach_file":
+        repository.create(
+            document_id=document_id,
+            values=_document_values(),
+            wheel_model_ids=(),
+            specimen_ids=(),
+            deadline=None,
+        )
+
+    original_rename = Path.rename
+
+    def rename_then_fail(path: Path, target: Path) -> Path:
+        renamed = original_rename(path, target)
+        if path.suffix == ".part":
+            raise OSError("injected ambiguous rename failure")
+        return renamed
+
+    monkeypatch.setattr(Path, "rename", rename_then_fail)
+    try:
+        with pytest.raises(ProjectOperationError) as raised:
+            if operation == "create_with_file":
+                repository.create_with_file(
+                    document_id=document_id,
+                    values=_document_values(),
+                    wheel_model_ids=(),
+                    specimen_ids=(),
+                    source_path=source,
+                    deadline=None,
+                )
+            else:
+                repository.attach_file(
+                    document_id=document_id,
+                    expected_revision=1,
+                    source_path=source,
+                    deadline=None,
+                )
+        assert raised.value.code == "storage_error"
+        document_row = connection.execute(
+            "SELECT 1 FROM case_documents WHERE case_document_id=?",
+            (document_id,),
+        ).fetchone()
+        file_row = connection.execute(
+            "SELECT 1 FROM case_document_files WHERE case_document_id=?",
+            (document_id,),
+        ).fetchone()
+        assert (document_row is None) == (operation == "create_with_file")
+        assert file_row is None
+        assert not list((project_path / "assets" / "documents").rglob("*.part"))
+        assert not list((project_path / "assets" / "documents").rglob("*.pdf"))
+    finally:
+        connection.close()
+
+
+def test_unchanged_verified_file_list_does_not_repeat_sha256(tmp_path: Path) -> None:
+    project_path = tmp_path / "cached-unchanged.irproj"
+    service = _create_project(project_path)
+    service.close()
+    source = tmp_path / "cached-unchanged.pdf"
+    source.write_bytes(b"%PDF-1.7\nunchanged\n")
+    connection, repository = _open_repository(project_path)
+    document_id = str(uuid4())
+    try:
+        repository.create_with_file(
+            document_id=document_id,
+            values=_document_values(),
+            wheel_model_ids=(),
+            specimen_ids=(),
+            source_path=source,
+            deadline=None,
+        )
+
+        def unexpected_sha256(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("list must not repeat full SHA-256 verification")
+
+        with patch(
+            "impeller_reliability.persistence.case_documents.hashlib.sha256",
+            side_effect=unexpected_sha256,
+        ):
+            assert repository.list(include_archived=False, document_kind=None)[0].integrity_status == "verified"
+    finally:
+        connection.close()
+
+
 @pytest.mark.parametrize(
     ("name", "content", "code"),
     [
@@ -649,6 +917,12 @@ def test_project_reopens_when_registered_document_file_is_missing(tmp_path: Path
             ).schema_version
             == 1
         )
+        document = reopened.list_case_documents(
+            include_archived=False,
+            document_kind=None,
+        )[0]
+        assert document.integrity_status == "missing"
+        assert "case_document_file_missing" in document.warnings
     finally:
         reopened.close()
 
@@ -1233,6 +1507,8 @@ def test_resolve_rejects_reparse_document_directory(tmp_path: Path) -> None:
             check=True,
             capture_output=True,
         )
+        listed = repository.list(include_archived=False, document_kind=None)[0]
+        assert listed.integrity_status == "verification_error"
         with pytest.raises(ProjectOperationError) as raised:
             repository.resolve_file(document.case_document_id, deadline=None)
         assert raised.value.code == "file_integrity_mismatch"

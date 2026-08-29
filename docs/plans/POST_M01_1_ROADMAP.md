@@ -12,13 +12,13 @@ M02.2B одновременно закрепляет только текущий
 
 Одновременно расширяются существующие owners требований, domain model, glossary и traceability. Новые параллельные спецификации не создаются.
 
-## R130SH M0/M1 — frozen vocabulary и examples
+## R130SH baseline и frozen examples
 
-R130SH владеет package schema и замораживает vocabulary/examples. До этого Impeller Reliability не объявляет production importer готовым.
+Проверенный baseline `vitalcc55/R130SH@f02f6d954246a5ab6f57d33dac724ce03d7fb841`: M0, M1, M2, M3, M4a и M5a завершены, следующий upstream-этап — M4b. R130SH владеет package schema и frozen target examples; examples синтетические и не являются M9a golden packages. Exporter M8 и независимые M9a goldens отсутствуют, поэтому Impeller Reliability не объявляет production importer готовым.
 
 ## M03A/M03B — входной результат R130SH
 
-M03A создаёт contract/import foundation по frozen examples. M03B после R130SH M9a independent golden matrix реализует полный импорт: staging → immutable `r130sh_source` → source/enrichment resolution → повторное открытие. Прямое чтение SQLite R130SH, исходящий план и управление стендом запрещены. Общий job/error/provenance UX появляется вместе с этим реальным длительным файловым сценарием.
+M03A создаёт только contract/validation foundation по frozen synthetic examples: read-only bounded validation не меняет проект и не считается импортом или допуском к расчёту. M03B заблокирован до R130SH M9a independent golden matrix; только он реализует полный импорт: staging → immutable `r130sh_source` → source/enrichment resolution → повторное открытие. Прямое чтение SQLite R130SH, исходящий план и управление стендом запрещены. Общий job/error/provenance UX начинается с реального длительного validation-сценария M03A и расширяется для изменяющего проект импорта только в M03B.
 
 ## M04 — расчёты испытаний
 
@@ -44,7 +44,7 @@ TypeScript 7/Vite 8 переходят только цельной совмес�
 
 1. `codex/m02-2a-analyst-dossier`
 2. M02.2B normative sources
-3. M03A import contract foundation после frozen R130SH examples
+3. M03A run-package contract validation foundation после frozen R130SH examples
 4. M03B production importer после R130SH M9a golden packages
 5. M04 RBD/RPT/PMN analysis
 

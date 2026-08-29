@@ -11,8 +11,8 @@ import {
   type SaveDialogOptions,
 } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, writeFile } from 'node:fs/promises';
-import { dirname, extname, join, resolve, sep } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
@@ -47,8 +47,14 @@ import {
 } from '@impeller-reliability/contracts';
 
 import { IPC_CHANNELS } from './channels';
+import {
+  runCaseDocumentAttachFile,
+  runCaseDocumentCreateWithFile,
+  selectCaseDocumentSource,
+} from './case-document-source';
 import { JsonlLogger } from './logging';
 import { RecentProjectsStore } from './recent-projects';
+import { showSystemDialog } from './system-dialog';
 import { WorkerClient, type WorkerLifecycleEvent } from './worker-client';
 import { resolveWorkerLocation } from './worker-location';
 
@@ -64,18 +70,6 @@ let closeDeliveryTimer: ReturnType<typeof setTimeout> | null = null;
 let activeProjectAuthorization: { readonly path: string; readonly projectId: string } | null = null;
 const applicationInstanceId = randomUUID();
 const RENDERER_CLOSE_ACK_TIMEOUT_MS = 2_000;
-const MAX_CASE_DOCUMENT_BYTES = 100 * 1024 * 1024;
-const CASE_DOCUMENT_EXTENSIONS = [
-  'pdf',
-  'docx',
-  'xlsx',
-  'csv',
-  'json',
-  'txt',
-  'png',
-  'jpg',
-  'jpeg',
-] as const;
 
 declare const __APPLICATION_VERSION__: string;
 
@@ -220,10 +214,13 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       filters: [{ name: 'Проект Impeller Reliability', extensions: ['irproj'] }],
       properties: ['createDirectory', 'showOverwriteConfirmation'],
     };
-    const selection =
+    const dialogResult = await showSystemDialog(() =>
       mainWindow === null
-        ? await dialog.showSaveDialog(options)
-        : await dialog.showSaveDialog(mainWindow, options);
+        ? dialog.showSaveDialog(options)
+        : dialog.showSaveDialog(mainWindow, options),
+    );
+    if (!dialogResult.ok) return { ok: false, error: dialogResult.error };
+    const selection = dialogResult.result;
     if (selection.canceled || selection.filePath === '') return cancelledResult<ProjectOverview>();
     const path = selection.filePath.toLowerCase().endsWith('.irproj')
       ? selection.filePath
@@ -240,15 +237,13 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       buttonLabel: 'Открыть проект',
       properties: ['openDirectory'],
     };
-    let selection: OpenDialogReturnValue;
-    try {
-      selection =
-        mainWindow === null
-          ? await dialog.showOpenDialog(options)
-          : await dialog.showOpenDialog(mainWindow, options);
-    } catch {
-      return failureResult('storage_error', 'Системный диалог выбора файла недоступен.');
-    }
+    const dialogResult = await showSystemDialog(() =>
+      mainWindow === null
+        ? dialog.showOpenDialog(options)
+        : dialog.showOpenDialog(mainWindow, options),
+    );
+    if (!dialogResult.ok) return { ok: false, error: dialogResult.error };
+    const selection: OpenDialogReturnValue = dialogResult.result;
     if (selection.canceled || selection.filePaths[0] === undefined) {
       return cancelledResult<ProjectOverview>();
     }
@@ -423,13 +418,13 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
   ipcMain.handle(IPC_CHANNELS.caseDocumentCreateWithFile, async (_event, raw: unknown) => {
     const parsed = caseDocumentCreateCommandSchema.safeParse(raw);
     if (!parsed.success) return validationFailure<CaseDocument>();
-    const selected = await selectCaseDocumentSource();
-    if (!selected.ok) return selected;
-    return runProjectOperation(workerClient, async (client) =>
-      client.request('caseDocument.createWithFile', {
-        ...parsed.data,
-        sourcePath: selected.result,
-      }),
+    return runCaseDocumentCreateWithFile(
+      parsed.data,
+      selectCaseDocumentSourceFromDialog,
+      (payload) =>
+        runProjectOperation(workerClient, async (client) =>
+          client.request('caseDocument.createWithFile', payload),
+        ),
     );
   });
   ipcMain.handle(IPC_CHANNELS.caseDocumentList, (_event, raw: unknown) => {
@@ -456,13 +451,10 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
   ipcMain.handle(IPC_CHANNELS.caseDocumentAttachFile, async (_event, raw: unknown) => {
     const parsed = caseDocumentAttachFileCommandSchema.safeParse(raw);
     if (!parsed.success) return validationFailure<CaseDocument>();
-    const selected = await selectCaseDocumentSource();
-    if (!selected.ok) return selected;
-    return runProjectOperation(workerClient, async (client) =>
-      client.request('caseDocument.attachFile', {
-        ...parsed.data,
-        sourcePath: selected.result,
-      }),
+    return runCaseDocumentAttachFile(parsed.data, selectCaseDocumentSourceFromDialog, (payload) =>
+      runProjectOperation(workerClient, async (client) =>
+        client.request('caseDocument.attachFile', payload),
+      ),
     );
   });
   ipcMain.handle(IPC_CHANNELS.caseDocumentVerifyFile, (_event, raw: unknown) => {
@@ -514,53 +506,15 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
   });
 }
 
-async function selectCaseDocumentSource(): Promise<DesktopResult<string>> {
-  if (automatedDocumentSelectionCancelled()) return cancelledResult<string>();
-  const automatedPath = approvedAutomatedDocumentPath();
-  let selectedPath: string;
-  if (automatedPath !== null) {
-    selectedPath = automatedPath;
-  } else {
-    const options: OpenDialogOptions = {
-      title: 'Выбрать документ аналитического дела',
-      buttonLabel: 'Прикрепить управляемую копию',
-      properties: ['openFile'],
-      filters: [
-        {
-          name: 'Документы дела',
-          extensions: [...CASE_DOCUMENT_EXTENSIONS],
-        },
-      ],
-    };
-    const selection =
+function selectCaseDocumentSourceFromDialog(): Promise<DesktopResult<string>> {
+  return selectCaseDocumentSource({
+    automatedCancelled: automatedDocumentSelectionCancelled(),
+    automatedPath: approvedAutomatedDocumentPath(),
+    showOpenDialog: (options) =>
       mainWindow === null
-        ? await dialog.showOpenDialog(options)
-        : await dialog.showOpenDialog(mainWindow, options);
-    if (selection.canceled || selection.filePaths[0] === undefined) {
-      return cancelledResult<string>();
-    }
-    selectedPath = selection.filePaths[0];
-  }
-
-  const extension = extname(selectedPath).slice(1).toLowerCase();
-  if (!CASE_DOCUMENT_EXTENSIONS.some((allowed) => allowed === extension)) {
-    return failureResult('unsupported_file_type', 'Этот тип файла не поддерживается.');
-  }
-  try {
-    const selectedStat = await lstat(selectedPath);
-    if (!selectedStat.isFile() || selectedStat.isSymbolicLink()) {
-      return failureResult('unsupported_file_type', 'Можно выбрать только обычный файл.');
-    }
-    if (selectedStat.size > MAX_CASE_DOCUMENT_BYTES) {
-      return failureResult('file_too_large', 'Размер файла превышает 100 МиБ.');
-    }
-    if (selectedStat.size <= 0) {
-      return failureResult('unsupported_file_type', 'Пустой файл не поддерживается.');
-    }
-  } catch {
-    return failureResult('storage_error', 'Выбранный файл недоступен.');
-  }
-  return { ok: true, result: resolve(selectedPath) };
+        ? dialog.showOpenDialog(options)
+        : dialog.showOpenDialog(mainWindow, options),
+  });
 }
 
 function approvedAutomatedDocumentPath(): string | null {

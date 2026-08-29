@@ -128,6 +128,20 @@ class _StagedFile:
     sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class _FileSignature:
+    size_bytes: int
+    mtime_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class _IntegrityCacheEntry:
+    registry_sha256: str
+    registry_size_bytes: int
+    file_signature: _FileSignature
+    status: IntegrityStatus
+
+
 def validate_case_document_evidence(
     connection: sqlite3.Connection,
     deadline: RequestDeadline | None = None,
@@ -340,7 +354,7 @@ class CaseDocumentRepository:
     def __init__(self, connection: sqlite3.Connection, project_path: Path) -> None:
         self._connection = connection
         self._project_path = project_path
-        self._integrity_cache: dict[str, tuple[str, int, IntegrityStatus]] = {}
+        self._integrity_cache: dict[str, _IntegrityCacheEntry] = {}
 
     def create(
         self,
@@ -477,7 +491,10 @@ class CaseDocumentRepository:
                         "duplicate_document_content",
                         "Файл с таким содержимым уже зарегистрирован в проекте.",
                     )
-                final_path, relative_path = self._move_staged_to_final(document_id, staged)
+                final_path, relative_path, file_signature = self._move_staged_to_final(
+                    document_id,
+                    staged,
+                )
                 self._connection.execute(
                     """
                     INSERT INTO case_documents (
@@ -546,7 +563,12 @@ class CaseDocumentRepository:
             sha256=staged.sha256,
             attached_at_utc=now,
         )
-        self._remember_integrity(document_id, attached_file, "verified")
+        self._remember_integrity(
+            document_id,
+            attached_file,
+            "verified",
+            file_signature=file_signature,
+        )
         return _build_document_result(
             document_id=document_id,
             normalized=normalized,
@@ -803,7 +825,7 @@ class CaseDocumentRepository:
                         "Файл с таким содержимым уже зарегистрирован в проекте.",
                     )
 
-                final_path, relative_path = self._move_staged_to_final(
+                final_path, relative_path, file_signature = self._move_staged_to_final(
                     current.case_document_id,
                     staged,
                 )
@@ -861,7 +883,12 @@ class CaseDocumentRepository:
             sha256=staged.sha256,
             attached_at_utc=now,
         )
-        self._remember_integrity(current.case_document_id, attached_file, "verified")
+        self._remember_integrity(
+            current.case_document_id,
+            attached_file,
+            "verified",
+            file_signature=file_signature,
+        )
         return _build_document_result(
             document_id=current.case_document_id,
             normalized=_document_values(current),
@@ -1033,18 +1060,20 @@ class CaseDocumentRepository:
         self,
         document_id: str,
         staged: _StagedFile,
-    ) -> tuple[Path, str]:
+    ) -> tuple[Path, str, _FileSignature]:
         document_root = self._managed_root() / document_id
         _ensure_directory(document_root)
         final_path = document_root / f"{staged.sha256}{staged.extension}"
         if final_path.exists() or final_path.is_symlink():
             raise ProjectOperationError("storage_error", "Целевой managed file уже существует.")
         try:
+            file_signature = _file_signature(os.lstat(staged.path))
             staged.path.rename(final_path)
         except OSError as error:
+            _remove_operation_file(final_path)
             raise ProjectOperationError("storage_error", "Managed file не удалось зафиксировать.") from error
         relative_path = PurePosixPath("assets", "documents", document_id, final_path.name).as_posix()
-        return final_path, relative_path
+        return final_path, relative_path, file_signature
 
     def _file_row(self, document_id: str) -> CaseDocumentFile | None:
         row = self._connection.execute(
@@ -1101,19 +1130,43 @@ class CaseDocumentRepository:
             path = self._registered_path(document_id, file)
             file_stat = os.lstat(path)
             if not stat.S_ISREG(file_stat.st_mode) or _is_reparse(file_stat):
-                return self._remember_integrity(document_id, file, "verification_error")
+                return self._remember_integrity(
+                    document_id,
+                    file,
+                    "verification_error",
+                    file_signature=_file_signature(file_stat),
+                )
             if file_stat.st_size != file.size_bytes:
-                return self._remember_integrity(document_id, file, "modified")
+                return self._remember_integrity(
+                    document_id,
+                    file,
+                    "modified",
+                    file_signature=_file_signature(file_stat),
+                )
             digest = hashlib.sha256()
             with path.open("rb") as stream:
+                initial_stat = os.fstat(stream.fileno())
                 while True:
                     _check_deadline(deadline, "case_document_file_verify")
                     chunk = stream.read(COPY_CHUNK_BYTES)
                     if not chunk:
                         break
                     digest.update(chunk)
+                final_stat = os.fstat(stream.fileno())
+            if _file_signature(initial_stat) != _file_signature(final_stat):
+                return self._remember_integrity(
+                    document_id,
+                    file,
+                    "modified",
+                    file_signature=_file_signature(final_stat),
+                )
             status: IntegrityStatus = "verified" if digest.hexdigest() == file.sha256 else "modified"
-            return self._remember_integrity(document_id, file, status)
+            return self._remember_integrity(
+                document_id,
+                file,
+                status,
+                file_signature=_file_signature(final_stat),
+            )
         except FileNotFoundError:
             return self._remember_integrity(document_id, file, "missing")
         except ProjectOperationError as error:
@@ -1128,16 +1181,27 @@ class CaseDocumentRepository:
         document_id: str,
         file: CaseDocumentFile,
     ) -> IntegrityStatus:
-        cached = self._integrity_cache.get(document_id)
-        if cached is not None and cached[:2] == (file.sha256, file.size_bytes):
-            return cached[2]
         try:
             path = self._registered_path(document_id, file)
             file_stat = os.lstat(path)
+            file_signature = _file_signature(file_stat)
             if not stat.S_ISREG(file_stat.st_mode) or _is_reparse(file_stat):
-                return self._remember_integrity(document_id, file, "verification_error")
+                return self._remember_integrity(
+                    document_id,
+                    file,
+                    "verification_error",
+                    file_signature=file_signature,
+                )
             if file_stat.st_size != file.size_bytes:
-                return self._remember_integrity(document_id, file, "modified")
+                return self._remember_integrity(
+                    document_id,
+                    file,
+                    "modified",
+                    file_signature=file_signature,
+                )
+            cached = self._integrity_cache.get(document_id)
+            if cached is not None and cached.registry_sha256 == file.sha256 and cached.registry_size_bytes == file.size_bytes and cached.file_signature == file_signature:
+                return cached.status
             return "verification_error"
         except FileNotFoundError:
             return self._remember_integrity(document_id, file, "missing")
@@ -1149,8 +1213,18 @@ class CaseDocumentRepository:
         document_id: str,
         file: CaseDocumentFile,
         status: IntegrityStatus,
+        *,
+        file_signature: _FileSignature | None = None,
     ) -> IntegrityStatus:
-        self._integrity_cache[document_id] = (file.sha256, file.size_bytes, status)
+        if file_signature is None:
+            self._integrity_cache.pop(document_id, None)
+        else:
+            self._integrity_cache[document_id] = _IntegrityCacheEntry(
+                registry_sha256=file.sha256,
+                registry_size_bytes=file.size_bytes,
+                file_signature=file_signature,
+                status=status,
+            )
         return status
 
     def _require(
@@ -1522,6 +1596,10 @@ def _ensure_directory(path: Path) -> None:
 def _is_reparse(value: os.stat_result) -> bool:
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     return stat.S_ISLNK(value.st_mode) or bool(getattr(value, "st_file_attributes", 0) & reparse_flag)
+
+
+def _file_signature(value: os.stat_result) -> _FileSignature:
+    return _FileSignature(size_bytes=value.st_size, mtime_ns=value.st_mtime_ns)
 
 
 def _validate_staged_content(

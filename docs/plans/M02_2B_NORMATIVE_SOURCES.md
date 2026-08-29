@@ -34,13 +34,13 @@ M02.2B не создаёт импорт `.r130run`, `TestCampaign`, source/enric
 
 ## Upstream R130SH baseline
 
-Read-only baseline — `vitalcc55/R130SH`, branch `codex/data-and-protocol-improvements`, commit `ffc03d43f65874e3e6b1cd550b7272a66e68c4e8`.
+Read-only baseline — `vitalcc55/R130SH`, branch `codex/data-and-protocol-improvements`, commit `f02f6d954246a5ab6f57d33dac724ce03d7fb841`.
 
-- M0, M1, M2, M4a и M5a завершены;
-- frozen target examples `.r130run` v1 существуют;
-- production exporter `.r130run` ещё не реализован;
-- M03A может начать contract foundation после M02.2B по frozen examples;
-- M03B production importer ждёт R130SH M9a golden packages.
+- M0, M1, M2, M3, M4a и M5a завершены; следующий upstream-этап — M4b;
+- frozen target examples `.r130run` v1 существуют, являются синтетическими и не считаются M9a golden packages;
+- production exporter M8 `.r130run` ещё не реализован;
+- M03A может начать contract/validation foundation после M02.2B по frozen examples;
+- M03B production importer заблокирован до появления независимых R130SH M9a golden packages.
 
 R130SH в этой ветке не изменяется, production-код не копируется, shared package/library dependency не создаётся.
 
@@ -189,6 +189,7 @@ Recovery запускается после database validation и получен
 Failure classes:
 
 - dialog cancel — `cancelled`, worker не вызывается;
+- системный dialog не открылся — `storage_error`, Renderer Promise остаётся typed result и worker не вызывается;
 - validation/signature/size — typed file error, без DB/file result;
 - revision/duplicate/archive conflict — staging удалён, состояние не меняется;
 - copy/hash/rename/SQLite/audit failure — rollback и operation-owned cleanup;
@@ -207,7 +208,7 @@ modified
 verification_error
 ```
 
-`get` и explicit `verifyFile` вычисляют статус конкретного документа с bounded streaming verification; list не хеширует весь каталог. Verify не меняет revision и не пишет audit. Missing/modified не переписывает сохранённый hash, не удаляет файл и не считается корректным доказательным источником.
+`get` и explicit `verifyFile` вычисляют статус конкретного документа с bounded streaming verification; list не хеширует весь каталог. Дешёвая presence-проверка всегда заново выполняет `lstat`, проверяет containment, ordinary/non-reparse type и размер. Ранее подтверждённый hash-статус используется только при совпадении registry snapshot и текущей физической сигнатуры `(size, mtime_ns)` с полной проверкой; удаление, замена, изменение размера или времени модификации немедленно инвалидируют `verified`. Verify не меняет revision и не пишет audit. Missing/modified не переписывает сохранённый hash, не удаляет файл и не считается корректным доказательным источником.
 
 `resolveFile` принимает только `caseDocumentId`, читает relative path из Python-owned registry, проверяет POSIX grammar, containment внутри `assets/documents`, regular/non-reparse file, size и SHA-256. Только verified result возвращает абсолютный managed path внутреннему Main handler. Main вызывает `shell.openPath`; Renderer получает только typed opened/error result, никогда path.
 
@@ -356,6 +357,7 @@ Security controls M02.2B:
 - deadline during copy/hash/verify, rename/SQLite/audit failure cleanup;
 - crash staging/final orphan recovery contract;
 - missing/modified while project remains open;
+- invalidation cached `verified` после delete, same-size rewrite, reparse и close/reopen без повторного bulk SHA-256 неизменённых файлов;
 - resolve containment/reparse and close/reopen persistence.
 
 ### TypeScript
@@ -363,14 +365,14 @@ Security controls M02.2B:
 - operation/request/result/error maps and exhaustive parsing;
 - document kind/integrity/warning DTOs;
 - Renderer commands reject `sourcePath` and all results/errors exclude source absolute path;
-- Main dialog cancel/pre-gate and `shell.openPath` mapping;
+- Main dialog cancel/rejection/pre-gate and `shell.openPath` mapping; rejected dialog возвращает typed `storage_error` без worker request и rejected Renderer Promise;
 - shared draft-owner typed intents, drain, detach and discard;
 - retained projectId/entityId regression from M02.2A closure.
 
 ### Browser и Electron E2E
 
 - Browser preview ready/unavailable: empty/list/detail/filter/archive/integrity/warnings, keyboard/focus, desktop/640 px, clean console;
-- Electron: create/open project → wheel/specimen → normative metadata → real dialog fixture attach → applicability → verify/open → update → archive/restore → close/reopen;
+- Electron: create/open project → wheel/specimen → normative metadata → deterministic Main-owned dialog seam attach → applicability → verify/open → update → archive/restore → close/reopen; реальное нативное окно Windows не автоматизируется;
 - separate cancellation, unsupported/duplicate/metadata-only/missing/modified states;
 - dirty document navigation/restart/window close/detached discard;
 - accepted file operation drain and no path leak.
@@ -399,7 +401,7 @@ M02.2B завершён, когда:
 - один draft-owner защищает metadata/applicability и accepted file operations на всех lifecycle paths;
 - SQLite-only backup назван честно, перенос полного дела описан как копирование закрытого `.irproj`;
 - Browser, Electron, worker, packaged и полный локальный gates зелёные;
-- существующие owner-документы согласованы с R130SH baseline `ffc03d4` и порядком M02.2B → M03A → M03B;
+- существующие owner-документы согласованы с R130SH baseline `f02f6d9`, статусом M0/M1/M2/M3/M4a/M5a и порядком M02.2B → M03A → M03B;
 - branch/PR/Quality/review closure выполнены без merge.
 
 ## Stop condition
