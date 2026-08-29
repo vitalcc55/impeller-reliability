@@ -88,6 +88,35 @@ def test_case_document_payloads_are_operation_specific() -> None:
             }
         )
 
+
+def test_run_package_validation_payload_is_internal_and_bounded() -> None:
+    request = REQUEST_ENVELOPE_ADAPTER.validate_python(
+        {
+            "protocolVersion": 1,
+            "requestId": "validation-1",
+            "kind": "request",
+            "operation": "runPackageValidation.start",
+            "revision": 4,
+            "deadlineMs": 5_000,
+            "payload": {
+                "jobId": "b8503ed4-66ba-4ab5-aead-f8cbe36cbc75",
+                "sourcePath": "C:\\approved\\candidate.r130run",
+                "validationBudgetMs": 1_800_000,
+            },
+        }
+    )
+    assert request.operation == "runPackageValidation.start"
+    assert request.payload.validationBudgetMs == 1_800_000
+
+    for invalid_budget in (0, 999, 1_800_001, 1.5):
+        with pytest.raises(ValidationError):
+            REQUEST_ENVELOPE_ADAPTER.validate_python(
+                {
+                    **request.model_dump(mode="python"),
+                    "payload": {**request.payload.model_dump(mode="python"), "validationBudgetMs": invalid_budget},
+                }
+            )
+
     with pytest.raises(ValidationError):
         CaseDocumentFileResult(
             originalFileName=r"C:\secret.pdf",

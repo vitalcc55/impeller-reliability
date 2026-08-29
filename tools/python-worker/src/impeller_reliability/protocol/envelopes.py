@@ -4,6 +4,10 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
+from impeller_reliability.integration.r130run.models import (
+    RunPackageValidationDiscardResult,
+    RunPackageValidationJobSnapshot,
+)
 from impeller_reliability.persistence.analyst_dossier import canonical_date, canonical_decimal, canonical_uuid4
 from impeller_reliability.persistence.project_values import (
     require_application_version,
@@ -46,6 +50,10 @@ Operation = Literal[
     "caseDocument.archive",
     "caseDocument.restore",
     "caseDocument.resolveFile",
+    "runPackageValidation.start",
+    "runPackageValidation.get",
+    "runPackageValidation.cancel",
+    "runPackageValidation.discard",
 ]
 
 ProjectStatus = Literal["draft", "active", "completed", "archived"]
@@ -371,6 +379,20 @@ class CaseDocumentRevisionPayload(CaseDocumentIdPayload, EntityRevisionPayload):
     pass
 
 
+class RunPackageValidationStartPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    jobId: EntityId
+    sourcePath: str = Field(min_length=1, max_length=32_767)
+    validationBudgetMs: int = Field(ge=1_000, le=1_800_000)
+
+
+class RunPackageValidationJobPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    jobId: EntityId
+
+
 class CustomerGetRequest(RequestBase):
     operation: Literal["caseCustomer.get"]
     payload: EmptyPayload
@@ -491,6 +513,26 @@ class CaseDocumentResolveFileRequest(RequestBase):
     payload: CaseDocumentIdPayload
 
 
+class RunPackageValidationStartRequest(RequestBase):
+    operation: Literal["runPackageValidation.start"]
+    payload: RunPackageValidationStartPayload
+
+
+class RunPackageValidationGetRequest(RequestBase):
+    operation: Literal["runPackageValidation.get"]
+    payload: RunPackageValidationJobPayload
+
+
+class RunPackageValidationCancelRequest(RequestBase):
+    operation: Literal["runPackageValidation.cancel"]
+    payload: RunPackageValidationJobPayload
+
+
+class RunPackageValidationDiscardRequest(RequestBase):
+    operation: Literal["runPackageValidation.discard"]
+    payload: RunPackageValidationJobPayload
+
+
 type RequestEnvelope = Annotated[
     HandshakeRequest
     | PingRequest
@@ -525,7 +567,11 @@ type RequestEnvelope = Annotated[
     | CaseDocumentVerifyFileRequest
     | CaseDocumentArchiveRequest
     | CaseDocumentRestoreRequest
-    | CaseDocumentResolveFileRequest,
+    | CaseDocumentResolveFileRequest
+    | RunPackageValidationStartRequest
+    | RunPackageValidationGetRequest
+    | RunPackageValidationCancelRequest
+    | RunPackageValidationDiscardRequest,
     Field(discriminator="operation"),
 ]
 REQUEST_ENVELOPE_ADAPTER: TypeAdapter[RequestEnvelope] = TypeAdapter(RequestEnvelope)
@@ -785,6 +831,8 @@ class ErrorPayload(BaseModel):
         "file_missing",
         "file_integrity_mismatch",
         "internal_error",
+        "operation_in_progress",
+        "job_id_conflict",
     ]
     message: str
     details: dict[str, object]
@@ -821,6 +869,8 @@ type SuccessResponseType = (
     | SuccessResponse[CaseDocumentResult]
     | SuccessResponse[CaseDocumentListResult]
     | SuccessResponse[CaseDocumentResolveFileResult]
+    | SuccessResponse[RunPackageValidationJobSnapshot]
+    | SuccessResponse[RunPackageValidationDiscardResult]
 )
 
 

@@ -39,6 +39,10 @@ export const workerOperationSchema = z.enum([
   'caseDocument.archive',
   'caseDocument.restore',
   'caseDocument.resolveFile',
+  'runPackageValidation.start',
+  'runPackageValidation.get',
+  'runPackageValidation.cancel',
+  'runPackageValidation.discard',
 ]);
 
 export type WorkerOperation = z.infer<typeof workerOperationSchema>;
@@ -420,6 +424,182 @@ export const caseDocumentResolveFileResultSchema = z
   .object({ absolutePath: z.string().min(1).max(32_767) })
   .strict();
 
+const runPackageSourceUuidSchema = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[47][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+export const runPackageIdSchema = runPackageSourceUuidSchema.brand<'RunPackageId'>();
+export const runIdSchema = runPackageSourceUuidSchema.brand<'RunId'>();
+export const specimenSourceIdSchema = runPackageSourceUuidSchema.brand<'SpecimenSourceId'>();
+export const planIdSchema = runPackageSourceUuidSchema.brand<'PlanId'>();
+export const measurementIdSchema = runPackageSourceUuidSchema.brand<'MeasurementId'>();
+export const eventIdSchema = runPackageSourceUuidSchema.brand<'EventId'>();
+export const inspectionIdSchema = runPackageSourceUuidSchema.brand<'InspectionId'>();
+export const runPackageValidationStartCommandSchema = z.object({ jobId: entityIdSchema }).strict();
+export const runPackageValidationStartPayloadSchema = runPackageValidationStartCommandSchema
+  .extend({
+    sourcePath: z.string().min(1).max(32_767),
+    validationBudgetMs: z.number().int().min(1_000).max(1_800_000),
+  })
+  .strict();
+export const runPackageValidationJobPayloadSchema = z.object({ jobId: entityIdSchema }).strict();
+export const runPackageValidationStateSchema = z.enum([
+  'queued',
+  'running',
+  'cancelling',
+  'completed',
+  'failed',
+  'cancelled',
+]);
+export const runPackageValidationPhaseSchema = z.enum([
+  'source_check',
+  'outer_hash',
+  'zip_index',
+  'manifest',
+  'payload_integrity',
+  'semantic_validation',
+  'finalizing',
+]);
+export const runPackageValidationProgressSchema = z
+  .object({
+    kind: z.enum(['known', 'unknown']),
+    completedBytes: z.number().int().nonnegative(),
+    totalBytes: z.number().int().nonnegative(),
+    completedEntries: z.number().int().nonnegative(),
+    totalEntries: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.totalBytes > 0 && value.completedBytes > value.totalBytes)
+      context.addIssue({ code: 'custom', message: 'completedBytes exceeds totalBytes' });
+    if (value.totalEntries > 0 && value.completedEntries > value.totalEntries)
+      context.addIssue({ code: 'custom', message: 'completedEntries exceeds totalEntries' });
+  });
+export const runPackageProducerSchema = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[\x20-\x7e]+$/u),
+    version: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[\x20-\x7e]+$/u),
+    buildId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[\x20-\x7e]+$/u),
+    gitCommit: z.string().regex(/^[0-9a-f]{40}$/u),
+  })
+  .strict();
+export const runPackageSemanticCoverageSchema = z
+  .object({
+    area: z.string().min(1).max(96),
+    status: z.enum(['covered', 'not_available', 'contract_gap']),
+    contractSource: z.string().min(1).max(160),
+  })
+  .strict();
+export const runPackageFindingSchema = z
+  .object({
+    code: z
+      .string()
+      .min(1)
+      .max(96)
+      .regex(/^[a-z0-9_]+$/u),
+    severity: z.enum(['error', 'warning', 'info']),
+    location: z.string().min(1).max(512),
+    message: z.string().min(1).max(512),
+    contractSource: z.string().min(1).max(160),
+  })
+  .strict();
+export const runPackageFindingCountsSchema = z
+  .object({
+    error: z.number().int().nonnegative(),
+    warning: z.number().int().nonnegative(),
+    info: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+  })
+  .strict();
+export const runPackageValidationReportSchema = z
+  .object({
+    validatorVersion: z.literal('m03a.1'),
+    validationLevel: z.literal('synthetic_contract_foundation'),
+    upstreamRepository: z.literal('https://github.com/vitalcc55/R130SH'),
+    upstreamCommit: z.literal('f02f6d954246a5ab6f57d33dac724ce03d7fb841'),
+    contractSchema: z.literal('r130sh.run-package.v1'),
+    sourceFileName: z
+      .string()
+      .min(1)
+      .max(255)
+      .regex(/^[^/\\]+$/u),
+    outerPackageSha256: z.string().regex(/^[0-9a-f]{64}$/u),
+    outerSizeBytes: z.number().int().positive(),
+    packageId: runPackageIdSchema.nullable(),
+    exportRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
+    runId: runIdSchema.nullable(),
+    packageKind: z.enum(['final', 'diagnostic_partial']).nullable(),
+    producer: runPackageProducerSchema.nullable(),
+    entryCount: z.number().int().nonnegative(),
+    declaredPayloadBytes: z.number().int().nonnegative(),
+    validatedPayloadBytes: z.number().int().nonnegative(),
+    structuralVerdict: z.enum(['passed', 'failed']),
+    semanticVerdict: z.enum(['passed', 'partial', 'failed', 'not_available']),
+    semanticCoverage: z.array(runPackageSemanticCoverageSchema),
+    findingCounts: runPackageFindingCountsSchema,
+    findings: z.array(runPackageFindingSchema).max(200),
+    startedAtUtc: canonicalUtcTimestampSchema,
+    finishedAtUtc: canonicalUtcTimestampSchema,
+  })
+  .strict();
+export const runPackageValidationJobErrorSchema = z
+  .object({
+    code: z.enum(['cancelled', 'timeout', 'source_changed', 'storage_error', 'validation_error']),
+    message: z.string().min(1).max(512),
+    retryable: z.boolean(),
+  })
+  .strict();
+const runPackageValidationJobBaseSchema = z.object({
+  jobId: entityIdSchema,
+  phase: runPackageValidationPhaseSchema,
+  progress: runPackageValidationProgressSchema,
+  startedAtUtc: canonicalUtcTimestampSchema.nullable(),
+});
+const runPackageValidationActiveJobSchema = runPackageValidationJobBaseSchema
+  .extend({
+    state: z.enum(['queued', 'running', 'cancelling']),
+    finishedAtUtc: z.null(),
+    report: z.null(),
+    typedError: z.null(),
+  })
+  .strict();
+const runPackageValidationCompletedJobSchema = runPackageValidationJobBaseSchema
+  .extend({
+    state: z.literal('completed'),
+    finishedAtUtc: canonicalUtcTimestampSchema,
+    report: runPackageValidationReportSchema,
+    typedError: z.null(),
+  })
+  .strict();
+const runPackageValidationFailedJobSchema = runPackageValidationJobBaseSchema
+  .extend({
+    state: z.enum(['failed', 'cancelled']),
+    finishedAtUtc: canonicalUtcTimestampSchema,
+    report: z.null(),
+    typedError: runPackageValidationJobErrorSchema,
+  })
+  .strict();
+export const runPackageValidationJobSchema = z.discriminatedUnion('state', [
+  runPackageValidationActiveJobSchema,
+  runPackageValidationCompletedJobSchema,
+  runPackageValidationFailedJobSchema,
+]);
+export const runPackageValidationDiscardResultSchema = z
+  .object({ jobId: entityIdSchema, discarded: z.literal(true) })
+  .strict();
+
 export type EmptyWorkerPayload = z.infer<typeof emptyPayloadSchema>;
 export type HandshakeResult = z.infer<typeof handshakeResultSchema>;
 export type PingResult = z.infer<typeof pingResultSchema>;
@@ -447,6 +627,19 @@ export type CaseDocumentDraft = z.infer<typeof caseDocumentDraftSchema>;
 export type CaseDocumentCreateCommand = z.infer<typeof caseDocumentCreateCommandSchema>;
 export type CaseDocument = z.infer<typeof caseDocumentSchema>;
 export type CaseDocumentSummary = z.infer<typeof caseDocumentSummarySchema>;
+export type RunPackageId = z.infer<typeof runPackageIdSchema>;
+export type RunId = z.infer<typeof runIdSchema>;
+export type SpecimenSourceId = z.infer<typeof specimenSourceIdSchema>;
+export type PlanId = z.infer<typeof planIdSchema>;
+export type MeasurementId = z.infer<typeof measurementIdSchema>;
+export type EventId = z.infer<typeof eventIdSchema>;
+export type InspectionId = z.infer<typeof inspectionIdSchema>;
+export type RunPackageValidationStartCommand = z.infer<
+  typeof runPackageValidationStartCommandSchema
+>;
+export type RunPackageValidationJob = z.infer<typeof runPackageValidationJobSchema>;
+export type RunPackageValidationReport = z.infer<typeof runPackageValidationReportSchema>;
+export type RunPackageFinding = z.infer<typeof runPackageFindingSchema>;
 
 export interface WorkerOperationMap {
   readonly 'system.handshake': {
@@ -584,6 +777,22 @@ export interface WorkerOperationMap {
   readonly 'caseDocument.resolveFile': {
     readonly request: z.infer<typeof caseDocumentIdPayloadSchema>;
     readonly result: z.infer<typeof caseDocumentResolveFileResultSchema>;
+  };
+  readonly 'runPackageValidation.start': {
+    readonly request: z.infer<typeof runPackageValidationStartPayloadSchema>;
+    readonly result: RunPackageValidationJob;
+  };
+  readonly 'runPackageValidation.get': {
+    readonly request: z.infer<typeof runPackageValidationJobPayloadSchema>;
+    readonly result: RunPackageValidationJob;
+  };
+  readonly 'runPackageValidation.cancel': {
+    readonly request: z.infer<typeof runPackageValidationJobPayloadSchema>;
+    readonly result: RunPackageValidationJob;
+  };
+  readonly 'runPackageValidation.discard': {
+    readonly request: z.infer<typeof runPackageValidationJobPayloadSchema>;
+    readonly result: z.infer<typeof runPackageValidationDiscardResultSchema>;
   };
 }
 
@@ -737,6 +946,30 @@ export const workerRequestSchema = z.discriminatedUnion('operation', [
       payload: caseDocumentIdPayloadSchema,
     })
     .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('runPackageValidation.start'),
+      payload: runPackageValidationStartPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('runPackageValidation.get'),
+      payload: runPackageValidationJobPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('runPackageValidation.cancel'),
+      payload: runPackageValidationJobPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('runPackageValidation.discard'),
+      payload: runPackageValidationJobPayloadSchema,
+    })
+    .strict(),
 ]);
 
 export const workerErrorSchema = z
@@ -764,6 +997,8 @@ export const workerErrorSchema = z
       'file_missing',
       'file_integrity_mismatch',
       'internal_error',
+      'operation_in_progress',
+      'job_id_conflict',
     ]),
     message: z.string(),
     details: z.record(z.string(), z.unknown()),
@@ -817,6 +1052,12 @@ export const caseDocumentListSuccessResponseSchema = createSuccessResponseSchema
 );
 export const caseDocumentResolveFileSuccessResponseSchema = createSuccessResponseSchema(
   caseDocumentResolveFileResultSchema,
+);
+export const runPackageValidationJobSuccessResponseSchema = createSuccessResponseSchema(
+  runPackageValidationJobSchema,
+);
+export const runPackageValidationDiscardSuccessResponseSchema = createSuccessResponseSchema(
+  runPackageValidationDiscardResultSchema,
 );
 export const workerErrorResponseSchema = responseBaseSchema
   .extend({
@@ -877,6 +1118,14 @@ const caseDocumentResolveFileResponseSchema = z.union([
   caseDocumentResolveFileSuccessResponseSchema,
   workerErrorResponseSchema,
 ]);
+const runPackageValidationJobResponseSchema = z.union([
+  runPackageValidationJobSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const runPackageValidationDiscardResponseSchema = z.union([
+  runPackageValidationDiscardSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
 
 export type WorkerRequest = z.infer<typeof workerRequestSchema>;
 export type WorkerErrorResponse = z.infer<typeof workerErrorResponseSchema>;
@@ -916,6 +1165,12 @@ export interface WorkerResponseMap {
   readonly 'caseDocument.archive': z.infer<typeof caseDocumentResponseSchema>;
   readonly 'caseDocument.restore': z.infer<typeof caseDocumentResponseSchema>;
   readonly 'caseDocument.resolveFile': z.infer<typeof caseDocumentResolveFileResponseSchema>;
+  readonly 'runPackageValidation.start': z.infer<typeof runPackageValidationJobResponseSchema>;
+  readonly 'runPackageValidation.get': z.infer<typeof runPackageValidationJobResponseSchema>;
+  readonly 'runPackageValidation.cancel': z.infer<typeof runPackageValidationJobResponseSchema>;
+  readonly 'runPackageValidation.discard': z.infer<
+    typeof runPackageValidationDiscardResponseSchema
+  >;
 }
 
 export type WorkerResponseFor<TOperation extends WorkerOperation> = WorkerResponseMap[TOperation];
@@ -1014,6 +1269,12 @@ export function parseWorkerResponse(operation: WorkerOperation, input: unknown):
       return caseDocumentListResponseSchema.parse(input);
     case 'caseDocument.resolveFile':
       return caseDocumentResolveFileResponseSchema.parse(input);
+    case 'runPackageValidation.start':
+    case 'runPackageValidation.get':
+    case 'runPackageValidation.cancel':
+      return runPackageValidationJobResponseSchema.parse(input);
+    case 'runPackageValidation.discard':
+      return runPackageValidationDiscardResponseSchema.parse(input);
   }
 }
 
@@ -1056,6 +1317,7 @@ export const desktopErrorSchema = z
       'file_missing',
       'file_integrity_mismatch',
       'operation_in_progress',
+      'job_id_conflict',
       'storage_error',
       'worker_unavailable',
       'timeout',
@@ -1156,5 +1418,15 @@ export interface ImpellerApi {
     openFile(caseDocumentId: string): Promise<DesktopResult<{ readonly opened: boolean }>>;
     archive(command: CaseDocumentRevisionCommand): Promise<DesktopResult<CaseDocument>>;
     restore(command: CaseDocumentRevisionCommand): Promise<DesktopResult<CaseDocument>>;
+  };
+  readonly runPackageValidation: {
+    selectAndStart(
+      command: RunPackageValidationStartCommand,
+    ): Promise<DesktopResult<RunPackageValidationJob>>;
+    get(jobId: string): Promise<DesktopResult<RunPackageValidationJob>>;
+    cancel(jobId: string): Promise<DesktopResult<RunPackageValidationJob>>;
+    discard(
+      jobId: string,
+    ): Promise<DesktopResult<{ readonly jobId: string; readonly discarded: true }>>;
   };
 }
