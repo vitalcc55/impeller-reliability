@@ -1,0 +1,25 @@
+{
+  "schema_version": "r130sh.inspection.v1",
+  "inspection_id": "019d3c80-3d21-7a65-8e5a-aaaaaaaaaaaa",
+  "run_id": "019d3c80-3d21-7a65-8e5a-222222222222",
+  "stage": "vibration_pause",
+  "trip_index": 1,
+  "performed_at_utc": "2026-08-26T12:05:00Z",
+  "run_elapsed_s": "300.0",
+  "actor": {
+    "employee_id": "operator-17",
+    "display_name": "Синтетический оператор"
+  },
+  "findings": {
+    "cracks": false,
+    "chips": false,
+    "deformation": false,
+    "partial_destruction": false,
+    "total_destruction": false,
+    "balancing_elements_state": "intact",
+    "other_findings": ""
+  },
+  "inspection_outcome": "clear",
+  "comment": "Синтетический пример",
+  "attachment_ids": []
+}

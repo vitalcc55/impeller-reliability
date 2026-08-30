@@ -16,4 +16,8 @@ Missing/modified managed file не превращает `.irproj` в corrupt pro
 
 Текущий renderer следует общему interaction-state/draft/focus contract, работает с клавиатуры и без горизонтального overflow на 640 px. WCAG 2.2 AA является инженерной целью; детальное развитие commands/jobs/tables/charts/recovery распределено в `docs/plans/UX_INTERACTION_EVOLUTION.md` и не входит в M02.2B.
 
+M03A выполняет только bounded read-only contract validation по frozen synthetic R130SH examples. Main владеет системным диалогом и передаёт approved path только Python; Renderer получает имя без каталога, progress и bounded report. Worker не извлекает ZIP, потоково проверяет outer hash, строгий envelope, inventory, фактические size/CRC/SHA-256, bounded UTF-8/JSON/JSONL/CSV и только подтверждённые frozen semantics. Source change, cancel, timeout и storage failure имеют typed terminal outcome; одна in-memory job не пишет stdout и ограниченно завершается при restart/close.
+
+M03A не изменяет `.irproj`, `project.sqlite`, manifest, WAL, revisions или audit; не запускает migration и сохраняет Project schema v1. Результат не является импортом, persisted source, `ImportedTestRun`, import receipt или допуском к расчёту. `r130sh_source`, TestCampaign, source/enrichment resolution и analysis snapshots остаются M03B/M04. У незамороженных production CSV/checksum/remaining payload contracts semantic coverage явно `not_available`/`contract_gap`, а не вымышленная schema.
+
 Будущий importer хранит `ImportedRunPlanSnapshot` как неизменяемую часть `.r130run`. Конкретный анализ создаёт `AnalysisInputSnapshot`, а выполненный алгоритм — `CalculationSnapshot`. `TestCampaign` допускается только как downstream-группировка импортированных запусков.

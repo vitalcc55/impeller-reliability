@@ -4,6 +4,7 @@ import platform
 
 from impeller_reliability import __version__
 from impeller_reliability.application.project_service import ProjectService
+from impeller_reliability.integration.r130run.jobs import RunPackageValidationJobManager
 from impeller_reliability.persistence.sqlite_health import SCHEMA_VERSION, check_storage
 from impeller_reliability.protocol.envelopes import (
     CaseDocumentArchiveRequest,
@@ -40,6 +41,10 @@ from impeller_reliability.protocol.envelopes import (
     ProjectOverviewResult,
     ProjectUpdateMetadataRequest,
     RequestEnvelope,
+    RunPackageValidationCancelRequest,
+    RunPackageValidationDiscardRequest,
+    RunPackageValidationGetRequest,
+    RunPackageValidationStartRequest,
     ShutdownRequest,
     ShutdownResult,
     SpecimenArchiveRequest,
@@ -102,6 +107,10 @@ CAPABILITIES: list[Operation] = [
     "caseDocument.archive",
     "caseDocument.restore",
     "caseDocument.resolveFile",
+    "runPackageValidation.start",
+    "runPackageValidation.get",
+    "runPackageValidation.cancel",
+    "runPackageValidation.discard",
 ]
 
 
@@ -109,6 +118,8 @@ class Dispatcher:
     def __init__(self, state_directory: Path) -> None:
         self._state_directory = state_directory
         self._projects = ProjectService()
+        self._run_package_jobs = RunPackageValidationJobManager()
+        self._run_package_jobs_shutdown = False
         self.shutdown_requested = False
 
     def dispatch(
@@ -142,8 +153,10 @@ class Dispatcher:
                 result=PingResult(),
             )
         if isinstance(request, ShutdownRequest):
-            self._projects.close(deadline=active_deadline)
             self.shutdown_requested = True
+            self._run_package_jobs_shutdown = True
+            self._run_package_jobs.shutdown(active_deadline.remaining_seconds(1.5))
+            self._projects.close(deadline=active_deadline)
             return SuccessResponse[ShutdownResult](
                 requestId=request.requestId,
                 revision=request.revision,
@@ -334,8 +347,40 @@ class Dispatcher:
                     revision=request.revision,
                     result=CaseDocumentResolveFileResult(absolutePath=str(resolved)),
                 )
+            case RunPackageValidationStartRequest():
+                return SuccessResponse(
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._run_package_jobs.start(
+                        request.payload.jobId,
+                        Path(request.payload.sourcePath),
+                        request.payload.validationBudgetMs,
+                        request.payload.replaceJobId,
+                    ),
+                )
+            case RunPackageValidationGetRequest():
+                return SuccessResponse(
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._run_package_jobs.get(request.payload.jobId),
+                )
+            case RunPackageValidationCancelRequest():
+                return SuccessResponse(
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._run_package_jobs.cancel(request.payload.jobId),
+                )
+            case RunPackageValidationDiscardRequest():
+                return SuccessResponse(
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._run_package_jobs.discard(request.payload.jobId),
+                )
 
     def close(self) -> None:
+        if not self._run_package_jobs_shutdown:
+            self._run_package_jobs.shutdown()
+            self._run_package_jobs_shutdown = True
         self._projects.close()
 
     @staticmethod

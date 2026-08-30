@@ -11,6 +11,8 @@ ProjectErrorCode = Literal[
     "entity_not_found",
     "entity_archived",
     "entity_in_use",
+    "operation_in_progress",
+    "job_id_conflict",
     "duplicate_entity",
     "duplicate_document_content",
     "file_already_attached",
@@ -20,6 +22,7 @@ ProjectErrorCode = Literal[
     "file_integrity_mismatch",
     "validation_error",
     "storage_error",
+    "worker_unavailable",
 ]
 
 

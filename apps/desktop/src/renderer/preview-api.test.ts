@@ -32,4 +32,37 @@ describe('browser preview api', () => {
     expect(observed).toHaveLength(1);
     unsubscribe();
   });
+
+  it('advances validation polling even when the first active snapshot is unchanged', async () => {
+    const api = createPreviewApi('ready');
+    const jobId = '8ab377f2-cfd8-4983-86ea-25f5d0171bd7';
+
+    const started = await api.runPackageValidation.selectAndStart({ jobId });
+    expect(started).toMatchObject({ ok: true, result: { state: 'running' } });
+    await expect(api.runPackageValidation.discard(jobId)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'operation_in_progress' },
+    });
+    await expect(
+      api.runPackageValidation.selectAndStart({
+        jobId: '40f4acbf-5f06-4d75-a65c-382141d785aa',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'operation_in_progress' } });
+    const firstPoll = await api.runPackageValidation.get(jobId);
+    expect(firstPoll).toMatchObject({ ok: true, result: { state: 'running' } });
+    const secondPoll = await api.runPackageValidation.get(jobId);
+    expect(secondPoll).toMatchObject({
+      ok: true,
+      result: { state: 'completed', report: { structuralVerdict: 'passed' } },
+    });
+    await expect(api.runPackageValidation.cancel(jobId)).resolves.toMatchObject({
+      ok: true,
+      result: { state: 'completed' },
+    });
+    await api.system.restart();
+    await expect(api.runPackageValidation.get(jobId)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'entity_not_found' },
+    });
+  });
 });

@@ -25,3 +25,6 @@ class RequestDeadline:
             details={"stage": stage},
             retryable=True,
         )
+
+    def remaining_seconds(self, maximum: float) -> float:
+        return max(0.0, min(maximum, self.expires_at - self._clock()))

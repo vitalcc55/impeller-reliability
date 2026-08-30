@@ -15,7 +15,7 @@ Persisted: "Project source of truth" {
 WorkerRuntime: "Python worker runtime" {
   Connection: "one ProjectSession + sequential SQLite writer"
   Lock: "bounded read-only validation → Windows OS-held lock"
-  Jobs: "request/job progress + cancellation"
+  Jobs: "one transient R130SH validation job + request progress/cancellation"
   Canonical: "validated domain values and report inputs"
 }
 
@@ -64,3 +64,5 @@ App-level `health.sqlite` остаётся отдельной инфрастру
 Renderer хранит один активный draft-owner и replaceable query cache, Main — разрешённые пути, lifecycle и очередь, Python — активную сериализованную ProjectSession. Dirty draft проходит `validate → save → persisted revision`; validation/conflict/transport failure оставляют его dirty. Попытка navigation/select/attach/archive/close/open/restart/window close требует keep/discard/save решения по существующему общему guard. Потеря worker переводит draft в detached, но не размонтирует форму; permanently detached draft можно удалить локально без изменения project truth или recent list. Recovery checkpoint после crash всего Electron остаётся отдельным будущим уровнем и не является domain autosave.
 
 CaseDocument metadata и applicability меняются одной revision/audit transaction. Attach публикует staged managed file атомарным rename и регистрирует immutable row; успешный ответ означает существующие совпадающие DB/file size/hash. Failed response не оставляет зарегистрированной ссылки на непроверенный файл. Orphan staging не является persisted document и узко очищается при открытии. Missing/modified managed copy вычисляется как локальный integrity status после открытия ProjectSession и не делает всю schema/evidence corrupt. Browser preview ничего не сохраняет и не является evidence persistence.
+
+M03A `RunPackageValidationJob` живёт только в памяти worker: caller-created UUID связывает retry, terminal result хранится до явного discard или атомарной замены, application restart/window shutdown выполняют bounded cooperative stop. Renderer хранит только transient копию последнего job/report для отображения; active snapshot после worker loss помечается прерванным, а уже terminal report может оставаться видимым до clear/retry и не становится persisted evidence. Report, progress и approved source path не входят в Project truth, recent paths, audit или logs; path существует только внутри Main/worker runtime. Открытый Project может сосуществовать с validation job, но между job и `project.sqlite` нет write edge.

@@ -21,6 +21,10 @@ import {
   projectUpdateMetadataPayloadSchema,
   recentProjectsSchema,
   runtimeStatusSchema,
+  runPackageValidationDiscardResultSchema,
+  runPackageValidationJobPayloadSchema,
+  runPackageValidationJobSchema,
+  runPackageValidationStartCommandSchema,
   specimenCreatePayloadSchema,
   specimenListResultSchema,
   specimenRevisionPayloadSchema,
@@ -298,6 +302,36 @@ const api: ImpellerApi = {
         caseDocumentRevisionPayloadSchema,
         command,
         createDesktopResultSchema(caseDocumentSchema),
+      ),
+  },
+  runPackageValidation: {
+    selectAndStart: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.runPackageValidationStart,
+        runPackageValidationStartCommandSchema,
+        command,
+        createDesktopResultSchema(runPackageValidationJobSchema),
+      ),
+    get: async (jobId) =>
+      invokeValidated(
+        IPC_CHANNELS.runPackageValidationGet,
+        runPackageValidationJobPayloadSchema,
+        { jobId },
+        createDesktopResultSchema(runPackageValidationJobSchema),
+      ),
+    cancel: async (jobId) =>
+      invokeValidated(
+        IPC_CHANNELS.runPackageValidationCancel,
+        runPackageValidationJobPayloadSchema,
+        { jobId },
+        createDesktopResultSchema(runPackageValidationJobSchema),
+      ),
+    discard: async (jobId) =>
+      invokeValidated(
+        IPC_CHANNELS.runPackageValidationDiscard,
+        runPackageValidationJobPayloadSchema,
+        { jobId },
+        createDesktopResultSchema(runPackageValidationDiscardResultSchema),
       ),
   },
 };

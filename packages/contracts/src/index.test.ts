@@ -10,6 +10,12 @@ import {
   projectIdSchema,
   projectBackupResultSchema,
   projectOverviewSchema,
+  runIdSchema,
+  runPackageIdSchema,
+  runPackageValidationJobSchema,
+  runPackageValidationReportSchema,
+  runPackageValidationStartCommandSchema,
+  runPackageValidationStartPayloadSchema,
   runtimeStatusSchema,
   specimenDraftSchema,
   wheelModelDraftSchema,
@@ -48,6 +54,122 @@ describe('worker contracts', () => {
         payload: {},
       }).success,
     ).toBe(false);
+  });
+
+  it('separates upstream UUID v4/v7 identities from local entity IDs', () => {
+    const packageId = '019d3c80-3d21-7a65-8e5a-111111111111';
+    const runId = '8ab377f2-cfd8-4983-86ea-25f5d0171bd7';
+    expect(runPackageIdSchema.parse(packageId)).toBe(packageId);
+    expect(runIdSchema.parse(runId)).toBe(runId);
+    expect(entityIdSchema.safeParse(packageId).success).toBe(false);
+    expect(runPackageIdSchema.safeParse('5ab377f2-cfd8-1983-86ea-25f5d0171bd7').success).toBe(
+      false,
+    );
+  });
+
+  it('keeps source path and validation budget out of the Renderer start command', () => {
+    const command = { jobId: 'ec7cc676-e40d-4ad7-b038-83e0035dc212' };
+    expect(runPackageValidationStartCommandSchema.parse(command)).toEqual(command);
+    expect(
+      runPackageValidationStartCommandSchema.safeParse({
+        ...command,
+        sourcePath: 'C:\\secret.r130run',
+        validationBudgetMs: 1_800_000,
+      }).success,
+    ).toBe(false);
+    expect(
+      runPackageValidationStartPayloadSchema.parse({
+        ...command,
+        sourcePath: 'C:\\approved.r130run',
+        validationBudgetMs: 1_800_000,
+      }).validationBudgetMs,
+    ).toBe(1_800_000);
+    for (const invalidBudget of [0, 999, 1_800_001, 1.5]) {
+      expect(
+        runPackageValidationStartPayloadSchema.safeParse({
+          ...command,
+          sourcePath: 'C:\\approved.r130run',
+          validationBudgetMs: invalidBudget,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it('validates terminal job invariants and rejects path or import claims in reports', () => {
+    const report = {
+      validatorVersion: 'm03a.1',
+      validationLevel: 'synthetic_contract_foundation',
+      upstreamRepository: 'https://github.com/vitalcc55/R130SH',
+      upstreamCommit: 'f02f6d954246a5ab6f57d33dac724ce03d7fb841',
+      contractSchema: 'r130sh.run-package.v1',
+      sourceFileName: 'candidate.r130run',
+      outerPackageSha256: 'a'.repeat(64),
+      outerSizeBytes: 1024,
+      packageId: '019d3c80-3d21-7a65-8e5a-111111111111',
+      exportRevision: 1,
+      runId: '019d3c80-3d21-7a65-8e5a-222222222222',
+      packageKind: 'final',
+      producer: {
+        name: 'R130SH',
+        version: 'synthetic',
+        buildId: 'fixture',
+        gitCommit: 'f02f6d954246a5ab6f57d33dac724ce03d7fb841',
+      },
+      entryCount: 15,
+      declaredPayloadBytes: 512,
+      validatedPayloadBytes: 512,
+      structuralVerdict: 'passed',
+      semanticVerdict: 'partial',
+      semanticCoverage: [
+        { area: 'manifest', status: 'covered', contractSource: 'manifest-example' },
+      ],
+      findingCounts: { error: 0, warning: 0, info: 0, total: 0, truncated: false },
+      findings: [],
+      startedAtUtc: '2026-08-29T12:00:00.000Z',
+      finishedAtUtc: '2026-08-29T12:00:01.000Z',
+    } as const;
+    expect(runPackageValidationReportSchema.parse(report).structuralVerdict).toBe('passed');
+    expect(
+      runPackageValidationReportSchema.safeParse({
+        ...report,
+        exportRevision: Number.MAX_SAFE_INTEGER + 1,
+      }).success,
+    ).toBe(false);
+    expect(
+      runPackageValidationReportSchema.safeParse({
+        ...report,
+        sourcePath: 'C:\\secret.r130run',
+      }).success,
+    ).toBe(false);
+    expect(runPackageValidationReportSchema.safeParse({ ...report, imported: true }).success).toBe(
+      false,
+    );
+    const completed = {
+      jobId: 'ec7cc676-e40d-4ad7-b038-83e0035dc212',
+      state: 'completed',
+      phase: 'finalizing',
+      progress: {
+        kind: 'known',
+        completedBytes: 1024,
+        totalBytes: 1024,
+        completedEntries: 15,
+        totalEntries: 15,
+      },
+      startedAtUtc: '2026-08-29T12:00:00.000Z',
+      finishedAtUtc: '2026-08-29T12:00:01.000Z',
+      report,
+      typedError: null,
+    } as const;
+    expect(runPackageValidationJobSchema.parse(completed).state).toBe('completed');
+    expect(
+      runPackageValidationJobSchema.safeParse({
+        ...completed,
+        progress: { ...completed.progress, completedBytes: 1025 },
+      }).success,
+    ).toBe(false);
+    expect(runPackageValidationJobSchema.safeParse({ ...completed, report: null }).success).toBe(
+      false,
+    );
   });
 
   it('keeps case-document source paths out of Renderer commands and DTOs', () => {

@@ -37,9 +37,13 @@ Impeller Reliability развивается как desktop engineering workspace
 
 M02.2B не создаёт command palette, универсальный router/history, recovery-хранилище черновиков, job framework, DataGrid, chart framework или новую компонентную библиотеку.
 
-## M03A/M03B — импорт и provenance
+## M03A — проверка контракта
 
-До production importer вводятся общий UX длительной файловой операции (`queued`, `running`, известный/неизвестный progress, `cancelling`, `completed`, `failed`, `cancelled`), различение user/domain/conflict/infrastructure errors и повторяемый provenance primitive для `r130sh_source` против `analyst_enrichment`. Отмена, timeout, staging cleanup и повторное открытие получают одинаковые наблюдаемые postconditions. M03A фиксирует contracts на frozen examples; M03B применяет их к production importer после R130SH M9a.
+M03A вводит минимальный повторяемый UX read-only job: `queued`, `running`, известный/неизвестный progress, `cancelling`, `completed`, `failed`, `cancelled`; последовательный polling с backoff; cancel/retry/clear; infrastructure alert; текстовую severity; восстановление focus только владельцу действия; schema/validator/upstream/hash/findings provenance. Отмена или ошибка dialog сохраняет предыдущий terminal report, принятый новый файл атомарно заменяет его. Это validation evidence в «Диагностике», не `r130sh_source` и не импорт.
+
+## M03B — импорт и persisted provenance
+
+После R130SH M9a production importer расширяет job lifecycle staging/commit/reopen postconditions, immutable `r130sh_source`, import receipt и source/enrichment resolution. Persisted provenance primitive появляется здесь, а не ретроспективно при M03A. Job journal допускается только если изменяющая Project операция докажет необходимость crash recovery; in-memory validation job его не создаёт.
 
 ## M04 — расчётная вертикаль и визуализация
 

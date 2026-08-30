@@ -68,10 +68,16 @@ Renderer -> User: "единый keep/discard guard; focus возвращаетс
 User -> Renderer: "validation/conflict/runtime failure"
 Renderer -> User: "ввод сохранён; error class и доступное следующее действие"
 
-R130SH -> Main: "result package после независимого испытания (M03)"
-Main -> Worker: "staged package after path/size gate"
-Worker -> Project: "checksums, validation, immutable import revision"
-Worker -> Renderer: "receipt, differences, completeness/classification"
+User -> Renderer: "Выбрать candidate .r130run для проверки (M03A)"
+Renderer -> Main: "selectAndStart; no path"
+Main -> Worker: "dialog-approved read-only file"
+Worker -> Worker: "outer hash → ZIP/inventory → payload integrity → covered semantics"
+Worker -> Renderer: "progress + bounded report; no import/eligibility claim"
+
+User -> Renderer: "Импортировать production package после M9a (future M03B)"
+Main -> Worker: "future import staging"
+Worker -> Project: "future immutable r130sh_source/import receipt"
+Worker -> Renderer: "future import receipt/differences"
 
 User -> Renderer: "Выбрать значения и выполнить расчёты (M04+)"
 Renderer -> Worker: "r130sh_source + analyst_enrichment selection"

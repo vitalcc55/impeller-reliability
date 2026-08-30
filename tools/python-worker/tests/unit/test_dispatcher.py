@@ -1,6 +1,8 @@
 from pathlib import Path
+from time import monotonic, sleep
 from uuid import uuid4
 
+from impeller_reliability.integration.r130run.models import RunPackageValidationReport
 from impeller_reliability.protocol.envelopes import (
     REQUEST_ENVELOPE_ADAPTER,
     EmptyPayload,
@@ -16,6 +18,7 @@ from impeller_reliability.protocol.envelopes import (
     ShutdownResult,
 )
 from impeller_reliability.worker.dispatcher import Dispatcher
+from support.r130run_builder import build_synthetic_r130run
 
 
 def _dispatch(dispatcher: Dispatcher, operation: str, payload: dict[str, object], revision: int) -> dict[str, object]:
@@ -83,7 +86,89 @@ def test_handshake_reports_current_capabilities_and_revision(tmp_path: Path) -> 
         "caseDocument.archive",
         "caseDocument.restore",
         "caseDocument.resolveFile",
+        "runPackageValidation.start",
+        "runPackageValidation.get",
+        "runPackageValidation.cancel",
+        "runPackageValidation.discard",
     ]
+    assert response.result.supportedRunPackageSchemas == []
+    assert response.result.supportedPlanSchemas == []
+
+
+def test_run_package_validation_dispatch_stays_request_response_only(tmp_path: Path) -> None:
+    package = build_synthetic_r130run(tmp_path / "candidate.r130run")
+    dispatcher = Dispatcher(tmp_path / "state")
+    job_id = str(uuid4())
+
+    started = _dispatch(
+        dispatcher,
+        "runPackageValidation.start",
+        {"jobId": job_id, "sourcePath": str(package), "validationBudgetMs": 30_000},
+        1,
+    )
+    assert started["jobId"] == job_id
+    assert started["state"] in {"queued", "running", "completed"}
+    assert _dispatch(dispatcher, "system.ping", {}, 2) == {"pong": True}
+
+    expires = monotonic() + 3
+    snapshot = started
+    while monotonic() < expires:
+        snapshot = _dispatch(dispatcher, "runPackageValidation.get", {"jobId": job_id}, 3)
+        if snapshot["state"] in {"completed", "failed", "cancelled"}:
+            break
+        sleep(0.01)
+    assert snapshot["state"] == "completed"
+    report = RunPackageValidationReport.model_validate(snapshot["report"])
+    assert report.validationLevel == "synthetic_contract_foundation"
+    assert report.structuralVerdict == "passed"
+    assert _dispatch(dispatcher, "runPackageValidation.discard", {"jobId": job_id}, 4) == {
+        "jobId": job_id,
+        "discarded": True,
+    }
+
+
+def test_run_package_validation_does_not_mutate_open_project(tmp_path: Path) -> None:
+    package = build_synthetic_r130run(tmp_path / "candidate.r130run")
+    project_path = tmp_path / "unchanged.irproj"
+    dispatcher = Dispatcher(tmp_path / "state")
+    _dispatch(
+        dispatcher,
+        "project.create",
+        {
+            "path": str(project_path),
+            "applicationInstanceId": str(uuid4()),
+            "applicationVersion": "0.1.0",
+            "draft": {"name": "Unchanged", "projectNumber": "", "description": "", "status": "draft"},
+        },
+        1,
+    )
+    before = _project_file_evidence(project_path)
+    overview_before = _dispatch(dispatcher, "project.getOverview", {}, 2)
+    job_id = str(uuid4())
+    snapshot = _dispatch(
+        dispatcher,
+        "runPackageValidation.start",
+        {"jobId": job_id, "sourcePath": str(package), "validationBudgetMs": 30_000},
+        3,
+    )
+    expires = monotonic() + 3
+    while monotonic() < expires:
+        snapshot = _dispatch(dispatcher, "runPackageValidation.get", {"jobId": job_id}, 4)
+        if snapshot["state"] in {"completed", "failed", "cancelled"}:
+            break
+        sleep(0.01)
+    assert snapshot["state"] == "completed"
+    assert _dispatch(dispatcher, "project.getOverview", {}, 5) == overview_before
+    assert _project_file_evidence(project_path) == before
+    dispatcher.close()
+
+
+def _project_file_evidence(project_path: Path) -> dict[str, tuple[int, int, bytes]]:
+    return {
+        path.relative_to(project_path).as_posix(): (path.stat().st_size, path.stat().st_mtime_ns, path.read_bytes())
+        for path in project_path.rglob("*")
+        if path.is_file() and path.name != ".project.lock"
+    }
 
 
 def test_ping_and_shutdown_are_explicit_operations(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ import { Badge, Button, Group, Stack, Text, Title } from '@mantine/core';
 
 import type { ImpellerApi, RuntimeStatus } from '@impeller-reliability/contracts';
 import type { UiPhase } from '../../app/App';
+import { RunPackageValidationPanel } from './RunPackageValidationPanel';
 
 const phaseLabel: Readonly<Record<UiPhase, string>> = {
   loading: 'Запуск',
@@ -109,6 +110,7 @@ export function DiagnosticsPanel(props: DiagnosticsPanelProps): React.JSX.Elemen
           </div>
         </dl>
       </section>
+      <RunPackageValidationPanel desktopApi={desktopApi} workerReady={phase === 'ready'} />
     </div>
   );
 }

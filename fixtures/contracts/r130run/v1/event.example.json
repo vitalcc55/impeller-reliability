@@ -1,0 +1,26 @@
+{
+  "schema_version": "r130sh.run-event.v1",
+  "event_id": "019d3c80-3d21-7a65-8e5a-999999999999",
+  "run_id": "019d3c80-3d21-7a65-8e5a-222222222222",
+  "run_sequence": 43,
+  "event_type": "vibration_trip",
+  "occurred_at_utc": "2026-08-26T12:00:08.600Z",
+  "clock_epoch_id": "019d3c80-3d21-7a65-8e5a-888888888888",
+  "epoch_monotonic_elapsed_s": "8.6",
+  "run_elapsed_s": "8.6",
+  "source": "vibration_safety_supervisor",
+  "actor_json": null,
+  "correlation_id": "trip:019d3c80-3d21-7a65-8e5a-222222222222:1",
+  "idempotency_key": "run:019d3c80-3d21-7a65-8e5a-222222222222:event:43",
+  "payload_json": {
+    "axis": "x",
+    "criterion_ids": [
+      "absolute_steady",
+      "relative_to_baseline"
+    ],
+    "threshold_mm_s": 7.1,
+    "threshold_role": "steady",
+    "value_mm_s": 8.0
+  },
+  "payload_sha256": "99ebc45081b6c919289b1364d6a01f24df0742729c7e26068bc0ff742e55236a"
+}

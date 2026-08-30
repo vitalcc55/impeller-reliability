@@ -207,6 +207,26 @@ export const WORKER_OPERATION_POLICIES = {
     transportTimeoutMs: 35_000,
     terminateWorkerOnTimeout: false,
   },
+  'runPackageValidation.start': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'runPackageValidation.get': {
+    domainDeadlineMs: 3_000,
+    transportTimeoutMs: 5_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'runPackageValidation.cancel': {
+    domainDeadlineMs: 3_000,
+    transportTimeoutMs: 5_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'runPackageValidation.discard': {
+    domainDeadlineMs: 3_000,
+    transportTimeoutMs: 5_000,
+    terminateWorkerOnTimeout: false,
+  },
 } as const satisfies Readonly<Record<WorkerOperation, WorkerOperationPolicy>>;
 
 export interface WorkerLifecycleEvent {

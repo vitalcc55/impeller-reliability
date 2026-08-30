@@ -7,6 +7,7 @@ import type {
   ImpellerApi,
   ProjectOverview,
   RecentProject,
+  RunPackageValidationJob,
   RuntimeStatus,
   Specimen,
   SpecimenDraft,
@@ -15,6 +16,7 @@ import type {
   WheelModelDraft,
   WheelModelSummary,
 } from '@impeller-reliability/contracts';
+import { runPackageValidationJobSchema } from '@impeller-reliability/contracts';
 
 export type PreviewMode = 'ready' | 'unavailable';
 
@@ -48,6 +50,8 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
   const wheels = new Map<string, WheelModel>();
   const specimens = new Map<string, Specimen>();
   const documents = new Map<string, CaseDocument>();
+  let validationJob: RunPackageValidationJob | null = null;
+  let validationPolls = 0;
   const recentProject: RecentProject = {
     path: 'C:\\Проекты\\Надёжность рабочего колеса.irproj',
     name: 'Надёжность рабочего колеса',
@@ -64,6 +68,8 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
           : Promise.reject(new Error('preview_worker_unavailable')),
       restart: () => {
         status = previewStatuses.ready;
+        validationJob = null;
+        validationPolls = 0;
         for (const listener of listeners) listener(status);
         return Promise.resolve(status);
       },
@@ -386,7 +392,139 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
           ),
         ),
     },
+    runPackageValidation: {
+      selectAndStart: ({ jobId, replaceJobId }) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        if (validationJob !== null) {
+          if (validationJob.jobId === jobId) return Promise.resolve(success(validationJob));
+          const terminal = ['completed', 'failed', 'cancelled'].includes(validationJob.state);
+          if (!terminal || replaceJobId !== validationJob.jobId)
+            return Promise.resolve(operationInProgress());
+        }
+        validationPolls = 0;
+        validationJob = previewValidationActive(jobId);
+        return Promise.resolve(success(validationJob));
+      },
+      get: (jobId) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        if (validationJob === null || validationJob.jobId !== jobId)
+          return Promise.resolve(notFound());
+        validationPolls += 1;
+        if (validationPolls >= 2 && validationJob.state !== 'cancelled') {
+          validationJob = previewValidationCompleted(jobId);
+        }
+        return Promise.resolve(success(validationJob));
+      },
+      cancel: (jobId) => {
+        if (validationJob === null || validationJob.jobId !== jobId)
+          return Promise.resolve(notFound());
+        if (!['completed', 'failed', 'cancelled'].includes(validationJob.state))
+          validationJob = previewValidationCancelled(jobId);
+        return Promise.resolve(success(validationJob));
+      },
+      discard: (jobId) => {
+        if (validationJob === null || validationJob.jobId !== jobId)
+          return Promise.resolve(notFound());
+        if (!['completed', 'failed', 'cancelled'].includes(validationJob.state))
+          return Promise.resolve(operationInProgress());
+        validationJob = null;
+        return Promise.resolve(success({ jobId, discarded: true }));
+      },
+    },
   };
+}
+
+function previewValidationActive(jobId: string): RunPackageValidationJob {
+  return runPackageValidationJobSchema.parse({
+    jobId,
+    state: 'running',
+    phase: 'payload_integrity',
+    progress: {
+      kind: 'known',
+      completedBytes: 4_096,
+      totalBytes: 12_288,
+      completedEntries: 4,
+      totalEntries: 15,
+    },
+    startedAtUtc: '2026-08-29T12:00:00.000Z',
+    finishedAtUtc: null,
+    report: null,
+    typedError: null,
+  });
+}
+
+function previewValidationCompleted(jobId: string): RunPackageValidationJob {
+  return runPackageValidationJobSchema.parse({
+    jobId,
+    state: 'completed',
+    phase: 'finalizing',
+    progress: {
+      kind: 'known',
+      completedBytes: 12_288,
+      totalBytes: 12_288,
+      completedEntries: 15,
+      totalEntries: 15,
+    },
+    startedAtUtc: '2026-08-29T12:00:00.000Z',
+    finishedAtUtc: '2026-08-29T12:00:01.000Z',
+    typedError: null,
+    report: {
+      validatorVersion: 'm03a.1',
+      validationLevel: 'synthetic_contract_foundation',
+      upstreamRepository: 'https://github.com/vitalcc55/R130SH',
+      upstreamCommit: 'f02f6d954246a5ab6f57d33dac724ce03d7fb841',
+      contractSchema: 'r130sh.run-package.v1',
+      sourceFileName: 'synthetic-preview.r130run',
+      outerPackageSha256: 'a'.repeat(64),
+      outerSizeBytes: 12_288,
+      packageId: '019d3c80-3d21-7a65-8e5a-111111111111',
+      exportRevision: 1,
+      runId: '019d3c80-3d21-7a65-8e5a-222222222222',
+      packageKind: 'final',
+      producer: {
+        name: 'R130SH',
+        version: 'synthetic-m03a',
+        buildId: 'downstream_synthetic_contract_fixture',
+        gitCommit: 'f02f6d954246a5ab6f57d33dac724ce03d7fb841',
+      },
+      entryCount: 15,
+      declaredPayloadBytes: 8_192,
+      validatedPayloadBytes: 8_192,
+      structuralVerdict: 'passed',
+      semanticVerdict: 'partial',
+      semanticCoverage: [
+        { area: 'manifest', status: 'covered', contractSource: 'manifest-example' },
+        {
+          area: 'measurements_csv',
+          status: 'not_available',
+          contractSource: 'upstream-contract-gap',
+        },
+      ],
+      findingCounts: { error: 0, warning: 0, info: 0, total: 0, truncated: false },
+      findings: [],
+      startedAtUtc: '2026-08-29T12:00:00.000Z',
+      finishedAtUtc: '2026-08-29T12:00:01.000Z',
+    },
+  });
+}
+
+function previewValidationCancelled(jobId: string): RunPackageValidationJob {
+  return runPackageValidationJobSchema.parse({
+    jobId,
+    state: 'cancelled',
+    phase: 'payload_integrity',
+    progress: {
+      kind: 'known',
+      completedBytes: 4_096,
+      totalBytes: 12_288,
+      completedEntries: 4,
+      totalEntries: 15,
+    },
+    startedAtUtc: '2026-08-29T12:00:00.000Z',
+    finishedAtUtc: '2026-08-29T12:00:00.500Z',
+    report: null,
+    typedError: { code: 'cancelled', message: 'Проверка отменена.', retryable: false },
+  });
 }
 
 function projectOverview(
@@ -511,6 +649,30 @@ function notFound<TResult>(): DesktopResult<TResult> {
       message: 'Запись не найдена.',
       details: {},
       retryable: false,
+    },
+  };
+}
+
+function workerUnavailable<TResult>(): DesktopResult<TResult> {
+  return {
+    ok: false,
+    error: {
+      code: 'worker_unavailable',
+      message: 'Синтетический worker недоступен.',
+      details: {},
+      retryable: true,
+    },
+  };
+}
+
+function operationInProgress<TResult>(): DesktopResult<TResult> {
+  return {
+    ok: false,
+    error: {
+      code: 'operation_in_progress',
+      message: 'Синтетическая проверка ещё выполняется.',
+      details: {},
+      retryable: true,
     },
   };
 }

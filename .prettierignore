@@ -1,1 +1,3 @@
 .pytest_tmp/
+# Exact upstream bytes are protected by the M03A contract snapshot drift test.
+fixtures/contracts/r130run/v1/

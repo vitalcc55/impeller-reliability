@@ -41,4 +41,8 @@ export const IPC_CHANNELS = {
   caseDocumentOpenFile: 'impeller:case-document:open-file',
   caseDocumentArchive: 'impeller:case-document:archive',
   caseDocumentRestore: 'impeller:case-document:restore',
+  runPackageValidationStart: 'impeller:run-package-validation:start',
+  runPackageValidationGet: 'impeller:run-package-validation:get',
+  runPackageValidationCancel: 'impeller:run-package-validation:cancel',
+  runPackageValidationDiscard: 'impeller:run-package-validation:discard',
 } as const;
