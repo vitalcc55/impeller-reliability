@@ -521,6 +521,56 @@ def test_frozen_plan_exact_and_rounding_values_are_checked(tmp_path: Path) -> No
     assert any(item.code == "semantic_value_mismatch" for item in report.findings)
 
 
+def test_frozen_plan_rejects_non_finite_decimal_strings_as_semantic_finding(tmp_path: Path) -> None:
+    plan = _fixture_object("plan.rbd-rounding.example.json")
+    source_values = plan["source_values"]
+    requirements = plan["methodical_requirements"]
+    assert isinstance(source_values, dict)
+    assert isinstance(requirements, dict)
+    source_values["base_cycles"] = "Infinity"
+    source_values["reserve_factor"] = "1"
+    requirements["required_cycles_exact"] = "Infinity"
+    requirements["required_steady_duration_s_exact"] = "Infinity"
+    package = build_synthetic_r130run(
+        tmp_path / "non-finite-plan.r130run",
+        payload_overrides={"plan/original.json": json.dumps(plan).encode("utf-8")},
+    )
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert report.semanticVerdict == "failed"
+    assert any(item.code == "semantic_value_mismatch" for item in report.findings)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "source_values.base_cycles",
+        "source_values.reserve_factor",
+        "source_values.nominal_rpm",
+        "source_values.acceleration_duration_s",
+        "source_values.deceleration_duration_s",
+        "methodical_requirements.required_cycles_exact",
+        "methodical_requirements.required_steady_duration_s_exact",
+        "execution_targets.target_steady_duration_s",
+    ],
+)
+def test_frozen_plan_bounds_every_decimal_string_before_arithmetic(tmp_path: Path, field: str) -> None:
+    plan = _fixture_object("plan.rbd-rounding.example.json")
+    _set_nested_value(plan, field, "1e999999999")
+    package = build_synthetic_r130run(
+        tmp_path / "unbounded-decimal-plan.r130run",
+        payload_overrides={"plan/original.json": json.dumps(plan).encode("utf-8")},
+    )
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert report.semanticVerdict == "failed"
+    assert any(item.code == "semantic_value_mismatch" for item in report.findings)
+
+
 @pytest.mark.parametrize(
     ("path", "fixture_name", "mutated_field"),
     [

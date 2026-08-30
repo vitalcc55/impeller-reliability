@@ -74,6 +74,7 @@ Frozen final core: `manifest.json`, `plan/original.json`, `plan/effective.json`,
 | Extra/comment metadata | 8 KiB per entry; archive comment 64 KiB |
 | `manifest.json` | 2 MiB |
 | Один materialized JSON | 16 MiB, depth 64, nodes 250 000 |
+| Decimal scalar frozen plan | 128 chars; 64 significant digits; exponent and adjusted exponent within ±1 024 |
 | JSONL line | 1 MiB |
 | CSV logical record | 8 MiB; field 1 MiB |
 | Cumulative decompressed payload | 32 GiB |

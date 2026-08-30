@@ -57,6 +57,9 @@ MAX_DECOMPRESSED_BYTES = 32 * GIB
 MAX_FINDINGS = 200
 MAX_REPORT_BYTES = 900 * 1024
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
+MAX_DECIMAL_TEXT_CHARS = 128
+MAX_DECIMAL_DIGITS = 64
+MAX_DECIMAL_ABS_EXPONENT = 1_024
 csv.field_size_limit(MAX_CSV_FIELD_CHARS)
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 ALLOWED_ZIP_FLAGS = 0x0800 | 0x0008
@@ -1019,6 +1022,8 @@ def _check_frozen_values(
     findings: _FindingAccumulator,
     control: ValidationControl | None,
 ) -> None:
+    if control is not None:
+        control.check("semantic_validation")
     valid = True
     if schema == "r130sh.run-plan.v1":
         execution_targets = value["execution_targets"]
@@ -1033,16 +1038,19 @@ def _check_frozen_values(
             requirements = value["methodical_requirements"]
             targets = value["execution_targets"]
             assert isinstance(source_values, dict) and isinstance(requirements, dict) and isinstance(targets, dict)
-            base_cycles = Decimal(str(source_values["base_cycles"]))
-            reserve_factor = Decimal(str(source_values["reserve_factor"]))
-            nominal_rpm = Decimal(str(source_values["nominal_rpm"]))
-            required_cycles = Decimal(str(requirements["required_cycles_exact"]))
-            required_duration = Decimal(str(requirements["required_steady_duration_s_exact"]))
+            base_cycles = _bounded_decimal(source_values["base_cycles"])
+            reserve_factor = _bounded_decimal(source_values["reserve_factor"])
+            nominal_rpm = _bounded_decimal(source_values["nominal_rpm"])
+            acceleration_duration = _bounded_decimal(source_values["acceleration_duration_s"])
+            deceleration_duration = _bounded_decimal(source_values["deceleration_duration_s"])
+            required_cycles = _bounded_decimal(requirements["required_cycles_exact"])
+            required_duration = _bounded_decimal(requirements["required_steady_duration_s_exact"])
             target_cycles = targets["target_cycles"]
-            target_duration = Decimal(str(targets["target_steady_duration_s"]))
-            if not isinstance(target_cycles, int) or isinstance(target_cycles, bool):
+            target_duration = _bounded_decimal(targets["target_steady_duration_s"])
+            if not isinstance(target_cycles, int) or isinstance(target_cycles, bool) or target_cycles < 0 or target_cycles > MAX_SAFE_INTEGER:
                 raise ValueError("target_cycles_not_integer")
             valid = valid and base_cycles > 0 and reserve_factor > 0 and nominal_rpm > 0
+            valid = valid and acceleration_duration >= 0 and deceleration_duration >= 0
             valid = valid and required_cycles == base_cycles * reserve_factor
             valid = valid and required_duration == required_cycles * Decimal(60) / nominal_rpm
             valid = valid and target_cycles == int(required_cycles.to_integral_value(rounding=ROUND_CEILING))
@@ -1088,6 +1096,19 @@ def _valid_source_id(value: JsonValue) -> bool:
     except ValueError:
         return False
     return str(parsed) == value and parsed.version in {4, 7} and parsed.variant == "specified in RFC 4122"
+
+
+def _bounded_decimal(value: JsonValue) -> Decimal:
+    if not isinstance(value, str) or not value or len(value) > MAX_DECIMAL_TEXT_CHARS:
+        raise ValueError("decimal_text_invalid")
+    parsed = Decimal(value)
+    if not parsed.is_finite():
+        raise ValueError("decimal_not_finite")
+    decimal_tuple = parsed.as_tuple()
+    exponent = decimal_tuple.exponent
+    if not isinstance(exponent, int) or len(decimal_tuple.digits) > MAX_DECIMAL_DIGITS or abs(exponent) > MAX_DECIMAL_ABS_EXPONENT or abs(parsed.adjusted()) > MAX_DECIMAL_ABS_EXPONENT:
+        raise ValueError("decimal_out_of_bounds")
+    return parsed
 
 
 def _valid_sha(value: JsonValue) -> bool:
