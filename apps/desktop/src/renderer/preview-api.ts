@@ -7,6 +7,7 @@ import type {
   ImpellerApi,
   ImportedRunDetail,
   ImportedRunSummary,
+  ReliabilityExecution,
   ProjectOverview,
   RecentProject,
   RunPackageValidationJob,
@@ -22,6 +23,7 @@ import type {
 } from '@impeller-reliability/contracts';
 import {
   importedRunDetailSchema,
+  reliabilityExecutionSchema,
   planIdSchema,
   runPackageImportJobSchema,
   runPackageValidationJobSchema,
@@ -65,6 +67,7 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
   let importJob: RunPackageImportJob | null = null;
   let importPolls = 0;
   let importedRun = previewImportedRunDetail();
+  let reliabilityExecutions: readonly ReliabilityExecution[] = [];
   const recentProject: RecentProject = {
     path: 'C:\\Проекты\\Надёжность рабочего колеса.irproj',
     name: 'Надёжность рабочего колеса',
@@ -537,6 +540,47 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
         });
         return Promise.resolve(success(importedRun));
       },
+    },
+    reliabilityExecution: {
+      materialize: (localImportId) => {
+        if (localImportId !== importedRun.summary.localImportId) return Promise.resolve(notFound());
+        if (importedRun.summary.localSpecimenId === null)
+          return Promise.resolve({
+            ok: false,
+            error: {
+              code: 'validation_error',
+              message: 'Сначала свяжите исходный образец с локальным Specimen.',
+              details: {},
+              retryable: false,
+            },
+          });
+        const existing = reliabilityExecutions.find((item) => item.localImportId === localImportId);
+        if (existing !== undefined) return Promise.resolve(success(existing));
+        const execution = reliabilityExecutionSchema.parse({
+          executionId: '4c7462d8-2222-4d19-8b8c-222222222222',
+          localImportId,
+          localSpecimenId: importedRun.summary.localSpecimenId,
+          sourceSpecimenId: importedRun.summary.sourceSpecimenId,
+          method: importedRun.summary.mode,
+          lifecycleStatus: 'completed',
+          plannedParametersSnapshot: {},
+          resultSummary: {},
+          sourceOuterPackageSha256: importedRun.summary.outerPackageSha256,
+          materializedAtUtc: '2026-09-01T12:00:00.000Z',
+          failureObservations: [],
+        });
+        reliabilityExecutions = [execution];
+        return Promise.resolve(success(execution));
+      },
+      listByWheel: (wheelModelId) =>
+        Promise.resolve(
+          success(
+            reliabilityExecutions.filter(
+              (execution) =>
+                specimens.get(execution.localSpecimenId)?.wheelModelId === wheelModelId,
+            ),
+          ),
+        ),
     },
   };
 }

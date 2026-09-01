@@ -277,6 +277,16 @@ export const WORKER_OPERATION_POLICIES = {
     transportTimeoutMs: 7_000,
     terminateWorkerOnTimeout: true,
   },
+  'reliabilityExecution.materialize': {
+    domainDeadlineMs: 30_000,
+    transportTimeoutMs: 35_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'reliabilityExecution.listByWheel': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
 } as const satisfies Readonly<Record<WorkerOperation, WorkerOperationPolicy>>;
 
 export interface WorkerLifecycleEvent {

@@ -37,6 +37,11 @@ from impeller_reliability.persistence.r130sh_sources import (
     SourceIntegrityStatus,
     SpecimenBinding,
 )
+from impeller_reliability.persistence.reliability_domain import (
+    ReliabilityDataset,
+    ReliabilityDomainRepository,
+    TestExecution,
+)
 from impeller_reliability.persistence.timestamps import require_canonical_utc_timestamp, utc_now
 from impeller_reliability.worker.deadline import RequestDeadline
 
@@ -75,6 +80,7 @@ class ProjectSession:
         self._case_documents.recover_managed_files(deadline)
         self._r130sh_sources = R130shSourceRepository(connection, path)
         self._r130sh_sources.recover_managed_files(deadline)
+        self._reliability_domain = ReliabilityDomainRepository(connection)
 
     def overview(self) -> ProjectOverview:
         row = self._connection.execute(
@@ -446,6 +452,49 @@ class ProjectSession:
             actor=actor,
             reason=reason,
             expected_target_revision=expected_target_revision,
+            deadline=deadline,
+        )
+
+    def materialize_reliability_execution(
+        self,
+        local_import_id: str,
+        deadline: RequestDeadline | None,
+    ) -> TestExecution:
+        source_integrity = self._r130sh_sources.verify_source(local_import_id, deadline=deadline)
+        detail = self._r130sh_sources.get(
+            local_import_id,
+            verify_source=False,
+            deadline=deadline,
+        )
+        return self._reliability_domain.materialize_execution(
+            detail,
+            source_integrity=source_integrity,
+            deadline=deadline,
+        )
+
+    def list_reliability_executions(
+        self,
+        wheel_model_id: str,
+        deadline: RequestDeadline | None,
+    ) -> tuple[TestExecution, ...]:
+        return self._reliability_domain.list_by_wheel_model(wheel_model_id, deadline)
+
+    def create_reliability_dataset(
+        self,
+        *,
+        dataset_id: str,
+        life_metric_unit: str,
+        censoring_policy: str,
+        execution_ids: tuple[str, ...],
+        failure_ids: tuple[str, ...],
+        deadline: RequestDeadline | None,
+    ) -> ReliabilityDataset:
+        return self._reliability_domain.create_dataset(
+            dataset_id=dataset_id,
+            life_metric_unit=life_metric_unit,
+            censoring_policy=censoring_policy,
+            execution_ids=execution_ids,
+            failure_ids=failure_ids,
             deadline=deadline,
         )
 

@@ -20,7 +20,17 @@ M02.2B одновременно закрепил UX-фундамент: общи
 
 M03A — read-only validation foundation в Diagnostics; он не меняет Project и не является import/eligibility. M03B — production import: staged revalidation → immutable managed archive → `r130sh_source` registry/inventory/projection → explicit binding/source-enrichment resolution → reopen. Clean pre-release schema остаётся v1 без фиктивной migration/compatibility. Прямое чтение SQLite R130SH, исходящий план и управление стендом запрещены. M03B не создаёт расчётный snapshot.
 
-## M04 — расчёты испытаний
+## M04A — фундамент предметной модели надёжности
+
+M04A вводит Python-owned derived analysis поверх explicit specimen binding:
+`Project` остаётся ReliabilityCase, существующий `Specimen` — объектом
+анализа, а `TestExecution`, `FailureObservation` и `ReliabilityDataset`
+сохраняют только неизменяемые source-linked snapshots и provenance. Этап не
+materializes старые imports автоматически и не добавляет формулы, eligibility,
+FMEA, charts или reports. Точный контракт принадлежит
+`M04A_RELIABILITY_DOMAIN_FOUNDATION.md`.
+
+## M04B и далее — расчёты испытаний
 
 Сначала один полный РБД vertical slice на импортированных и дополненных данных: `ImportedRunPlanSnapshot` + explicit source/enrichment selection → `AnalysisInputSnapshot` → Python validation/calculation → `CalculationSnapshot`. Только после утверждённого математического контракта и golden fixtures добавляются РПТ и ПМН. Расчёты не формируют задание для R130SH.
 
@@ -46,6 +56,7 @@ TypeScript 7/Vite 8 переходят только цельной совмес�
 2. M02.2B normative sources
 3. M03A run-package contract validation foundation после frozen R130SH examples
 4. M03B production importer + immutable `r130sh_source` + M9b acceptance по 21 M9a packages
-5. M04 RBD/RPT/PMN analysis
+5. M04A reliability domain foundation
+6. M04B RBD/RPT/PMN analysis
 
 Каждая ветка заканчивается наблюдаемым вертикальным результатом и собственным verification gate; M02 не начинается из M01.1 автоматически.

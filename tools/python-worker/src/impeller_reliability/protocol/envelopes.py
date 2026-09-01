@@ -72,6 +72,8 @@ Operation = Literal[
     "importedRun.getResolutionState",
     "importedRun.bindSpecimen",
     "importedRun.applyEnrichmentResolution",
+    "reliabilityExecution.materialize",
+    "reliabilityExecution.listByWheel",
 ]
 
 ProjectStatus = Literal["draft", "active", "completed", "archived"]
@@ -462,6 +464,12 @@ class ImportedRunEnrichmentResolutionPayload(ImportedRunIdPayload):
     expectedTargetRevision: int | None = Field(ge=1, le=9_007_199_254_740_991)
 
 
+class ReliabilityExecutionListByWheelPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    wheelModelId: EntityId
+
+
 class CustomerGetRequest(RequestBase):
     operation: Literal["caseCustomer.get"]
     payload: EmptyPayload
@@ -652,6 +660,16 @@ class ImportedRunApplyEnrichmentResolutionRequest(RequestBase):
     payload: ImportedRunEnrichmentResolutionPayload
 
 
+class ReliabilityExecutionMaterializeRequest(RequestBase):
+    operation: Literal["reliabilityExecution.materialize"]
+    payload: ImportedRunIdPayload
+
+
+class ReliabilityExecutionListByWheelRequest(RequestBase):
+    operation: Literal["reliabilityExecution.listByWheel"]
+    payload: ReliabilityExecutionListByWheelPayload
+
+
 type RequestEnvelope = Annotated[
     HandshakeRequest
     | PingRequest
@@ -700,7 +718,9 @@ type RequestEnvelope = Annotated[
     | ImportedRunVerifySourceRequest
     | ImportedRunGetResolutionStateRequest
     | ImportedRunBindSpecimenRequest
-    | ImportedRunApplyEnrichmentResolutionRequest,
+    | ImportedRunApplyEnrichmentResolutionRequest
+    | ReliabilityExecutionMaterializeRequest
+    | ReliabilityExecutionListByWheelRequest,
     Field(discriminator="operation"),
 ]
 REQUEST_ENVELOPE_ADAPTER: TypeAdapter[RequestEnvelope] = TypeAdapter(RequestEnvelope)
@@ -940,6 +960,43 @@ class ImportedRunListResult(BaseModel):
     items: list[ImportedRunSummaryModel]
 
 
+class FailureObservationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    failureId: EntityId
+    failureType: Literal["specimen_outcome", "technical_interruption"]
+    subjectKind: Literal["specimen", "equipment", "unknown"]
+    sourceEventReference: str = Field(min_length=1, max_length=512)
+    sourceFieldReference: str = Field(min_length=1, max_length=512)
+    cyclesAtFailure: int | None = Field(default=None, ge=0, le=9_007_199_254_740_991)
+    durationS: str | None = Field(default=None, max_length=64)
+    rpm: str | None = Field(default=None, max_length=64)
+    vibrationSummary: dict[str, object]
+    observedAtUtc: str | None
+
+
+class ReliabilityExecutionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    executionId: EntityId
+    localImportId: EntityId
+    localSpecimenId: EntityId
+    sourceSpecimenId: str = Field(min_length=1, max_length=200)
+    method: Literal["rbd", "rpt", "pmn"]
+    lifecycleStatus: Literal["completed", "interrupted", "failed"]
+    plannedParametersSnapshot: dict[str, object]
+    resultSummary: dict[str, object]
+    sourceOuterPackageSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    materializedAtUtc: str
+    failureObservations: list[FailureObservationResult] = Field(max_length=64)
+
+
+class ReliabilityExecutionListResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    items: list[ReliabilityExecutionResult] = Field(max_length=512)
+
+
 class ErrorPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -1014,6 +1071,8 @@ type SuccessResponseType = (
     | SuccessResponse[ImportedRunDetailModel]
     | SuccessResponse[ImportedRunVerifyResult]
     | SuccessResponse[SpecimenBindingModel]
+    | SuccessResponse[ReliabilityExecutionResult]
+    | SuccessResponse[ReliabilityExecutionListResult]
 )
 
 

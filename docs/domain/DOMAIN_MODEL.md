@@ -1,8 +1,8 @@
 # Domain Model
 
-`Project` — аналитическое дело Impeller Reliability. Оно агрегирует редактируемый `analyst_enrichment` (`CustomerProfile`, `WheelModel`, `Specimen`, `AnalystSourceDocument`), неизменяемый `r130sh_source` и audit; `derived_analysis` ещё отсутствует. `TestCampaign` в будущем будет только downstream-группировкой импортированных запусков. Impeller Reliability не имеет собственного исполняемого `TestPlan`.
+`Project` — аналитическое дело Impeller Reliability (`ReliabilityCase`). Оно агрегирует редактируемый `analyst_enrichment` (`CustomerProfile`, `WheelModel`, `Specimen`, `AnalystSourceDocument`), неизменяемый `r130sh_source`, M04A `derived_analysis` и audit. `TestCampaign` в будущем будет только downstream-группировкой импортированных запусков. Impeller Reliability не имеет собственного исполняемого `TestPlan`.
 
-`ImportedTestRun` — принятая immutable export revision R130SH; её `r130sh_source` владеет exact managed archive, inventory и узкой projection. `ImportedRunPlanSnapshot` — неизменяемый original/effective plan внутри source projection; его владельцем остаётся R130SH. Будущие `AnalysisInputSnapshot` и `CalculationSnapshot` отсутствуют до M04.
+`ImportedTestRun` — принятая immutable export revision R130SH; её `r130sh_source` владеет exact managed archive, inventory и узкой projection. `ImportedRunPlanSnapshot` — неизменяемый original/effective plan внутри source projection; его владельцем остаётся R130SH. M04A `TestExecution` и `FailureObservation` — immutable derived snapshots с source-import and field provenance; `ReliabilityDataset` хранит явное inclusion/censoring решение без calculation. `AnalysisInputSnapshot` и `CalculationSnapshot` отсутствуют до следующего расчётного этапа.
 
 M03A contract validation не создаёт новую domain entity: её transient job/report не являются `ImportedTestRun`, `ImportedRunPlanSnapshot`, project entity, audit event, import receipt, analysis input или признаком готовности к расчёту. Точная runtime-модель принадлежит Integration/IPC и карте состояния.
 

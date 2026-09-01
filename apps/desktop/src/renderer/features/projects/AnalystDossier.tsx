@@ -20,6 +20,7 @@ import type {
   CustomerProfile,
   DesktopError,
   ImpellerApi,
+  ReliabilityExecution,
   Specimen,
   SpecimenDraft,
   SpecimenSummary,
@@ -122,6 +123,9 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
     const [wheels, setWheels] = useState<readonly WheelModelSummary[]>([]);
     const [wheel, setWheel] = useState<WheelModel | null>(null);
     const [wheelDraft, setWheelDraft] = useState<WheelModelDraft>(emptyWheel);
+    const [reliabilityExecutions, setReliabilityExecutions] = useState<
+      readonly ReliabilityExecution[]
+    >([]);
     const [nominalSpeedInput, setNominalSpeedInput] = useState('');
     const [bladeCountInput, setBladeCountInput] = useState('');
     const [wheelCreateId, setWheelCreateId] = useState(() => crypto.randomUUID());
@@ -278,6 +282,19 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
       loadWheels,
       section,
     ]);
+
+    useEffect(() => {
+      if (section !== 'wheels' || wheel === null) return;
+      let active = true;
+      void desktopApi.reliabilityExecution.listByWheel(wheel.wheelModelId).then((result) => {
+        if (!active) return;
+        if (!result.ok) return setError(result.error);
+        setReliabilityExecutions(result.result);
+      });
+      return () => {
+        active = false;
+      };
+    }, [desktopApi, section, wheel]);
 
     const run = async (key: string, action: () => Promise<void>): Promise<void> => {
       setBusy(key);
@@ -1023,6 +1040,33 @@ export const AnalystDossier = forwardRef<AnalystDossierHandle, AnalystDossierPro
                   ]
                 }
               />
+              {wheel !== null ? (
+                <section
+                  className="dossier-reliability-executions"
+                  aria-labelledby="wheel-executions-title"
+                >
+                  <Title id="wheel-executions-title" order={4}>
+                    Испытания надёжности
+                  </Title>
+                  {reliabilityExecutions.length === 0 ? (
+                    <Text size="sm">
+                      Для этой модели пока нет materialized исполнений из связанного R130SH
+                      источника.
+                    </Text>
+                  ) : (
+                    <div className="dossier-execution-list">
+                      {reliabilityExecutions.map((execution) => (
+                        <div key={execution.executionId} className="dossier-execution-row">
+                          <strong>{execution.method.toUpperCase()}</strong>
+                          <span>{execution.lifecycleStatus}</span>
+                          <span>Источник: {execution.localImportId}</span>
+                          <span>Наблюдений: {String(execution.failureObservations.length)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              ) : null}
               <Group className="form-actions">
                 <Button
                   type="submit"

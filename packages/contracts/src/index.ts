@@ -53,6 +53,8 @@ export const workerOperationSchema = z.enum([
   'importedRun.getResolutionState',
   'importedRun.bindSpecimen',
   'importedRun.applyEnrichmentResolution',
+  'reliabilityExecution.materialize',
+  'reliabilityExecution.listByWheel',
 ]);
 
 export type WorkerOperation = z.infer<typeof workerOperationSchema>;
@@ -839,6 +841,41 @@ export const specimenBindingSchema = z
 export const importedRunVerifyResultSchema = z
   .object({ localImportId: entityIdSchema, sourceIntegrity: importedRunSourceIntegritySchema })
   .strict();
+export const reliabilityExecutionListByWheelPayloadSchema = z
+  .object({ wheelModelId: entityIdSchema })
+  .strict();
+export const failureObservationSchema = z
+  .object({
+    failureId: entityIdSchema,
+    failureType: z.enum(['specimen_outcome', 'technical_interruption']),
+    subjectKind: z.enum(['specimen', 'equipment', 'unknown']),
+    sourceEventReference: z.string().min(1).max(512),
+    sourceFieldReference: z.string().min(1).max(512),
+    cyclesAtFailure: z.number().int().nonnegative().nullable(),
+    durationS: z.string().max(64).nullable(),
+    rpm: z.string().max(64).nullable(),
+    vibrationSummary: z.record(z.string(), z.unknown()),
+    observedAtUtc: sourceUtcTimestampSchema.nullable(),
+  })
+  .strict();
+export const reliabilityExecutionSchema = z
+  .object({
+    executionId: entityIdSchema,
+    localImportId: entityIdSchema,
+    localSpecimenId: entityIdSchema,
+    sourceSpecimenId: specimenSourceIdSchema,
+    method: z.enum(['rbd', 'rpt', 'pmn']),
+    lifecycleStatus: z.enum(['completed', 'interrupted', 'failed']),
+    plannedParametersSnapshot: z.record(z.string(), z.unknown()),
+    resultSummary: z.record(z.string(), z.unknown()),
+    sourceOuterPackageSha256: z.string().regex(/^[0-9a-f]{64}$/u),
+    materializedAtUtc: sourceUtcTimestampSchema,
+    failureObservations: z.array(failureObservationSchema).max(64),
+  })
+  .strict();
+export const reliabilityExecutionListResultSchema = z
+  .object({ items: z.array(reliabilityExecutionSchema).max(512) })
+  .strict();
 export const importedRunListResultSchema = z
   .object({ items: z.array(importedRunSummarySchema) })
   .strict();
@@ -983,6 +1020,7 @@ export type ImportedRunEnrichmentResolutionCommand = z.infer<
   typeof importedRunEnrichmentResolutionCommandSchema
 >;
 export type SpecimenBinding = z.infer<typeof specimenBindingSchema>;
+export type ReliabilityExecution = z.infer<typeof reliabilityExecutionSchema>;
 
 export interface WorkerOperationMap {
   readonly 'system.handshake': {
@@ -1176,6 +1214,14 @@ export interface WorkerOperationMap {
   readonly 'importedRun.applyEnrichmentResolution': {
     readonly request: ImportedRunEnrichmentResolutionCommand;
     readonly result: ImportedRunDetail;
+  };
+  readonly 'reliabilityExecution.materialize': {
+    readonly request: z.infer<typeof importedRunIdPayloadSchema>;
+    readonly result: ReliabilityExecution;
+  };
+  readonly 'reliabilityExecution.listByWheel': {
+    readonly request: z.infer<typeof reliabilityExecutionListByWheelPayloadSchema>;
+    readonly result: z.infer<typeof reliabilityExecutionListResultSchema>;
   };
 }
 
@@ -1407,6 +1453,18 @@ export const workerRequestSchema = z.discriminatedUnion('operation', [
       payload: importedRunEnrichmentResolutionCommandSchema,
     })
     .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('reliabilityExecution.materialize'),
+      payload: importedRunIdPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('reliabilityExecution.listByWheel'),
+      payload: reliabilityExecutionListByWheelPayloadSchema,
+    })
+    .strict(),
 ]);
 
 export const workerErrorSchema = z
@@ -1513,6 +1571,12 @@ export const importedRunVerifySuccessResponseSchema = createSuccessResponseSchem
 );
 export const specimenBindingSuccessResponseSchema =
   createSuccessResponseSchema(specimenBindingSchema);
+export const reliabilityExecutionSuccessResponseSchema = createSuccessResponseSchema(
+  reliabilityExecutionSchema,
+);
+export const reliabilityExecutionListSuccessResponseSchema = createSuccessResponseSchema(
+  reliabilityExecutionListResultSchema,
+);
 export const workerErrorResponseSchema = responseBaseSchema
   .extend({
     ok: z.literal(false),
@@ -1604,6 +1668,14 @@ const specimenBindingResponseSchema = z.union([
   specimenBindingSuccessResponseSchema,
   workerErrorResponseSchema,
 ]);
+const reliabilityExecutionResponseSchema = z.union([
+  reliabilityExecutionSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const reliabilityExecutionListResponseSchema = z.union([
+  reliabilityExecutionListSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
 
 export type WorkerRequest = z.infer<typeof workerRequestSchema>;
 export type WorkerErrorResponse = z.infer<typeof workerErrorResponseSchema>;
@@ -1659,6 +1731,10 @@ export interface WorkerResponseMap {
   readonly 'importedRun.getResolutionState': z.infer<typeof specimenBindingResponseSchema>;
   readonly 'importedRun.bindSpecimen': z.infer<typeof specimenBindingResponseSchema>;
   readonly 'importedRun.applyEnrichmentResolution': z.infer<typeof importedRunDetailResponseSchema>;
+  readonly 'reliabilityExecution.materialize': z.infer<typeof reliabilityExecutionResponseSchema>;
+  readonly 'reliabilityExecution.listByWheel': z.infer<
+    typeof reliabilityExecutionListResponseSchema
+  >;
 }
 
 export type WorkerResponseFor<TOperation extends WorkerOperation> = WorkerResponseMap[TOperation];
@@ -1779,6 +1855,10 @@ export function parseWorkerResponse(operation: WorkerOperation, input: unknown):
     case 'importedRun.getResolutionState':
     case 'importedRun.bindSpecimen':
       return specimenBindingResponseSchema.parse(input);
+    case 'reliabilityExecution.materialize':
+      return reliabilityExecutionResponseSchema.parse(input);
+    case 'reliabilityExecution.listByWheel':
+      return reliabilityExecutionListResponseSchema.parse(input);
   }
 }
 
@@ -1956,5 +2036,9 @@ export interface ImpellerApi {
     applyEnrichmentResolution(
       command: ImportedRunEnrichmentResolutionCommand,
     ): Promise<DesktopResult<ImportedRunDetail>>;
+  };
+  readonly reliabilityExecution: {
+    materialize(localImportId: string): Promise<DesktopResult<ReliabilityExecution>>;
+    listByWheel(wheelModelId: string): Promise<DesktopResult<readonly ReliabilityExecution[]>>;
   };
 }

@@ -31,6 +31,7 @@ from impeller_reliability.persistence.r130sh_sources import (
     SourceIntegrityStatus,
     SpecimenBinding,
 )
+from impeller_reliability.persistence.reliability_domain import ReliabilityDataset, TestExecution
 from impeller_reliability.persistence.timestamps import utc_now
 from impeller_reliability.worker.deadline import RequestDeadline
 
@@ -354,6 +355,39 @@ class ProjectService:
             actor=actor,
             reason=reason,
             expected_target_revision=expected_target_revision,
+            deadline=deadline,
+        )
+
+    def materialize_reliability_execution(
+        self,
+        local_import_id: str,
+        deadline: RequestDeadline | None,
+    ) -> TestExecution:
+        return self._require_session().materialize_reliability_execution(local_import_id, deadline)
+
+    def list_reliability_executions(
+        self,
+        wheel_model_id: str,
+        deadline: RequestDeadline | None,
+    ) -> tuple[TestExecution, ...]:
+        return self._require_session().list_reliability_executions(wheel_model_id, deadline)
+
+    def create_reliability_dataset(
+        self,
+        *,
+        dataset_id: str,
+        life_metric_unit: str,
+        censoring_policy: str,
+        execution_ids: tuple[str, ...],
+        failure_ids: tuple[str, ...],
+        deadline: RequestDeadline | None,
+    ) -> ReliabilityDataset:
+        return self._require_session().create_reliability_dataset(
+            dataset_id=dataset_id,
+            life_metric_unit=life_metric_unit,
+            censoring_policy=censoring_policy,
+            execution_ids=execution_ids,
+            failure_ids=failure_ids,
             deadline=deadline,
         )
 

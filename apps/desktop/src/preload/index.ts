@@ -26,6 +26,9 @@ import {
   importedRunListResultSchema,
   importedRunResolutionStatePayloadSchema,
   importedRunVerifyResultSchema,
+  reliabilityExecutionListByWheelPayloadSchema,
+  reliabilityExecutionListResultSchema,
+  reliabilityExecutionSchema,
   recentProjectsSchema,
   runtimeStatusSchema,
   runPackageValidationDiscardResultSchema,
@@ -421,6 +424,24 @@ const api: ImpellerApi = {
         command,
         createDesktopResultSchema(importedRunDetailSchema),
       ),
+  },
+  reliabilityExecution: {
+    materialize: async (localImportId) =>
+      invokeValidated(
+        IPC_CHANNELS.reliabilityExecutionMaterialize,
+        importedRunIdPayloadSchema,
+        { localImportId },
+        createDesktopResultSchema(reliabilityExecutionSchema),
+      ),
+    listByWheel: async (wheelModelId) => {
+      const result = await invokeValidated(
+        IPC_CHANNELS.reliabilityExecutionListByWheel,
+        reliabilityExecutionListByWheelPayloadSchema,
+        { wheelModelId },
+        createDesktopResultSchema(reliabilityExecutionListResultSchema),
+      );
+      return result.ok ? { ok: true, result: result.result.items } : result;
+    },
   },
 };
 

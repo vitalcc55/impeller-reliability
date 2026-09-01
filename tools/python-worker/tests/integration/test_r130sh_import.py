@@ -278,6 +278,205 @@ def test_binding_and_enrichment_resolution_are_optimistic_and_audited(tmp_path: 
     service.close()
 
 
+def test_materialized_reliability_execution_preserves_source_and_reopens(tmp_path: Path) -> None:
+    service, project_path = _project(tmp_path)
+    imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
+    wheel = service.create_wheel(
+        {
+            "wheelModelId": str(uuid4()),
+            "fullName": "Колесо для анализа",
+            "designation": "",
+            "nominalDiameterMm": None,
+            "nominalSpeedRpm": None,
+            "bladeCount": None,
+            "geometryDescription": "",
+            "compositionDescription": "",
+            "materialDescription": "",
+            "notes": "",
+        },
+        None,
+    )
+    specimen = service.create_specimen(
+        {
+            "specimenId": str(uuid4()),
+            "wheelModelId": wheel.wheel_model_id,
+            "identificationNumber": "M04A-001",
+            "batchNumber": "",
+            "marking": "",
+            "manufacturedOn": None,
+            "receivedOn": None,
+            "workingDiameterMm": None,
+            "initialConditionNotes": "",
+            "notes": "",
+        },
+        None,
+    )
+    with pytest.raises(ProjectOperationError) as unbound:
+        service.materialize_reliability_execution(imported.local_import_id, None)
+    assert unbound.value.code == "validation_error"
+    service.bind_imported_run_specimen(
+        source_specimen_id=imported.source_specimen_id,
+        local_specimen_id=specimen.specimen_id,
+        expected_revision=1,
+        actor="local_user",
+        reason="Подтверждён инженерный объект анализа",
+        deadline=None,
+    )
+
+    execution = service.materialize_reliability_execution(imported.local_import_id, None)
+    repeated = service.materialize_reliability_execution(imported.local_import_id, None)
+    assert repeated == execution
+    assert execution.local_specimen_id == specimen.specimen_id
+    assert execution.method == "rbd"
+    assert execution.lifecycle_status == "completed"
+    assert execution.failure_observations == ()
+    assert service.list_reliability_executions(wheel.wheel_model_id, None) == (execution,)
+    dataset = service.create_reliability_dataset(
+        dataset_id=str(uuid4()),
+        life_metric_unit="unknown",
+        censoring_policy="not_classified",
+        execution_ids=(execution.execution_id,),
+        failure_ids=(),
+        deadline=None,
+    )
+    assert dataset.execution_ids == (execution.execution_id,)
+
+    archived_source = _import(service, project_path, _package("normal_final_pmn.r130run"))
+    service.bind_imported_run_specimen(
+        source_specimen_id=archived_source.source_specimen_id,
+        local_specimen_id=specimen.specimen_id,
+        expected_revision=2,
+        actor="local_user",
+        reason="Проверка запрета archived Specimen",
+        deadline=None,
+    )
+    service.set_specimen_archived(specimen.specimen_id, specimen.record_revision, True, None)
+    with pytest.raises(ProjectOperationError) as archived:
+        service.materialize_reliability_execution(archived_source.local_import_id, None)
+    assert archived.value.code == "entity_archived"
+
+    source_before = _source_snapshot(project_path, imported.local_import_id)
+    service.close()
+    service.open(path=str(project_path), application_instance_id="reopen")
+    assert service.list_reliability_executions(wheel.wheel_model_id, None) == (execution,)
+    assert _source_snapshot(project_path, imported.local_import_id) == source_before
+    service.close()
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        trigger_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='reliability_test_executions_no_update'",
+            ).fetchone()[0]
+        )
+        connection.execute("DROP TRIGGER reliability_test_executions_no_update")
+        connection.execute(
+            "UPDATE reliability_test_executions SET result_summary_json='{}' WHERE execution_id=?",
+            (execution.execution_id,),
+        )
+        connection.execute(trigger_sql)
+        connection.commit()
+    with pytest.raises(ProjectOperationError) as corrupted:
+        service.open(path=str(project_path), application_instance_id="tampered-derived-snapshot")
+    assert corrupted.value.code == "corrupt_project"
+
+
+def test_reliability_failure_observation_does_not_turn_technical_stop_into_specimen_failure(tmp_path: Path) -> None:
+    service, project_path = _project(tmp_path)
+    imported = _import(
+        service,
+        project_path,
+        _package("device_failure.r130run"),
+    )
+    wheel = service.create_wheel(
+        {
+            "wheelModelId": str(uuid4()),
+            "fullName": "Колесо для interruption",
+            "designation": "",
+            "nominalDiameterMm": None,
+            "nominalSpeedRpm": None,
+            "bladeCount": None,
+            "geometryDescription": "",
+            "compositionDescription": "",
+            "materialDescription": "",
+            "notes": "",
+        },
+        None,
+    )
+    specimen = service.create_specimen(
+        {
+            "specimenId": str(uuid4()),
+            "wheelModelId": wheel.wheel_model_id,
+            "identificationNumber": "M04A-002",
+            "batchNumber": "",
+            "marking": "",
+            "manufacturedOn": None,
+            "receivedOn": None,
+            "workingDiameterMm": None,
+            "initialConditionNotes": "",
+            "notes": "",
+        },
+        None,
+    )
+    service.bind_imported_run_specimen(
+        source_specimen_id=imported.source_specimen_id,
+        local_specimen_id=specimen.specimen_id,
+        expected_revision=1,
+        actor="local_user",
+        reason="Подтверждён инженерный объект анализа",
+        deadline=None,
+    )
+    execution = service.materialize_reliability_execution(imported.local_import_id, None)
+    assert execution.lifecycle_status == "interrupted"
+    assert len(execution.failure_observations) == 1
+    observation = execution.failure_observations[0]
+    assert observation.failure_type == "technical_interruption"
+    assert observation.subject_kind == "unknown"
+    assert observation.cycles_at_failure is None
+    assert observation.vibration_summary["available"] is False
+    assert service.list_reliability_executions(wheel.wheel_model_id, None) == (execution,)
+
+    partial = _import(service, project_path, _package("diagnostic_partial.r130run"))
+    service.bind_imported_run_specimen(
+        source_specimen_id=partial.source_specimen_id,
+        local_specimen_id=specimen.specimen_id,
+        expected_revision=2,
+        actor="local_user",
+        reason="Проверка отсутствующего технического факта",
+        deadline=None,
+    )
+    partial_execution = service.materialize_reliability_execution(partial.local_import_id, None)
+    assert partial_execution.lifecycle_status == "interrupted"
+    assert partial_execution.failure_observations == ()
+    dataset = service.create_reliability_dataset(
+        dataset_id=str(uuid4()),
+        life_metric_unit="unknown",
+        censoring_policy="not_classified",
+        execution_ids=(execution.execution_id,),
+        failure_ids=(observation.failure_id,),
+        deadline=None,
+    )
+    assert dataset.failure_ids == (observation.failure_id,)
+    with pytest.raises(ProjectOperationError) as duplicate_dataset:
+        service.create_reliability_dataset(
+            dataset_id=dataset.dataset_id,
+            life_metric_unit="unknown",
+            censoring_policy="not_classified",
+            execution_ids=(execution.execution_id,),
+            failure_ids=(observation.failure_id,),
+            deadline=None,
+        )
+    assert duplicate_dataset.value.code == "duplicate_entity"
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        for statement in (
+            "UPDATE reliability_test_executions SET method='pmn'",
+            "DELETE FROM reliability_test_executions",
+            "UPDATE failure_observations SET rpm='1'",
+            "DELETE FROM failure_observations",
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(statement)
+    service.close()
+
+
 def test_enrichment_copy_is_whitelisted_empty_only_and_idempotent(tmp_path: Path) -> None:
     service, project_path = _project(tmp_path)
     imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
@@ -964,6 +1163,20 @@ def _import_via_job(
 def _audit_count(project_path: Path) -> int:
     with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
         return int(connection.execute("SELECT count(*) FROM project_audit_events").fetchone()[0])
+
+
+def _source_snapshot(project_path: Path, local_import_id: str) -> tuple[object, ...]:
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        source = connection.execute(
+            "SELECT package_id, export_revision, outer_package_sha256, source_snapshot_sha256 FROM r130sh_sources WHERE local_import_id=?",
+            (local_import_id,),
+        ).fetchone()
+        projection = connection.execute(
+            "SELECT run_id, source_specimen_id, mode, technical_status, specimen_outcome FROM r130sh_run_projections WHERE local_import_id=?",
+            (local_import_id,),
+        ).fetchone()
+    assert source is not None and projection is not None
+    return (*tuple(source), *tuple(projection))
 
 
 def _managed_path(project_path: Path, imported: ImportedRunSummary) -> Path:
