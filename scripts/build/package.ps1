@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("WinUnpacked", "Portable")]
-    [string]$Target
+    [string]$Target,
+    [switch]$SkipWorkerCheck
 )
 
 Set-StrictMode -Version Latest
@@ -11,7 +12,12 @@ $repositoryRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 
 Push-Location $repositoryRoot
 try {
-    & pwsh.exe -NoProfile -File tools/python-worker/scripts/build.ps1
+    if ($SkipWorkerCheck) {
+        & pwsh.exe -NoProfile -File tools/python-worker/scripts/build.ps1 -SkipCheck
+    }
+    else {
+        & pwsh.exe -NoProfile -File tools/python-worker/scripts/build.ps1
+    }
     if ($LASTEXITCODE -ne 0) { throw "Worker build failed." }
     & pnpm build
     if ($LASTEXITCODE -ne 0) { throw "Electron build failed." }

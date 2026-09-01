@@ -5,10 +5,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 UPSTREAM_REPOSITORY = "https://github.com/vitalcc55/R130SH"
-UPSTREAM_COMMIT = "f02f6d954246a5ab6f57d33dac724ce03d7fb841"
+UPSTREAM_COMMIT = "01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63"
 CONTRACT_SCHEMA = "r130sh.run-package.v1"
-VALIDATION_LEVEL = "synthetic_contract_foundation"
-VALIDATOR_VERSION = "m03a.1"
+VALIDATION_LEVEL = "producer_m9a_contract"
+VALIDATOR_VERSION = "m03b.1"
 
 StructuralVerdict = Literal["passed", "failed"]
 SemanticVerdict = Literal["passed", "partial", "failed", "not_available"]
@@ -22,7 +22,7 @@ class RunPackageProducer(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     version: str = Field(min_length=1, max_length=64)
     buildId: str = Field(min_length=1, max_length=128)
-    gitCommit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    gitCommit: str = Field(min_length=1, max_length=128)
 
 
 class RunPackageSemanticCoverage(BaseModel):
@@ -56,10 +56,10 @@ class RunPackageFindingCounts(BaseModel):
 class RunPackageValidationReport(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    validatorVersion: Literal["m03a.1"] = "m03a.1"
-    validationLevel: Literal["synthetic_contract_foundation"] = "synthetic_contract_foundation"
+    validatorVersion: Literal["m03b.1"] = "m03b.1"
+    validationLevel: Literal["producer_m9a_contract"] = "producer_m9a_contract"
     upstreamRepository: Literal["https://github.com/vitalcc55/R130SH"] = "https://github.com/vitalcc55/R130SH"
-    upstreamCommit: Literal["f02f6d954246a5ab6f57d33dac724ce03d7fb841"] = "f02f6d954246a5ab6f57d33dac724ce03d7fb841"
+    upstreamCommit: Literal["01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63"] = "01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63"
     contractSchema: Literal["r130sh.run-package.v1"] = "r130sh.run-package.v1"
     sourceFileName: str = Field(min_length=1, max_length=255)
     outerPackageSha256: str = Field(pattern=r"^[0-9a-f]{64}$")

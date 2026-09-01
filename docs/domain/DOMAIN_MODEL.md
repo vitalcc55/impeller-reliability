@@ -1,12 +1,12 @@
 # Domain Model
 
-`Project` — аналитическое дело Impeller Reliability. Оно агрегирует редактируемый `analyst_enrichment` (`CustomerProfile`, `WheelModel`, `Specimen`, `AnalystSourceDocument`), будущий неизменяемый `r130sh_source`, производный `derived_analysis` и audit. `TestCampaign` в будущем будет только downstream-группировкой импортированных запусков. Impeller Reliability не имеет собственного исполняемого `TestPlan`.
+`Project` — аналитическое дело Impeller Reliability. Оно агрегирует редактируемый `analyst_enrichment` (`CustomerProfile`, `WheelModel`, `Specimen`, `AnalystSourceDocument`), неизменяемый `r130sh_source` и audit; `derived_analysis` ещё отсутствует. `TestCampaign` в будущем будет только downstream-группировкой импортированных запусков. Impeller Reliability не имеет собственного исполняемого `TestPlan`.
 
-`ImportedRunPlanSnapshot` — неизменяемый original/effective plan из будущего `.r130run`; его владельцем остаётся R130SH. `AnalysisInputSnapshot` фиксирует выбранные source/enrichment values конкретного анализа. `CalculationSnapshot` фиксирует входной hash, алгоритм, evidence, warnings и результат вычисления.
+`ImportedTestRun` — принятая immutable export revision R130SH; её `r130sh_source` владеет exact managed archive, inventory и узкой projection. `ImportedRunPlanSnapshot` — неизменяемый original/effective plan внутри source projection; его владельцем остаётся R130SH. Будущие `AnalysisInputSnapshot` и `CalculationSnapshot` отсутствуют до M04.
 
 M03A contract validation не создаёт новую domain entity: её transient job/report не являются `ImportedTestRun`, `ImportedRunPlanSnapshot`, project entity, audit event, import receipt, analysis input или признаком готовности к расчёту. Точная runtime-модель принадлежит Integration/IPC и карте состояния.
 
-Первый публикуемый `Project` представлен контейнером `.irproj` и schema v1: `project_metadata`, `customer_profile`, `wheel_models`, `specimens`, `case_documents`, document applicability links, immutable file registry и append-only audit. Все изменяемые записи используют optimistic revision; реальное изменение и audit атомарны, no-op не создаёт revision или event.
+Первый публикуемый `Project` представлен контейнером `.irproj` и clean pre-release schema v1: dossier tables дополнены `r130sh_sources`, `r130sh_source_inventory`, `r130sh_run_projections`, `r130sh_specimen_bindings`, `r130sh_enrichment_resolutions` и append-only audit. Source registry/inventory/projection неизменяемы; binding optimistic, resolution append-only, exact import retry не создаёт revision/event.
 
 `AnalystSourceDocument` («Документ дела») — редактируемая регистрационная запись analyst enrichment. Она имеет вид, название, обозначение, редакцию, дату, issuer, notes и применимость к нескольким WheelModel/Specimen; отсутствие links означает всё дело. У записи не более одной неизменяемой управляемой копии. Файл не является imported R130SH source: новая фактическая редакция создаёт новый документ, hard delete и supersedes-chain отсутствуют.
 

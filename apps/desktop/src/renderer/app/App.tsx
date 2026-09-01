@@ -67,12 +67,20 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
     });
     const unsubscribeCloseRequested = desktopApi.system.subscribeCloseRequested(() => {
       void (async () => {
-        const dirtyAfterSave = await projectWorkspace.current?.waitForPendingSave();
-        if (dirtyAfterSave === true) {
-          setManagedAction('close-application');
-          return;
+        try {
+          const dirtyAfterSave = await projectWorkspace.current?.waitForPendingSave();
+          if (dirtyAfterSave === true) {
+            setManagedAction('close-application');
+            return;
+          }
+          await desktopApi.system.confirmClose();
+        } catch {
+          if (projectWorkspace.current?.hasDirtyDraft() === true) {
+            setManagedAction('close-application');
+          } else {
+            await desktopApi.system.confirmClose();
+          }
         }
-        await desktopApi.system.confirmClose();
       })();
     });
     void desktopApi.system
@@ -126,11 +134,18 @@ export function App({ browserPreview, desktopApi }: AppProps): React.JSX.Element
     }
   };
   const requestRestart = (): void => {
-    if (projectWorkspace.current?.hasDirtyDraft() === true) {
-      setManagedAction('restart');
-      return;
-    }
-    void restartWorker();
+    void (async () => {
+      try {
+        const dirtyAfterSave = await projectWorkspace.current?.waitForPendingSave();
+        if (dirtyAfterSave === true) {
+          setManagedAction('restart');
+          return;
+        }
+      } catch {
+        // Restart is the recovery path when the old worker cannot complete cancel/drain.
+      }
+      await restartWorker();
+    })();
   };
   const confirmManagedAction = async (): Promise<void> => {
     const action = managedAction;

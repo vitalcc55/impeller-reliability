@@ -227,6 +227,56 @@ export const WORKER_OPERATION_POLICIES = {
     transportTimeoutMs: 5_000,
     terminateWorkerOnTimeout: false,
   },
+  'runPackageImport.start': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'runPackageImport.get': {
+    domainDeadlineMs: 30_000,
+    transportTimeoutMs: 35_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'runPackageImport.cancel': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'runPackageImport.discard': {
+    domainDeadlineMs: 3_000,
+    transportTimeoutMs: 5_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'importedRun.list': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'importedRun.get': {
+    domainDeadlineMs: 30_000,
+    transportTimeoutMs: 35_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'importedRun.verifySource': {
+    domainDeadlineMs: 30_000,
+    transportTimeoutMs: 35_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'importedRun.getResolutionState': {
+    domainDeadlineMs: 3_000,
+    transportTimeoutMs: 5_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'importedRun.bindSpecimen': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'importedRun.applyEnrichmentResolution': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
 } as const satisfies Readonly<Record<WorkerOperation, WorkerOperationPolicy>>;
 
 export interface WorkerLifecycleEvent {

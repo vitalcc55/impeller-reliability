@@ -619,6 +619,235 @@ h3 {
   color: var(--ir-color-warning-text);
   background: var(--ir-color-warning-bg);
 }
+.r130sh-results {
+  min-width: 0;
+}
+.r130sh-results__heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+.r130sh-results__heading > div {
+  min-width: 0;
+}
+.import-progress {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.7fr) minmax(260px, 1.5fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  margin: 18px 0;
+  padding: 14px 16px;
+  background: var(--ir-color-surface-subtle);
+  border: 1px solid var(--ir-color-border);
+  border-radius: 12px;
+}
+.import-progress > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+.import-progress span {
+  min-width: 0;
+  color: var(--ir-color-text-muted);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+.import-progress progress,
+.import-progress [role='progressbar'] {
+  width: 100%;
+  min-width: 0;
+  height: 8px;
+}
+.r130sh-master-detail {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.55fr) minmax(0, 1.75fr);
+  gap: 26px;
+  margin-top: 26px;
+}
+.r130sh-run-list {
+  min-width: 0;
+  padding: 18px;
+  background: var(--ir-color-surface-subtle);
+  border-radius: 12px;
+}
+.r130sh-run-list h3 {
+  font-family: var(--ir-font-body);
+  font-size: 1rem;
+}
+.r130sh-run-list ul,
+.package-inventory {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.r130sh-run-list li + li {
+  margin-top: 6px;
+}
+.r130sh-run-list button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  color: var(--ir-color-text);
+  text-align: left;
+  background: var(--ir-color-surface);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.r130sh-run-list button:hover,
+.r130sh-run-list button.is-selected {
+  border-color: var(--ir-color-focus);
+}
+.r130sh-run-list button span,
+.r130sh-run-list button strong,
+.r130sh-run-list button small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.r130sh-run-list button span,
+.r130sh-run-list button small {
+  color: var(--ir-color-text-muted);
+}
+.r130sh-run-detail,
+.r130sh-detail-header > div {
+  min-width: 0;
+}
+.r130sh-detail-sections {
+  display: grid;
+}
+.r130sh-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 18px;
+}
+.r130sh-detail-header h3 {
+  overflow-wrap: anywhere;
+}
+.r130sh-source-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+.source-status {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  color: var(--ir-color-success-text);
+  font-size: 0.78rem;
+  font-weight: 700;
+  background: var(--ir-color-success-bg);
+  border-radius: 999px;
+}
+.source-status--missing,
+.source-status--modified,
+.source-status--verification_error {
+  color: var(--ir-color-danger-text);
+  background: var(--ir-color-danger-bg);
+}
+.diagnostic-partial-banner {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 6px;
+  padding: 13px 15px;
+  color: var(--ir-color-warning-text);
+  background: var(--ir-color-warning-bg);
+  border-radius: 10px;
+}
+.r130sh-detail-section {
+  min-width: 0;
+  padding: 22px 0;
+  border-top: 1px solid var(--ir-color-border);
+}
+.r130sh-detail-section h4 {
+  margin-bottom: 14px;
+  font-size: 1rem;
+}
+.source-data-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 18px;
+  margin: 0;
+}
+.source-data-list > div {
+  min-width: 0;
+}
+.source-data-list dt {
+  color: var(--ir-color-text-muted);
+  font-size: 0.74rem;
+}
+.source-data-list dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.source-analyst-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.comparison-block {
+  min-width: 0;
+  padding: 14px;
+  background: var(--ir-color-surface-subtle);
+  border-radius: 10px;
+}
+.comparison-block > strong {
+  display: block;
+  margin-bottom: 12px;
+}
+.comparison-block > span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.comparison-block .source-data-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.package-inventory {
+  display: grid;
+  gap: 8px;
+}
+.package-inventory li {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto minmax(250px, 1.5fr);
+  gap: 14px;
+  align-items: baseline;
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--ir-color-surface-subtle);
+  border-radius: 8px;
+}
+.package-inventory strong,
+.package-inventory code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.package-inventory code {
+  color: var(--ir-color-text-muted);
+  font-size: 0.76rem;
+}
+.binding-editor,
+.resolution-editor {
+  display: grid;
+  gap: 14px;
+  max-width: 880px;
+}
+.binding-editor + .resolution-editor {
+  margin-top: 26px;
+  padding-top: 24px;
+  border-top: 1px solid var(--ir-color-border);
+}
+.binding-editor .mantine-Button-root,
+.resolution-editor .mantine-Button-root {
+  justify-self: start;
+}
+.empty-copy {
+  margin-top: 14px;
+  color: var(--ir-color-text-muted);
+}
 .danger-action {
   color: var(--ir-color-danger-text);
 }
@@ -911,6 +1140,19 @@ h3 {
   .dossier-editor {
     grid-template-columns: 1fr;
   }
+  .r130sh-master-detail {
+    grid-template-columns: minmax(220px, 0.65fr) minmax(0, 1.35fr);
+    gap: 18px;
+  }
+  .source-data-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .package-inventory li {
+    grid-template-columns: 1fr auto;
+  }
+  .package-inventory code {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 660px) {
@@ -1009,6 +1251,22 @@ h3 {
   .r130run-report__coverage li > span:last-child {
     justify-items: start;
     text-align: left;
+  }
+  .r130sh-results__heading,
+  .r130sh-detail-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .import-progress,
+  .r130sh-master-detail,
+  .source-analyst-columns,
+  .source-data-list,
+  .comparison-block .source-data-list,
+  .package-inventory li {
+    grid-template-columns: 1fr;
+  }
+  .package-inventory code {
+    grid-column: auto;
   }
 }
 

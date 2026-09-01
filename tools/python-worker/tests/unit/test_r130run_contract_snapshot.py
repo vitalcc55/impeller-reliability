@@ -6,6 +6,10 @@ from pathlib import Path
 import re
 
 SNAPSHOT_ROOT = Path(__file__).resolve().parents[4] / "fixtures" / "contracts" / "r130run" / "v1"
+M9A_SNAPSHOT_ROOT = SNAPSHOT_ROOT / "m9a"
+M9A_INDEX_GIT_BLOB = "7380e90121fc7ad1dcb12c22baaeab98affc3698"
+M9A_INDEX_SHA256 = "e5927b6f8c9b34a8c99614873a56ce96246cc19f0dd7458b9964a6e970f086bb"
+M9A_INDEX_SIZE = 5552
 EXPECTED_SOURCE = {
     "README.md": (
         "docs/contracts/r130run/v1/README.md",
@@ -61,6 +65,7 @@ def test_r130run_contract_snapshot_matches_pinned_upstream_hashes() -> None:
     assert source["schemaVersion"] == 1
     assert source["repository"] == "https://github.com/vitalcc55/R130SH"
     assert source["commit"] == "f02f6d954246a5ab6f57d33dac724ce03d7fb841"
+    assert source["snapshotRole"].startswith("historical M03A synthetic")
     assert source["snapshotCreatedAtUtc"] == "2026-08-29T19:36:09.996Z"
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", source["snapshotCreatedAtUtc"])
     assert source["statement"] == "synthetic target examples, not M9a golden packages"
@@ -86,6 +91,62 @@ def test_r130run_contract_snapshot_matches_pinned_upstream_hashes() -> None:
 
 
 def test_r130run_snapshot_contains_no_untracked_contract_materials() -> None:
-    assert all(path.is_file() for path in SNAPSHOT_ROOT.rglob("*"))
-    actual_files = {path.relative_to(SNAPSHOT_ROOT).as_posix() for path in SNAPSHOT_ROOT.rglob("*") if path.is_file()}
+    actual_files = {path.name for path in SNAPSHOT_ROOT.iterdir() if path.is_file()}
     assert actual_files == set(EXPECTED_SOURCE) | {"UPSTREAM_SOURCE.json"}
+
+
+def test_m9a_snapshot_matches_exact_upstream_index_and_outer_hashes() -> None:
+    source = json.loads((M9A_SNAPSHOT_ROOT / "UPSTREAM_SOURCE.json").read_text(encoding="utf-8"))
+    index = json.loads((M9A_SNAPSHOT_ROOT / "package-index.json").read_text(encoding="utf-8"))
+
+    assert source["schemaVersion"] == "impeller-reliability.r130sh-m9a-snapshot-source.v1"
+    assert source["repository"] == "vitalcc55/R130SH"
+    assert source["branch"] == "codex/data-and-protocol-improvements"
+    assert source["exactCommit"] == "01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63"
+    assert source["upstreamPackageIndexPath"] == "tests/fixtures/r130run/v1/m9a/package-index.json"
+    assert source["packageCount"] == 21
+    assert source["scenarioCount"] == 18
+    assert source["description"].startswith("Producer-generated M9a golden packages.")
+    assert index["schema_version"] == "r130sh.m09a-golden-catalog.v1"
+    assert len(index["packages"]) == 21
+    assert len({entry["case_name"] for entry in index["packages"]}) == 18
+
+    provenance_paths = [entry["path"] for entry in source["files"]]
+    assert len(provenance_paths) == len(set(provenance_paths)) == 22
+    provenance_by_path = {entry["path"]: entry for entry in source["files"]}
+    indexed_by_path = {entry["path"]: entry for entry in index["packages"]}
+    assert set(provenance_by_path) == {"package-index.json"} | set(indexed_by_path)
+
+    index_bytes = (M9A_SNAPSHOT_ROOT / "package-index.json").read_bytes()
+    assert len(index_bytes) == M9A_INDEX_SIZE
+    assert hashlib.sha256(index_bytes).hexdigest() == M9A_INDEX_SHA256
+    assert _git_blob_sha(index_bytes) == M9A_INDEX_GIT_BLOB
+    assert provenance_by_path["package-index.json"]["gitBlobSha"] == M9A_INDEX_GIT_BLOB
+    for relative_path, expected in indexed_by_path.items():
+        package_path = M9A_SNAPSHOT_ROOT / relative_path
+        payload = package_path.read_bytes()
+        provenance = provenance_by_path[relative_path]
+        assert package_path.is_file()
+        assert len(payload) == expected["size"] == provenance["size"]
+        assert hashlib.sha256(payload).hexdigest() == expected["sha256"] == provenance["outerSha256"]
+        assert _git_blob_sha(payload) == provenance["gitBlobSha"]
+
+
+def test_m9a_snapshot_contains_exactly_the_indexed_packages() -> None:
+    index = json.loads((M9A_SNAPSHOT_ROOT / "package-index.json").read_text(encoding="utf-8"))
+    expected_packages = {entry["path"] for entry in index["packages"]}
+    actual_packages = {path.relative_to(M9A_SNAPSHOT_ROOT).as_posix() for path in (M9A_SNAPSHOT_ROOT / "packages").rglob("*") if path.is_file()}
+    assert actual_packages == expected_packages
+    assert {path.name for path in M9A_SNAPSHOT_ROOT.iterdir()} == {
+        "README.md",
+        "UPSTREAM_SOURCE.json",
+        "package-index.json",
+        "packages",
+    }
+
+
+def _git_blob_sha(payload: bytes) -> str:
+    return hashlib.sha1(
+        f"blob {len(payload)}\0".encode() + payload,
+        usedforsecurity=False,
+    ).hexdigest()

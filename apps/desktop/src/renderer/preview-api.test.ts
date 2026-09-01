@@ -65,4 +65,58 @@ describe('browser preview api', () => {
       error: { code: 'entity_not_found' },
     });
   });
+
+  it('models import progress, persisted source reads and explicit specimen binding', async () => {
+    const api = createPreviewApi('ready');
+    await api.project.create({
+      name: 'M03B preview',
+      projectNumber: '',
+      description: '',
+      status: 'draft',
+    });
+    const jobId = 'ec7cc676-e40d-4ad7-b038-83e0035dc212';
+    await expect(
+      api.runPackageImport.selectAndStart({ jobId, allowDiagnosticPartial: false }),
+    ).resolves.toMatchObject({ ok: true, result: { state: 'copying' } });
+    await expect(api.runPackageImport.get(jobId)).resolves.toMatchObject({
+      ok: true,
+      result: { state: 'copying' },
+    });
+    const completed = await api.runPackageImport.get(jobId);
+    expect(completed).toMatchObject({
+      ok: true,
+      result: { state: 'completed', result: { disposition: 'existing' } },
+    });
+    const replacementJobId = '31871fa4-2088-4f0d-bcb4-dd5454294edc';
+    await expect(
+      api.runPackageImport.selectAndStart({
+        jobId: replacementJobId,
+        allowDiagnosticPartial: false,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'operation_in_progress' } });
+    await expect(
+      api.runPackageImport.selectAndStart({
+        jobId: replacementJobId,
+        replaceJobId: jobId,
+        allowDiagnosticPartial: false,
+      }),
+    ).resolves.toMatchObject({ ok: true, result: { state: 'copying' } });
+    const listed = await api.importedRun.list();
+    expect(listed).toMatchObject({ ok: true, result: [{ sourceIntegrity: 'verified' }] });
+    if (!listed.ok || listed.result[0] === undefined) throw new Error('missing preview import');
+    const summary = listed.result[0];
+    await expect(api.importedRun.get(summary.localImportId)).resolves.toMatchObject({
+      ok: true,
+      result: { summary: { runId: summary.runId } },
+    });
+    await expect(
+      api.importedRun.bindSpecimen({
+        sourceSpecimenId: summary.sourceSpecimenId,
+        localSpecimenId: null,
+        expectedRevision: summary.bindingRevision,
+        actor: 'local_user',
+        reason: 'Явно оставить без привязки',
+      }),
+    ).resolves.toMatchObject({ ok: true, result: { recordRevision: 1 } });
+  });
 });

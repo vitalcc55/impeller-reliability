@@ -5,9 +5,13 @@ import type {
   DesktopResult,
   CustomerProfile,
   ImpellerApi,
+  ImportedRunDetail,
+  ImportedRunSummary,
   ProjectOverview,
   RecentProject,
   RunPackageValidationJob,
+  RunPackageImportJob,
+  SpecimenBinding,
   RuntimeStatus,
   Specimen,
   SpecimenDraft,
@@ -16,7 +20,13 @@ import type {
   WheelModelDraft,
   WheelModelSummary,
 } from '@impeller-reliability/contracts';
-import { runPackageValidationJobSchema } from '@impeller-reliability/contracts';
+import {
+  importedRunDetailSchema,
+  planIdSchema,
+  runPackageImportJobSchema,
+  runPackageValidationJobSchema,
+  specimenSourceIdSchema,
+} from '@impeller-reliability/contracts';
 
 export type PreviewMode = 'ready' | 'unavailable';
 
@@ -52,6 +62,9 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
   const documents = new Map<string, CaseDocument>();
   let validationJob: RunPackageValidationJob | null = null;
   let validationPolls = 0;
+  let importJob: RunPackageImportJob | null = null;
+  let importPolls = 0;
+  let importedRun = previewImportedRunDetail();
   const recentProject: RecentProject = {
     path: 'C:\\Проекты\\Надёжность рабочего колеса.irproj',
     name: 'Надёжность рабочего колеса',
@@ -70,6 +83,8 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
         status = previewStatuses.ready;
         validationJob = null;
         validationPolls = 0;
+        importJob = null;
+        importPolls = 0;
         for (const listener of listeners) listener(status);
         return Promise.resolve(status);
       },
@@ -431,6 +446,98 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
         return Promise.resolve(success({ jobId, discarded: true }));
       },
     },
+    runPackageImport: {
+      selectAndStart: ({ jobId, replaceJobId }) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        if (activeProject === null) return Promise.resolve(noProject());
+        if (importJob !== null) {
+          const terminal = ['completed', 'failed', 'cancelled'].includes(importJob.state);
+          if (!terminal || replaceJobId !== importJob.jobId)
+            return Promise.resolve(operationInProgress());
+        }
+        importPolls = 0;
+        importJob = previewImportActive(jobId);
+        return Promise.resolve(success(importJob));
+      },
+      get: (jobId) => {
+        if (importJob === null || importJob.jobId !== jobId) return Promise.resolve(notFound());
+        importPolls += 1;
+        if (importPolls >= 2 && importJob.state !== 'cancelled') {
+          importJob = previewImportCompleted(jobId, importedRun.summary);
+        }
+        return Promise.resolve(success(importJob));
+      },
+      cancel: (jobId) => {
+        if (importJob === null || importJob.jobId !== jobId) return Promise.resolve(notFound());
+        if (!['completed', 'failed', 'cancelled'].includes(importJob.state))
+          importJob = previewImportCancelled(jobId);
+        return Promise.resolve(success(importJob));
+      },
+      discard: (jobId) => {
+        if (importJob === null || importJob.jobId !== jobId) return Promise.resolve(notFound());
+        if (!['completed', 'failed', 'cancelled'].includes(importJob.state))
+          return Promise.resolve(operationInProgress());
+        importJob = null;
+        return Promise.resolve(success({ jobId, discarded: true }));
+      },
+    },
+    importedRun: {
+      list: () => Promise.resolve(success([importedRun.summary])),
+      get: (localImportId) =>
+        Promise.resolve(
+          localImportId === importedRun.summary.localImportId ? success(importedRun) : notFound(),
+        ),
+      verifySource: (localImportId) =>
+        Promise.resolve(
+          localImportId === importedRun.summary.localImportId
+            ? success({ localImportId, sourceIntegrity: 'verified' as const })
+            : notFound(),
+        ),
+      getResolutionState: (sourceSpecimenId) =>
+        Promise.resolve(
+          sourceSpecimenId === importedRun.summary.sourceSpecimenId
+            ? success(previewBinding(importedRun.summary))
+            : notFound(),
+        ),
+      bindSpecimen: (command) => {
+        if (command.sourceSpecimenId !== importedRun.summary.sourceSpecimenId)
+          return Promise.resolve(notFound());
+        if (command.localSpecimenId === importedRun.summary.localSpecimenId)
+          return Promise.resolve(success(previewBinding(importedRun.summary)));
+        importedRun = importedRunDetailSchema.parse({
+          ...importedRun,
+          summary: {
+            ...importedRun.summary,
+            localSpecimenId: command.localSpecimenId,
+            bindingRevision: command.expectedRevision + 1,
+          },
+        });
+        return Promise.resolve(success(previewBinding(importedRun.summary)));
+      },
+      applyEnrichmentResolution: (command) => {
+        if (command.localImportId !== importedRun.summary.localImportId)
+          return Promise.resolve(notFound());
+        importedRun = importedRunDetailSchema.parse({
+          ...importedRun,
+          enrichmentResolutions: [
+            ...importedRun.enrichmentResolutions,
+            {
+              resolutionId: command.resolutionId,
+              sourcePayloadPath: command.sourcePayloadPath,
+              sourceField: command.sourceField,
+              targetEntityType: command.targetEntityType,
+              targetEntityId: command.targetEntityId,
+              targetField: command.targetField,
+              decision: command.decision,
+              actor: command.actor,
+              occurredAtUtc: '2026-08-31T12:00:00.000Z',
+              reason: command.reason,
+            },
+          ],
+        });
+        return Promise.resolve(success(importedRun));
+      },
+    },
   };
 }
 
@@ -469,35 +576,35 @@ function previewValidationCompleted(jobId: string): RunPackageValidationJob {
     finishedAtUtc: '2026-08-29T12:00:01.000Z',
     typedError: null,
     report: {
-      validatorVersion: 'm03a.1',
-      validationLevel: 'synthetic_contract_foundation',
+      validatorVersion: 'm03b.1',
+      validationLevel: 'producer_m9a_contract',
       upstreamRepository: 'https://github.com/vitalcc55/R130SH',
-      upstreamCommit: 'f02f6d954246a5ab6f57d33dac724ce03d7fb841',
+      upstreamCommit: '01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63',
       contractSchema: 'r130sh.run-package.v1',
       sourceFileName: 'synthetic-preview.r130run',
       outerPackageSha256: 'a'.repeat(64),
       outerSizeBytes: 12_288,
       packageId: '019d3c80-3d21-7a65-8e5a-111111111111',
       exportRevision: 1,
-      runId: '019d3c80-3d21-7a65-8e5a-222222222222',
+      runId: 'normal_final_rbd',
       packageKind: 'final',
       producer: {
         name: 'R130SH',
         version: 'synthetic-m03a',
         buildId: 'downstream_synthetic_contract_fixture',
-        gitCommit: 'f02f6d954246a5ab6f57d33dac724ce03d7fb841',
+        gitCommit: 'm9a-commit',
       },
       entryCount: 15,
       declaredPayloadBytes: 8_192,
       validatedPayloadBytes: 8_192,
       structuralVerdict: 'passed',
-      semanticVerdict: 'partial',
+      semanticVerdict: 'passed',
       semanticCoverage: [
         { area: 'manifest', status: 'covered', contractSource: 'manifest-example' },
         {
           area: 'measurements_csv',
-          status: 'not_available',
-          contractSource: 'upstream-contract-gap',
+          status: 'covered',
+          contractSource: 'r130sh-m9a-contract',
         },
       ],
       findingCounts: { error: 0, warning: 0, info: 0, total: 0, truncated: false },
@@ -525,6 +632,203 @@ function previewValidationCancelled(jobId: string): RunPackageValidationJob {
     report: null,
     typedError: { code: 'cancelled', message: 'Проверка отменена.', retryable: false },
   });
+}
+
+function previewImportActive(jobId: string): RunPackageImportJob {
+  return runPackageImportJobSchema.parse({
+    jobId,
+    state: 'copying',
+    phase: 'streaming_copy',
+    completedBytes: 4_096,
+    totalBytes: 9_111,
+    completedEntries: 0,
+    totalEntries: 0,
+    startedAtUtc: '2026-08-31T12:00:00.000Z',
+    finishedAtUtc: null,
+    result: null,
+    typedError: null,
+  });
+}
+
+function previewImportCompleted(
+  jobId: string,
+  importedRun: ImportedRunSummary,
+): RunPackageImportJob {
+  return runPackageImportJobSchema.parse({
+    jobId,
+    state: 'completed',
+    phase: 'terminal',
+    completedBytes: 9_111,
+    totalBytes: 9_111,
+    completedEntries: 14,
+    totalEntries: 14,
+    startedAtUtc: '2026-08-31T12:00:00.000Z',
+    finishedAtUtc: '2026-08-31T12:00:01.000Z',
+    result: { disposition: 'existing', importedRun },
+    typedError: null,
+  });
+}
+
+function previewImportCancelled(jobId: string): RunPackageImportJob {
+  return runPackageImportJobSchema.parse({
+    jobId,
+    state: 'cancelled',
+    phase: 'terminal',
+    completedBytes: 4_096,
+    totalBytes: 9_111,
+    completedEntries: 0,
+    totalEntries: 0,
+    startedAtUtc: '2026-08-31T12:00:00.000Z',
+    finishedAtUtc: '2026-08-31T12:00:00.500Z',
+    result: null,
+    typedError: {
+      code: 'cancelled',
+      message: 'Импорт отменён до фиксации в проекте.',
+      retryable: true,
+    },
+  });
+}
+
+function previewImportedRunDetail(): ImportedRunDetail {
+  return importedRunDetailSchema.parse({
+    summary: {
+      localImportId: '60cdaf47-78e8-48b5-abcb-a465b42d3191',
+      packageId: '1932f123-462a-4712-a86d-4d1ff8b651bf',
+      exportRevision: 1,
+      outerPackageSha256: 'c73d028a0aa5f0b7aacce2f216005048973c4895705b847b4c762b1d0e433c43',
+      runId: 'normal_final_rbd',
+      packageKind: 'final',
+      packageSchema: 'r130sh.run-package.v1',
+      packageCreatedAtUtc: '2026-08-31T10:00:00.000Z',
+      sourceSnapshotSha256: '821172a68c6a9ab1e2abe79e6172f6ca0fbdea54ce5e5c15e1727e8b29218a34',
+      producerName: 'R130SH',
+      producerVersion: 'm9a-test',
+      producerBuildId: 'm9a-build',
+      producerGitCommit: 'm9a-commit',
+      outerSizeBytes: 9_111,
+      importedAtUtc: '2026-08-31T12:00:00.000Z',
+      validatorVersion: 'm03b.1',
+      validationContractCommit: '01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63',
+      structuralVerdict: 'passed',
+      semanticVerdict: 'passed',
+      sourceIntegrity: 'verified',
+      sourceSpecimenId: 'specimen-m9a-001',
+      localSpecimenId: null,
+      bindingRevision: 1,
+      mode: 'rbd',
+      technicalStatus: 'completed',
+      terminationReason: 'normal_done',
+      specimenOutcome: 'passed',
+      runValidity: 'valid',
+      dataCompleteness: 'complete',
+      importedExisting: false,
+    },
+    projection: {
+      startedAtUtc: '2026-08-31T10:00:00.000Z',
+      finishedAtUtc: '2026-08-31T10:00:00.000Z',
+      resumeAvailable: false,
+      partialReasons: [],
+      customerFullName: 'Лабораторный заказчик',
+      customerAddress: 'г. Москва',
+      customerOrderReference: 'M9A-ORDER-001',
+      wheelFullName: 'Рабочее колесо Р130Ш',
+      wheelIdentifier: 'WHEEL-M9A-001',
+      workingDiameterMm: '1300.0',
+      sampleLabel: 'WHEEL-M9A-001',
+      originalPlan: previewPlan(),
+      effectivePlan: previewPlan(),
+      environment: {
+        status: 'inside',
+        temperatureC: '22',
+        humidityPct: '45',
+        pressureKpa: '101.3',
+        source: 'operator_entered',
+        deviationCount: 0,
+        confirmationActor: null,
+        confirmationReason: null,
+      },
+      provenance: {
+        producerName: 'R130SH',
+        appVersion: 'm9a-test',
+        buildId: 'm9a-build',
+        gitCommit: 'm9a-commit',
+        databaseSchemaVersion: 1,
+        standName: 'Стенд Р130Ш',
+        standSerialNumber: 'R130SH-M9A',
+        timeSource: 'utc_wall_and_monotonic_run_clock',
+      },
+      measurementCount: 1,
+      acceptedMeasurementCount: 1,
+      eventCount: 5,
+      inspectionCount: 2,
+      attachmentCount: 0,
+      amendmentCount: 0,
+      creditingPolicy: 'rbd.v1',
+      acceptedElapsedS: '4',
+    },
+    inventory: [
+      {
+        path: 'measurements.csv',
+        mediaType: 'text/csv',
+        sizeBytes: 2_460,
+        sha256: 'a'.repeat(64),
+        rowCount: 1,
+        semanticCoverage: 'covered',
+      },
+      {
+        path: 'run-summary.json',
+        mediaType: 'application/json',
+        sizeBytes: 1_338,
+        sha256: 'b'.repeat(64),
+        rowCount: null,
+        semanticCoverage: 'covered',
+      },
+    ],
+    semanticCoverage: [
+      { area: 'manifest', status: 'covered', contractSource: 'r130sh-m9a-contract' },
+      { area: 'measurements_csv', status: 'covered', contractSource: 'r130sh-m9a-contract' },
+    ],
+    validationFindings: [],
+    enrichmentResolutions: [],
+  });
+}
+
+function previewPlan(): ImportedRunDetail['projection']['originalPlan'] {
+  return {
+    planId: planIdSchema.parse('plan-normal_final_rbd'),
+    planRevision: 1,
+    mode: 'rbd',
+    specimenId: specimenSourceIdSchema.parse('specimen-m9a-001'),
+    wheelIdentifier: 'WHEEL-M9A-001',
+    laboratoryCaseReference: 'M9A-LAB-001',
+    customerOrderReference: 'M9A-ORDER-001',
+    nominalRpm: '3000',
+    targetCycles: 100,
+    targetMaxRpm: null,
+    lowerRpm: null,
+    upperRpm: null,
+    targetSteadyDurationS: '4',
+    totalDurationS: '8',
+    lowerPointPolicy: null,
+    roundingPolicy: 'ceiling',
+    requiredCyclesExact: '100',
+    requiredSteadyDurationSExact: '4',
+    requiredTotalDurationSExact: null,
+    cycleDurationSExact: null,
+    targetMaxRpmExact: null,
+  };
+}
+
+function previewBinding(summary: ImportedRunSummary): SpecimenBinding {
+  return {
+    sourceSpecimenId: summary.sourceSpecimenId,
+    localSpecimenId: summary.localSpecimenId,
+    recordRevision: summary.bindingRevision,
+    updatedByActor: summary.localSpecimenId === null ? null : 'local_user',
+    reason: summary.localSpecimenId === null ? '' : 'Подтверждено в Browser preview',
+    createdAtUtc: '2026-08-31T12:00:00.000Z',
+    updatedAtUtc: '2026-08-31T12:00:00.000Z',
+  };
 }
 
 function projectOverview(

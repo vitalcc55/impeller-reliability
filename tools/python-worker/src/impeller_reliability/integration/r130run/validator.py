@@ -13,6 +13,7 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+import re
 import stat
 import struct
 from threading import Event
@@ -25,6 +26,11 @@ import zlib
 
 from pydantic import TypeAdapter, ValidationError
 
+from impeller_reliability.integration.r130run.m9a import (
+    MEASUREMENT_COLUMNS,
+    M9aContractError,
+    validate_measurement_row,
+)
 from impeller_reliability.integration.r130run.models import (
     CONTRACT_SCHEMA,
     FindingSeverity,
@@ -41,6 +47,7 @@ from impeller_reliability.integration.r130run.models import (
 GIB = 1024 * 1024 * 1024
 MIB = 1024 * 1024
 STREAM_CHUNK_BYTES = MIB
+SOURCE_UTC_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?Z$")
 MAX_OUTER_BYTES = 8 * GIB
 MAX_CENTRAL_DIRECTORY_BYTES = 16 * MIB
 MAX_ENTRY_COUNT = 4_096
@@ -76,7 +83,6 @@ CORE_PATHS = frozenset(
         "measurements.csv",
         "measurement-descriptors.json",
         "accepted-summary.json",
-        "vibration-baseline.json",
         "inspections.json",
         "attachments/index.json",
     }
@@ -85,9 +91,13 @@ SEMANTIC_JSON_PATHS = frozenset(
     {
         "plan/original.json",
         "plan/effective.json",
+        "run-summary.json",
+        "environment.json",
         "provenance.json",
+        "measurement-descriptors.json",
         "accepted-summary.json",
         "inspections.json",
+        "attachments/index.json",
     }
 )
 ProgressCallback = Callable[[JobPhase, int, int, int, int], None]
@@ -96,35 +106,6 @@ type FrozenShape = type[object] | tuple[type[object], ...] | dict[str, FrozenSha
 JsonPairs = list[tuple[str, object]]
 JSON_VALUE_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 JSON_OBJECT_ADAPTER: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(dict[str, JsonValue])
-PLAN_SHAPE: FrozenShape = {
-    "schema_version": str,
-    "run_id": str,
-    "plan_id": str,
-    "plan_revision": int,
-    "specimen_id": str,
-    "wheel_identifier": str,
-    "original_plan_sha256": str,
-    "effective_plan_sha256": str,
-    "mode": str,
-    "laboratory_case_reference": str,
-    "customer_order_reference": str,
-    "source_values": {
-        "base_cycles": str,
-        "reserve_factor": str,
-        "nominal_rpm": str,
-        "acceleration_duration_s": str,
-        "deceleration_duration_s": str,
-    },
-    "methodical_requirements": {
-        "required_cycles_exact": str,
-        "required_steady_duration_s_exact": str,
-    },
-    "execution_targets": {
-        "target_cycles": int,
-        "target_steady_duration_s": str,
-        "rounding_policy": str,
-    },
-}
 EVENT_SHAPE: FrozenShape = {
     "schema_version": str,
     "event_id": str,
@@ -137,7 +118,7 @@ EVENT_SHAPE: FrozenShape = {
     "run_elapsed_s": str,
     "source": str,
     "actor_json": (str, dict, type(None)),
-    "correlation_id": str,
+    "correlation_id": (str, type(None)),
     "idempotency_key": str,
     "payload_json": dict,
     "payload_sha256": str,
@@ -147,10 +128,10 @@ INSPECTION_SHAPE: FrozenShape = {
     "inspection_id": str,
     "run_id": str,
     "stage": str,
-    "trip_index": int,
+    "trip_index": (int, type(None)),
     "performed_at_utc": str,
     "run_elapsed_s": str,
-    "actor": {"employee_id": str, "display_name": str},
+    "actor": {"employee_id": str, "full_name": str, "position": str},
     "findings": {
         "cracks": bool,
         "chips": bool,
@@ -164,40 +145,13 @@ INSPECTION_SHAPE: FrozenShape = {
     "comment": str,
     "attachment_ids": [str],
 }
-PROVENANCE_SHAPE: FrozenShape = {
-    "schema_version": str,
-    "run_id": str,
-    "producer": {"name": str, "version": str, "build_id": str, "git_commit": str},
-    "database_schema_version": int,
-    "stand": {
-        "name": str,
-        "serial_number": str,
-        "stand_spec_sha256": str,
-        "register_map_sha256": str,
-        "direction_binding_sha256": str,
-    },
-    "time_source": {"wall_clock": str, "duration_clock": str},
-    "measurement_systems": [
-        {
-            "instrument_id": str,
-            "name": str,
-            "model": str,
-            "serial_number": str,
-            "firmware_version": str,
-            "measurement_role": str,
-            "verification_certificate": str,
-            "verification_valid_from": str,
-            "verification_valid_until": str,
-            "settings_snapshot": dict,
-        }
-    ],
-}
 ACCEPTED_SHAPE: FrozenShape = {
     "schema_version": str,
     "run_id": str,
     "mode": str,
     "crediting_policy": str,
-    "points": [{"measurement_id": str, "accepted_elapsed_s": str}],
+    "accepted_measurement_count": int,
+    "accepted_elapsed_s": str,
 }
 
 
@@ -252,10 +206,13 @@ class _ManifestFile:
 
 @dataclass(frozen=True, slots=True)
 class _Manifest:
+    schema_version: str
     package_id: str
     export_revision: int
     run_id: str
     package_kind: Literal["final", "diagnostic_partial"]
+    created_at_utc: str
+    source_snapshot_sha256: str
     producer: RunPackageProducer
     files: tuple[_ManifestFile, ...]
 
@@ -413,7 +370,7 @@ class RunPackageValidator:
             infos = archive.infolist()
             if len(infos) != entry_count or not infos or len(infos) > MAX_ENTRY_COUNT:
                 raise _invalid("entry_count_invalid", "archive", "Количество записей ZIP некорректно.", "zip-envelope")
-            entries_by_name = _validate_zip_entries(source, infos, central_offset)
+            entries_by_name = _validate_zip_entries(source, infos, central_offset, control)
             control.progress("zip_index", outer_size, outer_size, 0, len(infos))
             manifest_entry = entries_by_name.get("manifest.json")
             checksum_entry = entries_by_name.get("checksums.sha256")
@@ -426,7 +383,7 @@ class RunPackageValidator:
             control.check("manifest")
             control.progress("manifest", 0, manifest_entry.info.file_size, 0, len(infos))
             manifest_bytes = _read_bounded_entry(source, manifest_entry, MAX_MANIFEST_BYTES, control, "manifest")
-            manifest = _parse_manifest(manifest_bytes)
+            manifest = _parse_manifest(manifest_bytes, control)
             declared = {item.path: item for item in manifest.files}
             actual_names = set(entries_by_name)
             expected_names = set(declared) | {"manifest.json", "checksums.sha256"}
@@ -435,7 +392,14 @@ class RunPackageValidator:
                 raise _invalid(code, "manifest.files", "Состав ZIP не совпадает с inventory manifest.", "manifest-example")
             if checksum_entry.info.file_size > MAX_MANIFEST_BYTES:
                 raise _invalid("checksum_index_too_large", "checksums.sha256", "Индекс контрольных сумм превышает технический предел.", "m03a-safety-profile")
-            _read_bounded_entry(source, checksum_entry, MAX_MANIFEST_BYTES, control, "manifest")
+            checksum_bytes = _read_bounded_entry(
+                source,
+                checksum_entry,
+                MAX_MANIFEST_BYTES,
+                control,
+                "manifest",
+            )
+            _validate_checksum_index(checksum_bytes, manifest)
 
             semantic_findings = _FindingAccumulator.empty()
             validated_bytes = 0
@@ -466,7 +430,7 @@ class RunPackageValidator:
             control.progress("semantic_validation", validated_bytes, validated_bytes, len(manifest.files), len(manifest.files))
             _semantic_validate(manifest, parsed_json, semantic_findings, control)
             coverage = _semantic_coverage()
-            semantic_verdict: SemanticVerdict = "failed" if semantic_findings.error > 0 else "partial"
+            semantic_verdict: SemanticVerdict = "failed" if semantic_findings.error > 0 else "passed"
             if manifest.package_kind == "final" and not CORE_PATHS.issubset(declared):
                 semantic_findings.add(_finding("final_core_missing", "error", "manifest.files", "Final package не содержит полный frozen core.", "r130run-v1-target"))
                 semantic_verdict = "failed"
@@ -508,7 +472,7 @@ def _read_payload(
     is_jsonl = item.path.endswith(".jsonl")
     pending = bytearray()
     row_count = 0
-    csv_validator = _CsvStreamValidator(item.path) if item.path.endswith(".csv") else None
+    csv_validator = _CsvStreamValidator(item.path, run_id, semantic_findings) if item.path.endswith(".csv") else None
     try:
         for chunk in _iter_entry_chunks(source, entry, control, "payload_integrity"):
             digest.update(chunk)
@@ -533,7 +497,12 @@ def _read_payload(
                         raise _invalid("jsonl_line_too_large", item.path, "JSONL запись превышает технический предел.", "m03a-safety-profile")
                     if line == b"":
                         raise _invalid("jsonl_blank_line", item.path, "JSONL содержит пустую запись.", "m03a-safety-profile")
-                    _semantic_validate_jsonl_item(item.path, _parse_json(line, item.path), run_id, semantic_findings)
+                    _semantic_validate_jsonl_item(
+                        item.path,
+                        _parse_json(line, item.path, control),
+                        run_id,
+                        semantic_findings,
+                    )
                     row_count += 1
                 if consumed:
                     del pending[:consumed]
@@ -550,20 +519,34 @@ def _read_payload(
     if is_jsonl and pending:
         if len(pending) > MAX_JSONL_LINE_BYTES:
             raise _invalid("jsonl_line_too_large", item.path, "JSONL запись превышает технический предел.", "m03a-safety-profile")
-        _semantic_validate_jsonl_item(item.path, _parse_json(bytes(pending), item.path), run_id, semantic_findings)
+        _semantic_validate_jsonl_item(
+            item.path,
+            _parse_json(bytes(pending), item.path, control),
+            run_id,
+            semantic_findings,
+        )
         row_count += 1
-    json_value = _parse_json(bytes(collected), item.path) if item.path.endswith(".json") else None
+    json_value = _parse_json(bytes(collected), item.path, control) if item.path.endswith(".json") else None
     if csv_validator is not None:
         row_count = csv_validator.finish(control)
     return _PayloadRead(digest.hexdigest(), completed, json_value), row_count
 
 
 class _CsvStreamValidator:
-    def __init__(self, location: str) -> None:
+    def __init__(
+        self,
+        location: str,
+        run_id: str,
+        semantic_findings: _FindingAccumulator,
+    ) -> None:
         self._location = location
+        self._run_id = run_id
+        self._semantic_findings = semantic_findings
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
         self._pending = ""
         self._rows = 0
+        self._header_valid = False
+        self._previous_sequence = -1
 
     def feed(self, content: bytes, control: ValidationControl) -> None:
         try:
@@ -603,6 +586,23 @@ class _CsvStreamValidator:
             raise _invalid("csv_invalid", self._location, "CSV не прошёл bounded UTF-8 syntax profile.", "m03a-safety-profile") from error
         if len(rows) != 1 or any(len(field) > MAX_CSV_FIELD_CHARS for field in rows[0]):
             raise _invalid("csv_record_too_large", self._location, "CSV запись превышает технический предел.", "m03a-safety-profile")
+        fields = rows[0]
+        if self._rows == 0:
+            self._header_valid = tuple(fields) == MEASUREMENT_COLUMNS
+            if not self._header_valid:
+                _semantic_shape_finding(self._semantic_findings, self._location)
+        elif self._header_valid:
+            if len(fields) != len(MEASUREMENT_COLUMNS):
+                _semantic_shape_finding(self._semantic_findings, self._location)
+            else:
+                try:
+                    self._previous_sequence = validate_measurement_row(
+                        dict(zip(MEASUREMENT_COLUMNS, fields, strict=True)),
+                        self._run_id,
+                        self._previous_sequence,
+                    )
+                except M9aContractError:
+                    _semantic_value_finding(self._semantic_findings, self._location)
         self._rows += 1
 
 
@@ -653,12 +653,18 @@ def _preflight_central_directory(source: io.RawIOBase, size: int) -> tuple[int, 
     return int(central_offset), int(total_entries)
 
 
-def _validate_zip_entries(source: io.RawIOBase, infos: list[ZipInfo], central_offset: int) -> dict[str, _ValidatedEntry]:
+def _validate_zip_entries(
+    source: io.RawIOBase,
+    infos: list[ZipInfo],
+    central_offset: int,
+    control: ValidationControl,
+) -> dict[str, _ValidatedEntry]:
     names: dict[str, _ValidatedEntry] = {}
     collision_keys: set[str] = set()
     ranges: list[tuple[int, int]] = []
     cumulative = 0
     for info in infos:
+        control.check("zip_index")
         name = _validate_package_path(info.filename, info.flag_bits)
         if name in names:
             raise _invalid("path_duplicate", name, "ZIP содержит повторяющееся имя.", "zip-envelope")
@@ -850,13 +856,13 @@ def _validate_package_path(value: str, flags: int) -> str:
     return value
 
 
-def _parse_manifest(content: bytes) -> _Manifest:
-    value = _parse_json(content, "manifest.json")
+def _parse_manifest(content: bytes, control: ValidationControl) -> _Manifest:
+    value = _parse_json(content, "manifest.json", control)
     manifest = _require_object(value, "manifest.json")
     if manifest.get("schema_version") != CONTRACT_SCHEMA:
         raise _invalid("manifest_schema", "manifest.schema_version", "Schema manifest не поддерживается validation profile.", "manifest-example")
     package_id = _source_uuid(manifest.get("package_id"), "manifest.package_id")
-    run_id = _source_uuid(manifest.get("run_id"), "manifest.run_id")
+    run_id = _source_identity(manifest.get("run_id"), "manifest.run_id")
     export_revision = manifest.get("export_revision")
     raw_package_kind = manifest.get("package_kind")
     if not isinstance(export_revision, int) or isinstance(export_revision, bool) or export_revision < 1 or export_revision > MAX_SAFE_INTEGER:
@@ -867,15 +873,18 @@ def _parse_manifest(content: bytes) -> _Manifest:
         package_kind = "diagnostic_partial"
     else:
         raise _invalid("manifest_package_kind", "manifest.package_kind", "Package kind не поддерживается.", "manifest-example")
-    _require_utc(manifest.get("created_at_utc"), "manifest.created_at_utc")
-    _require_sha256(manifest.get("source_snapshot_sha256"), "manifest.source_snapshot_sha256")
+    created_at_utc = _require_utc(manifest.get("created_at_utc"), "manifest.created_at_utc")
+    source_snapshot_sha256 = _require_sha256(
+        manifest.get("source_snapshot_sha256"),
+        "manifest.source_snapshot_sha256",
+    )
     producer_raw = _require_object(manifest.get("producer"), "manifest.producer")
     try:
         producer = RunPackageProducer(
             name=_require_ascii_string(producer_raw.get("name"), "manifest.producer.name", 128),
             version=_require_ascii_string(producer_raw.get("version"), "manifest.producer.version", 64),
             buildId=_require_ascii_string(producer_raw.get("build_id"), "manifest.producer.build_id", 128),
-            gitCommit=_require_ascii_string(producer_raw.get("git_commit"), "manifest.producer.git_commit", 40),
+            gitCommit=_require_ascii_string(producer_raw.get("git_commit"), "manifest.producer.git_commit", 128),
         )
     except ValueError as error:
         raise _invalid("manifest_producer", "manifest.producer", "Producer manifest имеет недопустимую форму.", "manifest-example") from error
@@ -885,6 +894,7 @@ def _parse_manifest(content: bytes) -> _Manifest:
     files: list[_ManifestFile] = []
     paths: set[str] = set()
     for index, raw in enumerate(files_raw):
+        control.check("manifest")
         entry = _require_object(raw, f"manifest.files[{index}]")
         path = _validate_package_path(_require_string(entry.get("path"), f"manifest.files[{index}].path", MAX_PATH_BYTES), 0x0800)
         if path in {"manifest.json", "checksums.sha256"} or path in paths:
@@ -892,19 +902,60 @@ def _parse_manifest(content: bytes) -> _Manifest:
         paths.add(path)
         media_type = _require_string(entry.get("media_type"), f"manifest.files[{index}].media_type", 128)
         size = entry.get("size")
-        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0 or size > MAX_SAFE_INTEGER:
             raise _invalid("manifest_size", f"manifest.files[{index}].size", "Declared size некорректен.", "manifest-example")
         sha256 = _require_sha256(entry.get("sha256"), f"manifest.files[{index}].sha256")
         row_count = entry.get("row_count")
-        if row_count is not None and (not isinstance(row_count, int) or isinstance(row_count, bool) or row_count < 0):
+        if row_count is not None and (not isinstance(row_count, int) or isinstance(row_count, bool) or row_count < 0 or row_count > MAX_SAFE_INTEGER):
             raise _invalid("manifest_row_count", f"manifest.files[{index}].row_count", "Declared row count некорректен.", "manifest-example")
         files.append(_ManifestFile(path, media_type, size, sha256, row_count))
     if sum(item.size for item in files) > MAX_DECOMPRESSED_BYTES:
         raise _invalid("expanded_size_limit", "manifest.files", "Declared payload объём превышает технический предел.", "m03a-safety-profile")
-    return _Manifest(package_id, export_revision, run_id, package_kind, producer, tuple(files))
+    expected_snapshot = hashlib.sha256(
+        _canonical_json_bytes(
+            {
+                "schema_version": "r130sh.run-export-snapshot.v1",
+                "run_id": run_id,
+                "files": [
+                    {
+                        **{
+                            "path": item.path,
+                            "media_type": item.media_type,
+                            "size": item.size,
+                            "sha256": item.sha256,
+                        },
+                        **({"row_count": item.row_count} if item.row_count is not None else {}),
+                    }
+                    for item in files
+                ],
+            },
+        ),
+    ).hexdigest()
+    if source_snapshot_sha256 != expected_snapshot:
+        raise _invalid(
+            "source_snapshot_hash_mismatch",
+            "manifest.source_snapshot_sha256",
+            "Source snapshot SHA-256 не совпадает с canonical inventory.",
+            "r130sh-m9a-contract",
+        )
+    return _Manifest(
+        CONTRACT_SCHEMA,
+        package_id,
+        export_revision,
+        run_id,
+        package_kind,
+        created_at_utc,
+        source_snapshot_sha256,
+        producer,
+        tuple(files),
+    )
 
 
-def _parse_json(content: bytes, location: str) -> JsonValue:
+def _parse_json(
+    content: bytes,
+    location: str,
+    control: ValidationControl | None = None,
+) -> JsonValue:
     if content.startswith(b"\xef\xbb\xbf"):
         raise _invalid("json_bom", location, "JSON BOM не допускается validation profile.", "m03a-safety-profile")
     try:
@@ -913,8 +964,41 @@ def _parse_json(content: bytes, location: str) -> JsonValue:
         value = JSON_VALUE_ADAPTER.validate_json(content)
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValidationError, ValueError) as error:
         raise _invalid("json_invalid", location, "JSON не прошёл bounded UTF-8 syntax profile.", "m03a-safety-profile") from error
-    _validate_json_shape(value, location)
+    _validate_json_shape(value, location, control)
     return value
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _validate_checksum_index(content: bytes, manifest: _Manifest) -> None:
+    try:
+        text = content.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise _invalid(
+            "checksum_index_invalid",
+            "checksums.sha256",
+            "Индекс контрольных сумм не является UTF-8.",
+            "r130sh-m9a-contract",
+        ) from error
+    expected = "".join(f"{item.sha256}  {item.size}  {item.path}\n" for item in sorted(manifest.files, key=lambda value: value.path))
+    if text != expected:
+        raise _invalid(
+            "checksum_index_mismatch",
+            "checksums.sha256",
+            "Индекс контрольных сумм не совпадает с manifest inventory.",
+            "r130sh-m9a-contract",
+        )
 
 
 def _pairs_without_duplicates(pairs: JsonPairs) -> dict[str, object]:
@@ -930,10 +1014,16 @@ def _reject_non_finite(value: str) -> object:
     raise ValueError(f"non_finite:{value}")
 
 
-def _validate_json_shape(root: JsonValue, location: str) -> None:
+def _validate_json_shape(
+    root: JsonValue,
+    location: str,
+    control: ValidationControl | None,
+) -> None:
     stack: list[tuple[JsonValue, int]] = [(root, 1)]
     nodes = 0
     while stack:
+        if control is not None and nodes % 256 == 0:
+            control.check("semantic_validation")
         value, depth = stack.pop()
         nodes += 1
         if depth > MAX_JSON_DEPTH or nodes > MAX_JSON_NODES:
@@ -952,25 +1042,216 @@ def _semantic_validate(
     findings: _FindingAccumulator,
     control: ValidationControl,
 ) -> None:
-    plan = json_payloads.get("plan/original.json")
+    for location, value in json_payloads.items():
+        control.check("semantic_validation")
+        if _contains_forbidden_eligibility(value):
+            findings.add(
+                _finding(
+                    "authoritative_eligibility_forbidden",
+                    "error",
+                    location,
+                    "R130SH package не должен содержать downstream eligibility claim.",
+                    "r130sh-m9a-contract",
+                ),
+            )
+
+    plan = _semantic_envelope(
+        json_payloads.get("plan/original.json"),
+        schema="r130sh.run-plan.v1",
+        run_id=manifest.run_id,
+        location="plan/original.json",
+        required={
+            "plan_id",
+            "plan_revision",
+            "specimen_id",
+            "wheel_identifier",
+            "mode",
+            "laboratory_case_reference",
+            "customer_order_reference",
+            "source_values",
+            "methodical_requirements",
+            "execution_targets",
+            "environment_policy",
+            "vibration_criteria",
+        },
+        findings=findings,
+    )
+    effective_envelope = _semantic_envelope(
+        json_payloads.get("plan/effective.json"),
+        schema="r130sh.effective-plan.v1",
+        run_id=manifest.run_id,
+        location="plan/effective.json",
+        required={"effective_plan"},
+        findings=findings,
+    )
+    summary = _semantic_envelope(
+        json_payloads.get("run-summary.json"),
+        schema="r130sh.run-summary.v1",
+        run_id=manifest.run_id,
+        location="run-summary.json",
+        required={
+            "mode",
+            "specimen_id",
+            "started_at_utc",
+            "technical_status",
+            "termination_reason",
+            "specimen_outcome",
+            "run_validity",
+            "data_completeness",
+            "run_card",
+            "package_kind",
+            "partial_reasons",
+            "resume_available",
+            "finished_at_utc",
+        },
+        findings=findings,
+    )
+    environment = _semantic_envelope(
+        json_payloads.get("environment.json"),
+        schema="r130sh.environment.v1",
+        run_id=manifest.run_id,
+        location="environment.json",
+        required={"decision"},
+        findings=findings,
+    )
+    provenance = _semantic_envelope(
+        json_payloads.get("provenance.json"),
+        schema="r130sh.provenance.v1",
+        run_id=manifest.run_id,
+        location="provenance.json",
+        required={"provenance"},
+        findings=findings,
+    )
+    accepted = _semantic_envelope(
+        json_payloads.get("accepted-summary.json"),
+        schema="r130sh.accepted-summary.v1",
+        run_id=manifest.run_id,
+        location="accepted-summary.json",
+        required={
+            "mode",
+            "crediting_policy",
+            "accepted_measurement_count",
+            "accepted_elapsed_s",
+        },
+        findings=findings,
+    )
+    inspections = _semantic_envelope(
+        json_payloads.get("inspections.json"),
+        schema="r130sh.inspections.v1",
+        run_id=manifest.run_id,
+        location="inspections.json",
+        required={"inspections"},
+        findings=findings,
+    )
+    descriptors = _semantic_envelope(
+        json_payloads.get("measurement-descriptors.json"),
+        schema="r130sh.measurement-descriptors.v1",
+        run_id=manifest.run_id,
+        location="measurement-descriptors.json",
+        required={"descriptors"},
+        findings=findings,
+    )
+    attachments = _semantic_envelope(
+        json_payloads.get("attachments/index.json"),
+        schema="r130sh.attachments.v1",
+        run_id=manifest.run_id,
+        location="attachments/index.json",
+        required={"attachments"},
+        findings=findings,
+    )
+
     if plan is not None:
-        _check_schema_and_run(plan, "r130sh.run-plan.v1", manifest.run_id, "plan/original.json", PLAN_SHAPE, findings, control)
-    effective = json_payloads.get("plan/effective.json")
-    if effective is not None:
-        _check_schema_and_run(effective, "r130sh.run-plan.v1", manifest.run_id, "plan/effective.json", PLAN_SHAPE, findings, control)
-    provenance = json_payloads.get("provenance.json")
-    if provenance is not None:
-        _check_schema_and_run(provenance, "r130sh.run-provenance.v1", manifest.run_id, "provenance.json", PROVENANCE_SHAPE, findings, control)
-    accepted = json_payloads.get("accepted-summary.json")
+        _validate_m9a_plan(plan, "plan/original.json", findings)
+    if effective_envelope is not None:
+        effective_container = effective_envelope.get("effective_plan")
+        if not isinstance(effective_container, dict):
+            _semantic_shape_finding(findings, "plan/effective.json")
+        else:
+            effective_plan = effective_container.get("effective_plan")
+            original_hash = effective_container.get("original_plan_sha256")
+            amendments = effective_container.get("amendments")
+            if not isinstance(effective_plan, dict) or not _valid_sha(original_hash) or not isinstance(amendments, list):
+                _semantic_shape_finding(findings, "plan/effective.json")
+            else:
+                _validate_m9a_plan(effective_plan, "plan/effective.json", findings)
+    if summary is not None:
+        if summary.get("package_kind") != manifest.package_kind:
+            _semantic_value_finding(findings, "run-summary.json")
+        if plan is not None and (summary.get("mode") != plan.get("mode") or summary.get("specimen_id") != plan.get("specimen_id")):
+            _semantic_value_finding(findings, "run-summary.json")
+        partial_reasons = summary.get("partial_reasons")
+        resume_available = summary.get("resume_available")
+        if (
+            not isinstance(partial_reasons, list)
+            or len(partial_reasons) > 64
+            or any(not isinstance(value, str) or not value or len(value.encode("utf-8")) > 512 for value in partial_reasons)
+            or not isinstance(summary.get("run_card"), dict)
+            or not isinstance(resume_available, bool)
+            or not _valid_source_utc(summary.get("started_at_utc"))
+        ):
+            _semantic_shape_finding(findings, "run-summary.json")
+        elif manifest.package_kind == "final":
+            terminal_values = (
+                summary.get("technical_status"),
+                summary.get("termination_reason"),
+                summary.get("specimen_outcome"),
+                summary.get("run_validity"),
+                summary.get("data_completeness"),
+            )
+            if any(not isinstance(value, str) or value == "" for value in terminal_values) or not _valid_source_utc(summary.get("finished_at_utc")):
+                _semantic_value_finding(findings, "run-summary.json")
+        elif not partial_reasons or resume_available or (summary.get("finished_at_utc") is not None and not _valid_source_utc(summary.get("finished_at_utc"))):
+            _semantic_value_finding(findings, "run-summary.json")
     if accepted is not None:
-        _check_schema_and_run(accepted, "r130sh.accepted-projection.v1", manifest.run_id, "accepted-summary.json", ACCEPTED_SHAPE, findings, control)
-    inspections = json_payloads.get("inspections.json")
-    if isinstance(inspections, list):
-        for inspection in inspections:
-            control.check("semantic_validation")
-            _check_schema_and_run(inspection, "r130sh.inspection.v1", manifest.run_id, "inspections.json", INSPECTION_SHAPE, findings, control)
-    elif inspections is not None:
-        findings.add(_finding("semantic_shape_mismatch", "error", "inspections.json", "Payload не совпадает с frozen example shape.", "inspection-example"))
+        count = accepted.get("accepted_measurement_count")
+        try:
+            elapsed = _bounded_decimal(accepted.get("accepted_elapsed_s"))
+        except InvalidOperation, TypeError, ValueError:
+            elapsed = Decimal(-1)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0 or elapsed < 0 or (plan is not None and accepted.get("mode") != plan.get("mode")):
+            _semantic_value_finding(findings, "accepted-summary.json")
+    if provenance is not None:
+        provenance_value = provenance.get("provenance")
+        if not isinstance(provenance_value, dict):
+            _semantic_shape_finding(findings, "provenance.json")
+        else:
+            database_schema_version = provenance_value.get("database_schema_version")
+            if (
+                not isinstance(database_schema_version, int)
+                or isinstance(database_schema_version, bool)
+                or database_schema_version < 0
+                or database_schema_version > MAX_SAFE_INTEGER
+                or not _valid_sha(provenance_value.get("stand_configuration_sha256"))
+                or not _valid_sha(provenance_value.get("register_map_sha256"))
+                or not _valid_availability_sha(
+                    provenance_value.get("direction_binding_sha256"),
+                )
+            ):
+                _semantic_value_finding(findings, "provenance.json")
+    if inspections is not None:
+        values = inspections.get("inspections")
+        if not isinstance(values, list):
+            _semantic_shape_finding(findings, "inspections.json")
+        else:
+            for value in values:
+                control.check("semantic_validation")
+                _check_schema_and_run(
+                    value,
+                    "r130sh.inspection.v1",
+                    manifest.run_id,
+                    "inspections.json",
+                    INSPECTION_SHAPE,
+                    findings,
+                    control,
+                )
+    for payload, field, location in (
+        (environment, "decision", "environment.json"),
+        (provenance, "provenance", "provenance.json"),
+        (descriptors, "descriptors", "measurement-descriptors.json"),
+        (attachments, "attachments", "attachments/index.json"),
+    ):
+        if payload is not None and not isinstance(payload.get(field), (dict, list)):
+            _semantic_shape_finding(findings, location)
 
 
 def _semantic_validate_jsonl_item(
@@ -981,6 +1262,168 @@ def _semantic_validate_jsonl_item(
 ) -> None:
     if location == "events.jsonl":
         _check_schema_and_run(value, "r130sh.run-event.v1", run_id, location, EVENT_SHAPE, findings)
+    elif location == "plan/amendments.jsonl" and (
+        not isinstance(value, dict) or value.get("schema_version") != "r130sh.plan-amendment.v1" or not {"amendment_id", "sequence", "kind", "change", "reason"}.issubset(value)
+    ):
+        _semantic_shape_finding(findings, location)
+
+
+def _semantic_envelope(
+    value: JsonValue | None,
+    *,
+    schema: str,
+    run_id: str,
+    location: str,
+    required: set[str],
+    findings: _FindingAccumulator,
+) -> dict[str, JsonValue] | None:
+    if not isinstance(value, dict) or value.get("schema_version") != schema or not required.issubset(value):
+        _semantic_shape_finding(findings, location)
+        return None
+    if value.get("run_id") != run_id:
+        findings.add(
+            _finding(
+                "cross_file_run_id_mismatch",
+                "error",
+                location,
+                "Run identity не совпадает с manifest.",
+                "r130sh-m9a-contract",
+            ),
+        )
+        return None
+    return value
+
+
+def _validate_m9a_plan(
+    value: dict[str, JsonValue],
+    location: str,
+    findings: _FindingAccumulator,
+) -> None:
+    if not {
+        "schema_version",
+        "run_id",
+        "plan_id",
+        "plan_revision",
+        "specimen_id",
+        "wheel_identifier",
+        "mode",
+        "source_values",
+        "methodical_requirements",
+        "execution_targets",
+    }.issubset(value):
+        _semantic_shape_finding(findings, location)
+        return
+    plan_revision = value.get("plan_revision")
+    if (
+        value.get("schema_version") != "r130sh.run-plan.v1"
+        or value.get("mode") not in {"pmn", "rpt", "rbd"}
+        or not isinstance(plan_revision, int)
+        or isinstance(plan_revision, bool)
+        or plan_revision < 1
+        or plan_revision > MAX_SAFE_INTEGER
+    ):
+        _semantic_value_finding(findings, location)
+        return
+    for identity in (value.get("run_id"), value.get("plan_id"), value.get("specimen_id")):
+        if not _valid_source_identity(identity):
+            _semantic_value_finding(findings, location)
+            return
+    try:
+        _validate_decimal_tree(value.get("source_values"))
+        _validate_decimal_tree(value.get("methodical_requirements"))
+        _validate_decimal_tree(value.get("execution_targets"))
+        targets = value.get("execution_targets")
+        if not isinstance(targets, dict):
+            raise ValueError("execution_targets_not_object")
+        target_cycles = targets.get("target_cycles")
+        if target_cycles is not None and (not isinstance(target_cycles, int) or isinstance(target_cycles, bool) or target_cycles < 0 or target_cycles > MAX_SAFE_INTEGER):
+            raise ValueError("target_cycles_not_safe_integer")
+        if value.get("mode") == "rbd":
+            _validate_rbd_targets(value)
+    except InvalidOperation, TypeError, ValueError:
+        _semantic_value_finding(findings, location)
+
+
+def _validate_rbd_targets(value: dict[str, JsonValue]) -> None:
+    source = value.get("source_values")
+    exact = value.get("methodical_requirements")
+    targets = value.get("execution_targets")
+    if not isinstance(source, dict) or not isinstance(exact, dict) or not isinstance(targets, dict):
+        raise ValueError("rbd_plan_shape")
+    base_cycles = _bounded_decimal(source.get("base_cycles"))
+    reserve_factor = _bounded_decimal(source.get("reserve_factor"))
+    nominal_rpm = _bounded_decimal(source.get("nominal_rpm"))
+    acceleration = _bounded_decimal(source.get("acceleration_duration_s"))
+    deceleration = _bounded_decimal(source.get("deceleration_duration_s"))
+    required_cycles = _bounded_decimal(exact.get("required_cycles_exact"))
+    required_steady = _bounded_decimal(exact.get("required_steady_duration_s_exact"))
+    target_cycles = targets.get("target_cycles")
+    target_steady = _bounded_decimal(targets.get("target_steady_duration_s"))
+    total_duration = _bounded_decimal(targets.get("total_duration_s"))
+    if (
+        base_cycles <= 0
+        or reserve_factor <= 0
+        or nominal_rpm <= 0
+        or acceleration < 0
+        or deceleration < 0
+        or required_cycles != base_cycles * reserve_factor
+        or required_steady != required_cycles * Decimal(60) / nominal_rpm
+        or not isinstance(target_cycles, int)
+        or isinstance(target_cycles, bool)
+        or target_cycles < 0
+        or target_cycles > MAX_SAFE_INTEGER
+        or target_cycles != int(required_cycles.to_integral_value(rounding=ROUND_CEILING))
+        or target_steady != Decimal(target_cycles) * Decimal(60) / nominal_rpm
+        or total_duration != acceleration + target_steady + deceleration
+        or targets.get("rounding_policy") != "ceiling"
+    ):
+        raise ValueError("rbd_target_mismatch")
+
+
+def _validate_decimal_tree(value: JsonValue) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("decimal_tree_not_object")
+    for nested in value.values():
+        if isinstance(nested, str) and _looks_numeric(nested):
+            _bounded_decimal(nested)
+        elif isinstance(nested, dict):
+            _validate_decimal_tree(nested)
+
+
+def _looks_numeric(value: str) -> bool:
+    return bool(value) and all(character in "+-.0123456789eE" for character in value)
+
+
+def _contains_forbidden_eligibility(value: JsonValue) -> bool:
+    if isinstance(value, dict):
+        return "calculation_eligible" in value or any(_contains_forbidden_eligibility(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_forbidden_eligibility(item) for item in value)
+    return False
+
+
+def _semantic_shape_finding(findings: _FindingAccumulator, location: str) -> None:
+    findings.add(
+        _finding(
+            "semantic_shape_mismatch",
+            "error",
+            location,
+            "Payload не совпадает с published M9a shape.",
+            "r130sh-m9a-contract",
+        ),
+    )
+
+
+def _semantic_value_finding(findings: _FindingAccumulator, location: str) -> None:
+    findings.add(
+        _finding(
+            "semantic_value_mismatch",
+            "error",
+            location,
+            "Payload values нарушают published M9a semantic profile.",
+            "r130sh-m9a-contract",
+        ),
+    )
 
 
 def _check_schema_and_run(
@@ -1030,7 +1473,7 @@ def _check_frozen_values(
         if not isinstance(execution_targets, dict):
             findings.add(_finding("semantic_value_mismatch", "error", location, "Payload values нарушают frozen semantic profile.", schema))
             return
-        valid = _valid_source_id(value["plan_id"]) and _valid_source_id(value["specimen_id"])
+        valid = _valid_source_identity(value["plan_id"]) and _valid_source_identity(value["specimen_id"])
         valid = valid and _valid_sha(value["original_plan_sha256"]) and _valid_sha(value["effective_plan_sha256"])
         valid = valid and value["mode"] == "rbd" and execution_targets["rounding_policy"] == "ceiling"
         try:
@@ -1062,15 +1505,15 @@ def _check_frozen_values(
         assert isinstance(payload, dict)
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         valid = (
-            _valid_source_id(value["event_id"])
-            and _valid_source_id(value["clock_epoch_id"])
+            _valid_source_identity(value["event_id"])
+            and _valid_source_identity(value["clock_epoch_id"])
             and _valid_sha(value["payload_sha256"])
             and value["payload_sha256"] == hashlib.sha256(encoded).hexdigest()
             and isinstance(value["run_sequence"], int)
             and value["run_sequence"] >= 0
         )
     elif schema == "r130sh.inspection.v1":
-        valid = _valid_source_id(value["inspection_id"]) and isinstance(value["trip_index"], int) and value["trip_index"] >= 0
+        valid = _valid_source_identity(value["inspection_id"]) and (value["trip_index"] is None or (isinstance(value["trip_index"], int) and value["trip_index"] >= 0))
     elif schema == "r130sh.run-provenance.v1":
         producer = value["producer"]
         stand = value["stand"]
@@ -1083,19 +1526,19 @@ def _check_frozen_values(
         for point in points:
             if control is not None:
                 control.check("semantic_validation")
-            valid = valid and isinstance(point, dict) and _valid_source_id(point["measurement_id"])
+            valid = valid and isinstance(point, dict) and _valid_source_identity(point["measurement_id"])
     if not valid:
         findings.add(_finding("semantic_value_mismatch", "error", location, "Payload values нарушают frozen semantic profile.", schema))
 
 
-def _valid_source_id(value: JsonValue) -> bool:
-    if not isinstance(value, str):
-        return False
-    try:
-        parsed = UUID(value)
-    except ValueError:
-        return False
-    return str(parsed) == value and parsed.version in {4, 7} and parsed.variant == "specified in RFC 4122"
+def _valid_source_identity(value: JsonValue) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value.encode("utf-8")) <= 200
+        and value == unicodedata.normalize("NFC", value)
+        and not any(ord(character) < 32 or ord(character) == 127 for character in value)
+    )
 
 
 def _bounded_decimal(value: JsonValue) -> Decimal:
@@ -1115,21 +1558,41 @@ def _valid_sha(value: JsonValue) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
+def _valid_availability_sha(value: JsonValue) -> bool:
+    if not isinstance(value, dict):
+        return False
+    availability = value.get("availability")
+    if availability == "available":
+        return _valid_sha(value.get("value"))
+    return availability == "unavailable" and isinstance(value.get("reason"), str)
+
+
 def _valid_git_commit(value: JsonValue) -> bool:
     return isinstance(value, str) and len(value) == 40 and all(character in "0123456789abcdef" for character in value)
 
 
+def _valid_source_utc(value: JsonValue) -> bool:
+    if not isinstance(value, str) or SOURCE_UTC_PATTERN.fullmatch(value) is None:
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo == UTC
+
+
 def _semantic_coverage() -> list[RunPackageSemanticCoverage]:
     return [
-        RunPackageSemanticCoverage(area="manifest", status="covered", contractSource="manifest-example"),
-        RunPackageSemanticCoverage(area="rbd_plan", status="covered", contractSource="plan-rbd-example"),
-        RunPackageSemanticCoverage(area="event_envelope", status="covered", contractSource="event-example"),
-        RunPackageSemanticCoverage(area="inspection", status="covered", contractSource="inspection-example"),
-        RunPackageSemanticCoverage(area="provenance", status="covered", contractSource="provenance-example"),
-        RunPackageSemanticCoverage(area="accepted_projection", status="covered", contractSource="accepted-projection-example"),
-        RunPackageSemanticCoverage(area="measurements_csv", status="not_available", contractSource="upstream-contract-gap"),
-        RunPackageSemanticCoverage(area="checksums_sha256", status="contract_gap", contractSource="upstream-contract-gap"),
-        RunPackageSemanticCoverage(area="remaining_payloads", status="contract_gap", contractSource="upstream-contract-gap"),
+        RunPackageSemanticCoverage(area="manifest", status="covered", contractSource="r130sh-m9a-contract"),
+        RunPackageSemanticCoverage(area="plans", status="covered", contractSource="r130sh-m9a-contract"),
+        RunPackageSemanticCoverage(area="run_summary", status="covered", contractSource="r130sh-m9a-contract"),
+        RunPackageSemanticCoverage(area="environment", status="covered", contractSource="r130sh-m9a-contract"),
+        RunPackageSemanticCoverage(area="events", status="covered", contractSource="r130sh-m9a-contract"),
+        RunPackageSemanticCoverage(area="measurements_csv", status="covered", contractSource="r130sh-m9a-contract"),
+        RunPackageSemanticCoverage(area="accepted_summary", status="covered", contractSource="r130sh-m9a-contract"),
+        RunPackageSemanticCoverage(area="inspections", status="covered", contractSource="r130sh-m9a-contract"),
+        RunPackageSemanticCoverage(area="attachments", status="covered", contractSource="r130sh-m9a-contract"),
+        RunPackageSemanticCoverage(area="provenance", status="covered", contractSource="r130sh-m9a-contract"),
     ]
 
 
@@ -1255,6 +1718,23 @@ def _source_uuid(value: object, location: str) -> str:
     return value
 
 
+def _source_identity(value: object, location: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value.encode("utf-8")) > 200
+        or value != unicodedata.normalize("NFC", value)
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise _invalid(
+            "source_identity_invalid",
+            location,
+            "Source identity имеет недопустимый bounded text shape.",
+            "r130sh-m9a-contract",
+        )
+    return value
+
+
 def _require_sha256(value: object, location: str) -> str:
     if not isinstance(value, str) or len(value) != SHA256_PATTERN_LENGTH or any(character not in "0123456789abcdef" for character in value):
         raise _invalid("sha256_invalid", location, "SHA-256 должен быть lowercase hex.", "manifest-example")
@@ -1262,7 +1742,7 @@ def _require_sha256(value: object, location: str) -> str:
 
 
 def _require_utc(value: object, location: str) -> str:
-    if not isinstance(value, str) or not value.endswith("Z"):
+    if not isinstance(value, str) or SOURCE_UTC_PATTERN.fullmatch(value) is None:
         raise _invalid("timestamp_invalid", location, "Timestamp должен быть UTC ISO 8601.", "manifest-example")
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))

@@ -25,6 +25,12 @@ import {
   customerUpsertPayloadSchema,
   projectDraftSchema,
   projectUpdateMetadataPayloadSchema,
+  importedRunBindingCommandSchema,
+  importedRunEnrichmentResolutionCommandSchema,
+  importedRunIdPayloadSchema,
+  importedRunResolutionStatePayloadSchema,
+  runPackageImportJobPayloadSchema,
+  runPackageImportStartCommandSchema,
   runPackageValidationJobPayloadSchema,
   runPackageValidationStartCommandSchema,
   runtimeStatusSchema,
@@ -45,6 +51,9 @@ import {
   type ProjectOverview,
   type RecentProject,
   type RunPackageValidationJob,
+  type ImportedRunDetail,
+  type RunPackageImportJob,
+  type SpecimenBinding,
   type RuntimeStatus,
   type WorkerErrorResponse,
 } from '@impeller-reliability/contracts';
@@ -57,7 +66,11 @@ import {
 } from './case-document-source';
 import { JsonlLogger } from './logging';
 import { RecentProjectsStore } from './recent-projects';
-import { runPackageValidationStart, selectRunPackageSource } from './run-package-source';
+import {
+  runPackageImportStart,
+  runPackageValidationStart,
+  selectRunPackageSource,
+} from './run-package-source';
 import { showSystemDialog } from './system-dialog';
 import { WorkerClient, type WorkerLifecycleEvent } from './worker-client';
 import { resolveWorkerLocation } from './worker-location';
@@ -539,12 +552,96 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       client.request('runPackageValidation.discard', parsed.data),
     );
   });
+  ipcMain.handle(IPC_CHANNELS.runPackageImportStart, async (_event, raw: unknown) => {
+    const parsed = runPackageImportStartCommandSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure<RunPackageImportJob>();
+    return runPackageImportStart(parsed.data, selectRunPackageSourceForImport, (payload) =>
+      runProjectOperation(workerClient, async (client) =>
+        client.request('runPackageImport.start', payload),
+      ),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.runPackageImportGet, (_event, raw: unknown) => {
+    const parsed = runPackageImportJobPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure<RunPackageImportJob>();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('runPackageImport.get', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.runPackageImportCancel, (_event, raw: unknown) => {
+    const parsed = runPackageImportJobPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure<RunPackageImportJob>();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('runPackageImport.cancel', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.runPackageImportDiscard, (_event, raw: unknown) => {
+    const parsed = runPackageImportJobPayloadSchema.safeParse(raw);
+    if (!parsed.success)
+      return validationFailure<{ readonly jobId: string; readonly discarded: true }>();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('runPackageImport.discard', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.importedRunList, () =>
+    runProjectOperation(workerClient, async (client) => client.request('importedRun.list', {})),
+  );
+  ipcMain.handle(IPC_CHANNELS.importedRunGet, (_event, raw: unknown) => {
+    const parsed = importedRunIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure<ImportedRunDetail>();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('importedRun.get', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.importedRunVerifySource, (_event, raw: unknown) => {
+    const parsed = importedRunIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('importedRun.verifySource', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.importedRunGetResolutionState, (_event, raw: unknown) => {
+    const parsed = importedRunResolutionStatePayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure<SpecimenBinding>();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('importedRun.getResolutionState', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.importedRunBindSpecimen, (_event, raw: unknown) => {
+    const parsed = importedRunBindingCommandSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure<SpecimenBinding>();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('importedRun.bindSpecimen', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.importedRunApplyEnrichmentResolution, (_event, raw: unknown) => {
+    const parsed = importedRunEnrichmentResolutionCommandSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure<ImportedRunDetail>();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('importedRun.applyEnrichmentResolution', parsed.data),
+    );
+  });
 }
 
 function selectRunPackageSourceFromDialog(): Promise<DesktopResult<string>> {
   return selectRunPackageSource({
     automatedCancelled: automatedRunPackageSelectionCancelled(),
     automatedPath: approvedAutomatedRunPackagePath(),
+    showOpenDialog: (options) => {
+      if (automatedRunPackageDialogRejected())
+        return Promise.reject(new Error('automated_run_package_dialog_rejected'));
+      return mainWindow === null
+        ? dialog.showOpenDialog(options)
+        : dialog.showOpenDialog(mainWindow, options);
+    },
+  });
+}
+
+function selectRunPackageSourceForImport(): Promise<DesktopResult<string>> {
+  return selectRunPackageSource({
+    automatedCancelled: automatedRunPackageSelectionCancelled(),
+    automatedPath: approvedAutomatedRunPackagePath(),
+    buttonLabel: 'Импортировать результат',
     showOpenDialog: (options) => {
       if (automatedRunPackageDialogRejected())
         return Promise.reject(new Error('automated_run_package_dialog_rejected'));
@@ -790,10 +887,10 @@ function closeWithoutRendererIfPending(): void {
 
 async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
-    width: 960,
-    height: 680,
-    minWidth: 760,
-    minHeight: 560,
+    width: 1536,
+    height: 864,
+    minWidth: 1280,
+    minHeight: 720,
     show: false,
     backgroundColor: '#f7f8fa',
     webPreferences: {
@@ -859,6 +956,7 @@ async function runSmokeIfRequested(): Promise<void> {
   const automatedProjectPath = approvedAutomatedProjectPath();
   let projectScenarioPassed = false;
   let runPackageValidationPassed = false;
+  let runPackageImportPassed = false;
   if (automatedProjectPath !== null && workerClient !== null) {
     const created = await workerClient.request('project.create', {
       path: automatedProjectPath,
@@ -1033,13 +1131,64 @@ async function runSmokeIfRequested(): Promise<void> {
             validation.ok &&
             validation.result.state === 'completed' &&
             validation.result.report?.structuralVerdict === 'passed' &&
-            validation.result.report.semanticVerdict === 'partial' &&
+            validation.result.report.semanticVerdict === 'passed' &&
             validation.result.report.contractSchema === 'r130sh.run-package.v1' &&
             overviewBeforeValidation.ok &&
             overviewAfterValidation.ok &&
             overviewBeforeValidation.result.recordRevision ===
               overviewAfterValidation.result.recordRevision &&
             discarded.ok;
+          const importJobId = randomUUID();
+          let imported = await workerClient.request('runPackageImport.start', {
+            jobId: importJobId,
+            sourcePath: runPackagePath,
+            allowDiagnosticPartial: false,
+          });
+          const importDeadline = performance.now() + 180_000;
+          while (
+            imported.ok &&
+            !['completed', 'failed', 'cancelled'].includes(imported.result.state) &&
+            performance.now() < importDeadline
+          ) {
+            await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 25));
+            imported = await workerClient.request('runPackageImport.get', {
+              jobId: importJobId,
+            });
+          }
+          if (
+            imported.ok &&
+            imported.result.state === 'completed' &&
+            imported.result.result !== null
+          ) {
+            const localImportId = imported.result.result.importedRun.localImportId;
+            const listed = await workerClient.request('importedRun.list', {});
+            const detail = await workerClient.request('importedRun.get', { localImportId });
+            const verified = await workerClient.request('importedRun.verifySource', {
+              localImportId,
+            });
+            const importDiscarded = await workerClient.request('runPackageImport.discard', {
+              jobId: importJobId,
+            });
+            const importClosed = await workerClient.request('project.close', {});
+            const importReopened = await workerClient.request('project.open', {
+              path: automatedProjectPath,
+              applicationInstanceId,
+            });
+            const listedAfterReopen = await workerClient.request('importedRun.list', {});
+            runPackageImportPassed =
+              imported.result.result.disposition === 'created' &&
+              listed.ok &&
+              listed.result.items.length === 1 &&
+              detail.ok &&
+              detail.result.summary.localImportId === localImportId &&
+              verified.ok &&
+              verified.result.sourceIntegrity === 'verified' &&
+              importDiscarded.ok &&
+              importClosed.ok &&
+              importReopened.ok &&
+              listedAfterReopen.ok &&
+              listedAfterReopen.result.items[0]?.localImportId === localImportId;
+          }
         }
         await workerClient.request('project.close', {});
       }
@@ -1056,11 +1205,13 @@ async function runSmokeIfRequested(): Promise<void> {
           runtime.sqliteStatus === 'ok' &&
           ping?.ok === true &&
           projectScenarioPassed &&
-          runPackageValidationPassed,
+          runPackageValidationPassed &&
+          runPackageImportPassed,
         runtime,
         pingOk: ping?.ok === true,
         projectScenarioPassed,
         runPackageValidationPassed,
+        runPackageImportPassed,
         elapsedMs: Math.round(performance.now() - startedAt),
         pid: process.pid,
         workerPid: workerClient?.processId ?? null,

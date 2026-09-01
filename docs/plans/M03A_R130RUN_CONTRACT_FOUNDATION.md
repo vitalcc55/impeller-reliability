@@ -1,5 +1,9 @@
 # M03A — R130SH Run Package Contract Foundation
 
+## Closure note
+
+M03A завершён и слит как read-only validation foundation. Его exact synthetic snapshot baseline `f02f6d954246a5ab6f57d33dac724ce03d7fb841` сохраняется только как историческая provenance созданных тогда unit/negative fixtures. Текущий production contract и M03B/M9b acceptance принадлежат exact R130SH M9a commit `01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63` и отдельному snapshot `fixtures/contracts/r130run/v1/m9a`; M03A больше не описывает текущий upstream status.
+
 ## Наблюдаемый результат и граница
 
 Инженер выбирает candidate `.r130run` в системном диалоге → Electron Main разрешает один конкретный ordinary file → Python worker запускает одну ограниченную по ресурсам read-only job → пакет потоково проверяется без извлечения → Renderer показывает ход, contract provenance, structural/semantic verdict и ограниченный список findings.
@@ -14,7 +18,7 @@ M03A ничего не импортирует, не меняет `.irproj`, `pro
 
 Исторический `as-is-v7-baseline.example.json` не входит в snapshot и не является package contract/input. Production-код, SQLite, PDF, фотографии, пользовательские данные и нормативные документы R130SH не копируются.
 
-## Фактический upstream status
+## Фактический upstream status на момент M03A
 
 - M0, M1, M2, M3, M4a и M5a завершены; следующий upstream-этап — M4b.
 - Frozen target examples синтетические; production exporter M8 и M9a golden packages отсутствуют.
@@ -193,4 +197,4 @@ Packaged: worker onedir; WinUnpacked/Portable validation smoke with downstream s
 9. Diagnostics UI доступен с клавиатуры, корректен на 640 px и честно сообщает ограничения.
 10. Owner-документы, четыре architecture maps, traceability и security/testing contracts синхронизированы без нового ADR/status layer: Python владеет execution/cancellation state, Renderer — только typed polling/read model, Main — dialog/path/process lifecycle; `packages/application` не получает premature second job machine.
 11. Full local packaging gate и GitHub Quality зелёные; подтверждённые P1/P2 review закрыты.
-12. M03A PR открыт, но не слит без отдельного решения владельца.
+12. M03A завершён и слит как PR #4 в baseline `d0708924e8c9f19ac64668571846bccb1d6e21fa`; дальнейший production import принадлежит M03B.

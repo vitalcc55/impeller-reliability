@@ -1,0 +1,152 @@
+{
+  "packages": [
+    {
+      "case_name": "communication_loss",
+      "package_kind": "diagnostic_partial",
+      "path": "packages/communication_loss.r130run",
+      "sha256": "f40139109e1425e9a4e5363448afa0faaf16b5ecf0bb91397d4f248be0e1ba6e",
+      "size": 8861
+    },
+    {
+      "case_name": "device_failure",
+      "package_kind": "diagnostic_partial",
+      "path": "packages/device_failure.r130run",
+      "sha256": "5f4bb34b81bcbb9af40131b985282c2832efc763cc03693cce285fad388a911f",
+      "size": 8849
+    },
+    {
+      "case_name": "diagnostic_partial",
+      "package_kind": "diagnostic_partial",
+      "path": "packages/diagnostic_partial.r130run",
+      "sha256": "bf4969b5ea3d71d394d2b284e74311c73bc7b6635a3aad555e279e3b90059832",
+      "size": 7767
+    },
+    {
+      "case_name": "duplicate_import_key",
+      "package_kind": "final",
+      "path": "packages/duplicate_import_key.r130run",
+      "sha256": "2015c9e2d3dd61dd75ebf070f6f3a8ee7644eea6d879e9ebf94480b42eb9f220",
+      "size": 9156
+    },
+    {
+      "case_name": "environment_deviation_confirmation",
+      "package_kind": "final",
+      "path": "packages/environment_deviation_confirmation.r130run",
+      "sha256": "b3778ebf7c7906f4b02c7f90a451d45062d0d6b4be86cc0206d13d1a22fa8221",
+      "size": 9416
+    },
+    {
+      "case_name": "exact_methodical_rounding",
+      "package_kind": "final",
+      "path": "packages/exact_methodical_rounding.r130run",
+      "sha256": "7d36efb7af29dc4da049b7d474034f69d137502f314fe671fa70f9aff0ac4930",
+      "size": 9232
+    },
+    {
+      "case_name": "first_vibration_trip_inspection_amendment_completion",
+      "package_kind": "final",
+      "path": "packages/first_vibration_trip_inspection_amendment_completion.r130run",
+      "sha256": "3ab189e55d285aca6f60201991b8aea9ff1caeea19c26192be957f6de56fc308",
+      "size": 11242
+    },
+    {
+      "case_name": "manual_stop",
+      "package_kind": "diagnostic_partial",
+      "path": "packages/manual_stop.r130run",
+      "sha256": "683d65ed94ef37647ae2bdace1b5603ca3b172d1a9ef4be55c0aa8fb7cd25748",
+      "size": 8815
+    },
+    {
+      "case_name": "measurement_retained_after_attempt_rejection",
+      "package_kind": "final",
+      "path": "packages/measurement_retained_after_attempt_rejection.r130run",
+      "sha256": "58d45ef51eee49958dbc49994a89189f75d6bfb272eeba2d63152771f37348db",
+      "size": 9269
+    },
+    {
+      "case_name": "non_synchronous_xyz_rpm_fallback",
+      "package_kind": "final",
+      "path": "packages/non_synchronous_xyz_rpm_fallback.r130run",
+      "sha256": "0097a8340599892d26d98e7bd1419bb5f676b74696ac746aa1286f92791baacf",
+      "size": 9266
+    },
+    {
+      "case_name": "normal_final_pmn",
+      "package_kind": "final",
+      "path": "packages/normal_final_pmn.r130run",
+      "sha256": "1deacd5f3a61064519cf09fc6d648199fa0c3c24ffd966679be9fa79eaf4bc80",
+      "size": 9105
+    },
+    {
+      "case_name": "normal_final_rbd",
+      "package_kind": "final",
+      "path": "packages/normal_final_rbd.r130run",
+      "sha256": "c73d028a0aa5f0b7aacce2f216005048973c4895705b847b4c762b1d0e433c43",
+      "size": 9111
+    },
+    {
+      "case_name": "normal_final_rpt_full_stop",
+      "package_kind": "final",
+      "path": "packages/normal_final_rpt_full_stop.r130run",
+      "sha256": "8d90045022f8fb2ce7fa34cb23cd52c39609c4331044898af478849609a59e72",
+      "size": 9289
+    },
+    {
+      "case_name": "normal_final_rpt_one_percent",
+      "package_kind": "final",
+      "path": "packages/normal_final_rpt_one_percent.r130run",
+      "sha256": "bfdd0f0e65526d76c14c6598d10f0e057d634b1c61aead2efaef87f9222a649f",
+      "size": 9297
+    },
+    {
+      "case_name": "repeated_vibration_trip",
+      "package_kind": "final",
+      "path": "packages/repeated_vibration_trip.r130run",
+      "sha256": "0aac34feae7db09a26aa329c23a673b486458cb716f43bb83b85a2409e346d74",
+      "size": 10894
+    },
+    {
+      "case_name": "same_marking_distinct_specimens",
+      "package_kind": "final",
+      "path": "packages/same_marking_distinct_specimens-1.r130run",
+      "sha256": "8430f338792f5e372a8136cffd9b849f0a1490e9a1762f605cb8171009209d29",
+      "size": 9293
+    },
+    {
+      "case_name": "same_marking_distinct_specimens",
+      "package_kind": "final",
+      "path": "packages/same_marking_distinct_specimens-2.r130run",
+      "sha256": "abf47a52796bc6dfca34622a54c83d7b9e201df62f850ebcf171063c098f9bd2",
+      "size": 9293
+    },
+    {
+      "case_name": "shared_specimen_pmn_rpt_rbd",
+      "package_kind": "final",
+      "path": "packages/shared_specimen_pmn_rpt_rbd-pmn.r130run",
+      "sha256": "4e6140f085870bd79dc08b487db798a512b2ebac3ab6403b92e2e1850a44e8cc",
+      "size": 9252
+    },
+    {
+      "case_name": "shared_specimen_pmn_rpt_rbd",
+      "package_kind": "final",
+      "path": "packages/shared_specimen_pmn_rpt_rbd-rbd.r130run",
+      "sha256": "b7366b06cf515b850fe25015378052d81315c60a24c65704a23afaa55fbaedd7",
+      "size": 9254
+    },
+    {
+      "case_name": "shared_specimen_pmn_rpt_rbd",
+      "package_kind": "final",
+      "path": "packages/shared_specimen_pmn_rpt_rbd-rpt.r130run",
+      "sha256": "5c56eaa3b3f5635c6e52910a1aaa0f4674c55c9b92ed0f793d12f8628158571d",
+      "size": 9356
+    },
+    {
+      "case_name": "storage_failure_data_gap",
+      "package_kind": "diagnostic_partial",
+      "path": "packages/storage_failure_data_gap.r130run",
+      "sha256": "d8d874e3ccc2b12a721cbbc42f25d852a16448e6273b608527ddb953b997b0f5",
+      "size": 8943
+    }
+  ],
+  "schema_version": "r130sh.m09a-golden-catalog.v1"
+}

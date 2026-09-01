@@ -12,7 +12,7 @@ $desktopDist = Join-Path $repositoryRoot "apps\desktop\dist"
 $smokeDirectory = Join-Path $repositoryRoot ".tmp\.codex\evidence\$($Target.ToLowerInvariant())"
 $summaryPath = Join-Path $smokeDirectory "summary.json"
 $projectPath = Join-Path $smokeDirectory "Packaged smoke project.irproj"
-$runPackagePath = Join-Path $smokeDirectory "synthetic-contract.r130run"
+$runPackagePath = Join-Path $repositoryRoot "fixtures\contracts\r130run\v1\m9a\packages\normal_final_rbd.r130run"
 $packageMetadata = Get-Content -LiteralPath (Join-Path $repositoryRoot "apps\desktop\package.json") -Raw | ConvertFrom-Json
 $applicationExecutable = Join-Path $desktopDist "win-unpacked\ImpellerReliabilityCalc.exe"
 
@@ -70,8 +70,7 @@ if (-not (Test-Path -LiteralPath $applicationExecutable)) { throw "Packaged appl
 & node (Join-Path $repositoryRoot "apps\desktop\scripts\verify-packaged-fuses.mjs") $applicationExecutable
 if ($LASTEXITCODE -ne 0) { throw "Electron fuse verification failed." }
 
-& uv run --project (Join-Path $repositoryRoot "tools\python-worker") --directory (Join-Path $repositoryRoot "tools\python-worker\tests") python -m support.build_r130run_cli $runPackagePath
-if ($LASTEXITCODE -ne 0) { throw "Synthetic R130SH contract package generation failed." }
+if (-not (Test-Path -LiteralPath $runPackagePath)) { throw "Producer M9a package not found: $runPackagePath" }
 
 $env:IMPELLER_SMOKE_OUTPUT = $summaryPath
 $env:IMPELLER_SMOKE_HOLD_MS = "1500"
@@ -79,6 +78,10 @@ $env:IMPELLER_AUTOMATED_PROJECT_PATH = $projectPath
 $env:IMPELLER_AUTOMATED_R130RUN_PATH = $runPackagePath
 $launchStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $ownedProcessIds = [System.Collections.Generic.HashSet[int]]::new()
+trap {
+    Stop-OwnedProcesses -OwnedProcessIds $ownedProcessIds
+    throw
+}
 $networkObserved = $false
 try {
     $desktopProcess = Start-Process -FilePath $executablePath -PassThru -WindowStyle Hidden
@@ -123,6 +126,7 @@ $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $summaryPath -Enco
 if ($summary.passed -ne $true) { throw "Desktop smoke returned failure." }
 if ($summary.projectScenarioPassed -ne $true) { throw "Desktop smoke project create/update/close/reopen failed." }
 if ($summary.runPackageValidationPassed -ne $true) { throw "Desktop smoke R130SH contract validation failed." }
+if ($summary.runPackageImportPassed -ne $true) { throw "Desktop smoke R130SH production import/reopen failed." }
 if ($networkObserved) { throw "Desktop smoke observed a TCP connection in its process tree." }
 
 $shutdownDeadline = [DateTime]::UtcNow.AddSeconds(5)

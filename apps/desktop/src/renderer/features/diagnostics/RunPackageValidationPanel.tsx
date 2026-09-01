@@ -234,8 +234,8 @@ export function RunPackageValidationPanel({
 
       <aside className="r130run-validation__scope" role="note">
         Проверка не импортирует данные в дело и не подтверждает пригодность результата для расчётов.
-        Используется синтетический контрактный baseline; production exporter и M9a golden packages
-        ещё не готовы.
+        Валидатор привязан к production M9a contract; producer compatibility подтверждается отдельно
+        M03B acceptance.
       </aside>
 
       {displayedError !== null ? (

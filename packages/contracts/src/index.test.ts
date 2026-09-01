@@ -7,6 +7,9 @@ import {
   caseDocumentCreateCommandSchema,
   caseDocumentSchema,
   entityIdSchema,
+  importedRunPlanSchema,
+  importedRunProjectionSchema,
+  importedRunSummarySchema,
   projectIdSchema,
   projectBackupResultSchema,
   projectOverviewSchema,
@@ -67,6 +70,139 @@ describe('worker contracts', () => {
     );
   });
 
+  it('accepts producer UTC seconds without weakening local timestamp contracts', () => {
+    const summary = {
+      localImportId: 'ec7cc676-e40d-4ad7-b038-83e0035dc212',
+      packageId: '1932f123-462a-4712-a86d-4d1ff8b651bf',
+      exportRevision: 1,
+      outerPackageSha256: 'a'.repeat(64),
+      runId: 'normal_final_rbd',
+      packageKind: 'final',
+      packageSchema: 'r130sh.run-package.v1',
+      packageCreatedAtUtc: '2026-08-31T10:00:00Z',
+      sourceSnapshotSha256: 'b'.repeat(64),
+      producerName: 'R130SH',
+      producerVersion: 'm9a-test',
+      producerBuildId: 'm9a-build',
+      producerGitCommit: 'm9a-commit',
+      outerSizeBytes: 9_111,
+      importedAtUtc: '2026-08-31T10:00:00.000Z',
+      validatorVersion: 'm03b.1',
+      validationContractCommit: '01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63',
+      structuralVerdict: 'passed',
+      semanticVerdict: 'passed',
+      sourceIntegrity: 'verified',
+      sourceSpecimenId: 'specimen-m9a-001',
+      localSpecimenId: null,
+      bindingRevision: 1,
+      mode: 'rbd',
+      technicalStatus: 'completed',
+      terminationReason: 'normal_done',
+      specimenOutcome: 'passed',
+      runValidity: 'valid',
+      dataCompleteness: 'complete',
+      importedExisting: false,
+    } as const;
+    expect(importedRunSummarySchema.parse(summary).packageCreatedAtUtc).toBe(
+      '2026-08-31T10:00:00Z',
+    );
+    expect(
+      importedRunSummarySchema.safeParse({ ...summary, importedAtUtc: '2026-08-31T10:00:00Z' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('bounds imported plan integers and diagnostic partial reasons', () => {
+    const plan = {
+      planId: 'plan-normal_final_rbd',
+      planRevision: 1,
+      mode: 'rbd',
+      specimenId: 'specimen-m9a-001',
+      wheelIdentifier: 'wheel-1',
+      laboratoryCaseReference: 'case-1',
+      customerOrderReference: 'order-1',
+      nominalRpm: '3000',
+      targetCycles: 100,
+      targetMaxRpm: null,
+      lowerRpm: null,
+      upperRpm: null,
+      targetSteadyDurationS: null,
+      totalDurationS: null,
+      lowerPointPolicy: null,
+      roundingPolicy: null,
+      requiredCyclesExact: null,
+      requiredSteadyDurationSExact: null,
+      requiredTotalDurationSExact: null,
+      cycleDurationSExact: null,
+      targetMaxRpmExact: null,
+    } as const;
+    expect(importedRunPlanSchema.parse(plan).targetCycles).toBe(100);
+    expect(
+      importedRunPlanSchema.safeParse({ ...plan, targetCycles: Number.MAX_SAFE_INTEGER + 1 })
+        .success,
+    ).toBe(false);
+    expect(
+      importedRunPlanSchema.safeParse({ ...plan, planRevision: Number.MAX_SAFE_INTEGER + 1 })
+        .success,
+    ).toBe(false);
+    const projection = {
+      startedAtUtc: '2026-08-31T10:00:00Z',
+      finishedAtUtc: null,
+      resumeAvailable: false,
+      partialReasons: ['diagnostic'],
+      customerFullName: null,
+      customerAddress: null,
+      customerOrderReference: null,
+      wheelFullName: null,
+      wheelIdentifier: null,
+      workingDiameterMm: null,
+      sampleLabel: null,
+      originalPlan: plan,
+      effectivePlan: plan,
+      environment: {
+        status: null,
+        temperatureC: null,
+        humidityPct: null,
+        pressureKpa: null,
+        source: null,
+        deviationCount: 0,
+        confirmationActor: null,
+        confirmationReason: null,
+      },
+      provenance: {
+        producerName: null,
+        appVersion: null,
+        buildId: null,
+        gitCommit: null,
+        databaseSchemaVersion: null,
+        standName: null,
+        standSerialNumber: null,
+        timeSource: null,
+      },
+      measurementCount: 0,
+      acceptedMeasurementCount: 0,
+      eventCount: 0,
+      inspectionCount: 0,
+      attachmentCount: 0,
+      amendmentCount: 0,
+      creditingPolicy: null,
+      acceptedElapsedS: null,
+    } as const;
+    expect(importedRunProjectionSchema.parse(projection).partialReasons).toEqual(['diagnostic']);
+    expect(
+      importedRunProjectionSchema.safeParse({
+        ...projection,
+        partialReasons: Array.from({ length: 65 }, () => 'reason'),
+      }).success,
+    ).toBe(false);
+    expect(
+      importedRunProjectionSchema.safeParse({
+        ...projection,
+        measurementCount: Number.MAX_SAFE_INTEGER + 1,
+      }).success,
+    ).toBe(false);
+  });
+
   it('keeps source path and validation budget out of the Renderer start command', () => {
     const command = { jobId: 'ec7cc676-e40d-4ad7-b038-83e0035dc212' };
     expect(runPackageValidationStartCommandSchema.parse(command)).toEqual(command);
@@ -97,10 +233,10 @@ describe('worker contracts', () => {
 
   it('validates terminal job invariants and rejects path or import claims in reports', () => {
     const report = {
-      validatorVersion: 'm03a.1',
-      validationLevel: 'synthetic_contract_foundation',
+      validatorVersion: 'm03b.1',
+      validationLevel: 'producer_m9a_contract',
       upstreamRepository: 'https://github.com/vitalcc55/R130SH',
-      upstreamCommit: 'f02f6d954246a5ab6f57d33dac724ce03d7fb841',
+      upstreamCommit: '01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63',
       contractSchema: 'r130sh.run-package.v1',
       sourceFileName: 'candidate.r130run',
       outerPackageSha256: 'a'.repeat(64),
@@ -113,7 +249,7 @@ describe('worker contracts', () => {
         name: 'R130SH',
         version: 'synthetic',
         buildId: 'fixture',
-        gitCommit: 'f02f6d954246a5ab6f57d33dac724ce03d7fb841',
+        gitCommit: '01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63',
       },
       entryCount: 15,
       declaredPayloadBytes: 512,

@@ -20,6 +20,8 @@ ProjectErrorCode = Literal[
     "file_too_large",
     "file_missing",
     "file_integrity_mismatch",
+    "import_integrity_conflict",
+    "resolution_conflict",
     "validation_error",
     "storage_error",
     "worker_unavailable",

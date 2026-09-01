@@ -1,0 +1,165 @@
+{
+  "schemaVersion": "impeller-reliability.r130sh-m9a-snapshot-source.v1",
+  "repository": "vitalcc55/R130SH",
+  "branch": "codex/data-and-protocol-improvements",
+  "exactCommit": "01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63",
+  "upstreamPackageIndexPath": "tests/fixtures/r130run/v1/m9a/package-index.json",
+  "snapshotCreatedAtUtc": "2026-08-31T12:38:34Z",
+  "packageCount": 21,
+  "scenarioCount": 18,
+  "description": "Producer-generated M9a golden packages. Offline immutable downstream acceptance snapshot; it is not generated or refreshed by CI.",
+  "files": [
+    {
+      "path": "package-index.json",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/package-index.json",
+      "gitBlobSha": "7380e90121fc7ad1dcb12c22baaeab98affc3698"
+    },
+    {
+      "path": "packages/communication_loss.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/communication_loss.r130run",
+      "gitBlobSha": "d8bad33b9bbada129342c9500e488bba0d7ce9d2",
+      "size": 8861,
+      "outerSha256": "f40139109e1425e9a4e5363448afa0faaf16b5ecf0bb91397d4f248be0e1ba6e"
+    },
+    {
+      "path": "packages/device_failure.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/device_failure.r130run",
+      "gitBlobSha": "5cdc43d6613e99b55a1c5c7354cf72b8bdac1b06",
+      "size": 8849,
+      "outerSha256": "5f4bb34b81bcbb9af40131b985282c2832efc763cc03693cce285fad388a911f"
+    },
+    {
+      "path": "packages/diagnostic_partial.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/diagnostic_partial.r130run",
+      "gitBlobSha": "f8a809bfcc86d3f956eb820110bd8c080dd0bae8",
+      "size": 7767,
+      "outerSha256": "bf4969b5ea3d71d394d2b284e74311c73bc7b6635a3aad555e279e3b90059832"
+    },
+    {
+      "path": "packages/duplicate_import_key.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/duplicate_import_key.r130run",
+      "gitBlobSha": "742ee6afa9ed8b0613fb67dc75f5e4203b7f8065",
+      "size": 9156,
+      "outerSha256": "2015c9e2d3dd61dd75ebf070f6f3a8ee7644eea6d879e9ebf94480b42eb9f220"
+    },
+    {
+      "path": "packages/environment_deviation_confirmation.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/environment_deviation_confirmation.r130run",
+      "gitBlobSha": "e3437cd5c922d6eb55ab1ff5c08f4ab4c1606597",
+      "size": 9416,
+      "outerSha256": "b3778ebf7c7906f4b02c7f90a451d45062d0d6b4be86cc0206d13d1a22fa8221"
+    },
+    {
+      "path": "packages/exact_methodical_rounding.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/exact_methodical_rounding.r130run",
+      "gitBlobSha": "1da717329780c74c08fca2c82731bb8d445d7538",
+      "size": 9232,
+      "outerSha256": "7d36efb7af29dc4da049b7d474034f69d137502f314fe671fa70f9aff0ac4930"
+    },
+    {
+      "path": "packages/first_vibration_trip_inspection_amendment_completion.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/first_vibration_trip_inspection_amendment_completion.r130run",
+      "gitBlobSha": "312d7460ae9ed14ee85bc8d31f3cdd179adc952b",
+      "size": 11242,
+      "outerSha256": "3ab189e55d285aca6f60201991b8aea9ff1caeea19c26192be957f6de56fc308"
+    },
+    {
+      "path": "packages/manual_stop.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/manual_stop.r130run",
+      "gitBlobSha": "a0492851cf2bdeedc5f18fe86e27296f155ed5a0",
+      "size": 8815,
+      "outerSha256": "683d65ed94ef37647ae2bdace1b5603ca3b172d1a9ef4be55c0aa8fb7cd25748"
+    },
+    {
+      "path": "packages/measurement_retained_after_attempt_rejection.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/measurement_retained_after_attempt_rejection.r130run",
+      "gitBlobSha": "e203abb57579372cdb7610ac74ef36e1767a616d",
+      "size": 9269,
+      "outerSha256": "58d45ef51eee49958dbc49994a89189f75d6bfb272eeba2d63152771f37348db"
+    },
+    {
+      "path": "packages/non_synchronous_xyz_rpm_fallback.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/non_synchronous_xyz_rpm_fallback.r130run",
+      "gitBlobSha": "df813ab9f8729f579978c31a9aa5f26098b4f396",
+      "size": 9266,
+      "outerSha256": "0097a8340599892d26d98e7bd1419bb5f676b74696ac746aa1286f92791baacf"
+    },
+    {
+      "path": "packages/normal_final_pmn.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/normal_final_pmn.r130run",
+      "gitBlobSha": "a3befa8a4fe3401974bbedc1ea7faba2ef08241d",
+      "size": 9105,
+      "outerSha256": "1deacd5f3a61064519cf09fc6d648199fa0c3c24ffd966679be9fa79eaf4bc80"
+    },
+    {
+      "path": "packages/normal_final_rbd.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/normal_final_rbd.r130run",
+      "gitBlobSha": "da1b4fc94208e6578e798ab8a24b01113ec32ae6",
+      "size": 9111,
+      "outerSha256": "c73d028a0aa5f0b7aacce2f216005048973c4895705b847b4c762b1d0e433c43"
+    },
+    {
+      "path": "packages/normal_final_rpt_full_stop.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/normal_final_rpt_full_stop.r130run",
+      "gitBlobSha": "9167a3b3b300a0ab1cb4f4f7d54bc709e1d36c47",
+      "size": 9289,
+      "outerSha256": "8d90045022f8fb2ce7fa34cb23cd52c39609c4331044898af478849609a59e72"
+    },
+    {
+      "path": "packages/normal_final_rpt_one_percent.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/normal_final_rpt_one_percent.r130run",
+      "gitBlobSha": "7acd6401f7f80879170065a562f8332a1344e4c6",
+      "size": 9297,
+      "outerSha256": "bfdd0f0e65526d76c14c6598d10f0e057d634b1c61aead2efaef87f9222a649f"
+    },
+    {
+      "path": "packages/repeated_vibration_trip.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/repeated_vibration_trip.r130run",
+      "gitBlobSha": "25c029d9058559b7b6756a4516d7f32a01946fdd",
+      "size": 10894,
+      "outerSha256": "0aac34feae7db09a26aa329c23a673b486458cb716f43bb83b85a2409e346d74"
+    },
+    {
+      "path": "packages/same_marking_distinct_specimens-1.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/same_marking_distinct_specimens-1.r130run",
+      "gitBlobSha": "d1311d54700683e63f753077f81ea92bc311c2dc",
+      "size": 9293,
+      "outerSha256": "8430f338792f5e372a8136cffd9b849f0a1490e9a1762f605cb8171009209d29"
+    },
+    {
+      "path": "packages/same_marking_distinct_specimens-2.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/same_marking_distinct_specimens-2.r130run",
+      "gitBlobSha": "6a9bdf7309a72ac0403b595107a69233579c5846",
+      "size": 9293,
+      "outerSha256": "abf47a52796bc6dfca34622a54c83d7b9e201df62f850ebcf171063c098f9bd2"
+    },
+    {
+      "path": "packages/shared_specimen_pmn_rpt_rbd-pmn.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/shared_specimen_pmn_rpt_rbd-pmn.r130run",
+      "gitBlobSha": "53ebd93fad0c6d99821fc0b099c7f2dfd1f3544c",
+      "size": 9252,
+      "outerSha256": "4e6140f085870bd79dc08b487db798a512b2ebac3ab6403b92e2e1850a44e8cc"
+    },
+    {
+      "path": "packages/shared_specimen_pmn_rpt_rbd-rbd.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/shared_specimen_pmn_rpt_rbd-rbd.r130run",
+      "gitBlobSha": "c655bdaf8d964313942caba285c5fc88e80271f8",
+      "size": 9254,
+      "outerSha256": "b7366b06cf515b850fe25015378052d81315c60a24c65704a23afaa55fbaedd7"
+    },
+    {
+      "path": "packages/shared_specimen_pmn_rpt_rbd-rpt.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/shared_specimen_pmn_rpt_rbd-rpt.r130run",
+      "gitBlobSha": "27769bb8ab1942b35179a8284fc9402f57b755e3",
+      "size": 9356,
+      "outerSha256": "5c56eaa3b3f5635c6e52910a1aaa0f4674c55c9b92ed0f793d12f8628158571d"
+    },
+    {
+      "path": "packages/storage_failure_data_gap.r130run",
+      "upstreamPath": "tests/fixtures/r130run/v1/m9a/packages/storage_failure_data_gap.r130run",
+      "gitBlobSha": "817b49edfd479514e9a1844f3b35a179fe9bfca1",
+      "size": 8943,
+      "outerSha256": "d8d874e3ccc2b12a721cbbc42f25d852a16448e6273b608527ddb953b997b0f5"
+    }
+  ]
+}

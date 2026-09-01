@@ -43,6 +43,16 @@ export const workerOperationSchema = z.enum([
   'runPackageValidation.get',
   'runPackageValidation.cancel',
   'runPackageValidation.discard',
+  'runPackageImport.start',
+  'runPackageImport.get',
+  'runPackageImport.cancel',
+  'runPackageImport.discard',
+  'importedRun.list',
+  'importedRun.get',
+  'importedRun.verifySource',
+  'importedRun.getResolutionState',
+  'importedRun.bindSpecimen',
+  'importedRun.applyEnrichmentResolution',
 ]);
 
 export type WorkerOperation = z.infer<typeof workerOperationSchema>;
@@ -106,7 +116,7 @@ export const projectOpenPayloadSchema = z
   .strict();
 export const projectUpdateMetadataPayloadSchema = z
   .object({
-    expectedRevision: z.number().int().positive(),
+    expectedRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     metadata: projectDraftSchema,
   })
   .strict();
@@ -116,6 +126,14 @@ const canonicalUtcTimestampSchema = z
   .refine((value) => {
     const parsed = new Date(value);
     return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+  });
+const sourceUtcTimestampSchema = z
+  .string()
+  .regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?Z$/u)
+  .refine((value) => {
+    const parsed = new Date(value);
+    if (!Number.isFinite(parsed.getTime())) return false;
+    return parsed.toISOString() === (value.includes('.') ? value : value.replace(/Z$/u, '.000Z'));
   });
 export const projectOverviewSchema = z
   .object({
@@ -428,12 +446,24 @@ const runPackageSourceUuidSchema = z
   .string()
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[47][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
 export const runPackageIdSchema = runPackageSourceUuidSchema.brand<'RunPackageId'>();
-export const runIdSchema = runPackageSourceUuidSchema.brand<'RunId'>();
-export const specimenSourceIdSchema = runPackageSourceUuidSchema.brand<'SpecimenSourceId'>();
-export const planIdSchema = runPackageSourceUuidSchema.brand<'PlanId'>();
-export const measurementIdSchema = runPackageSourceUuidSchema.brand<'MeasurementId'>();
-export const eventIdSchema = runPackageSourceUuidSchema.brand<'EventId'>();
-export const inspectionIdSchema = runPackageSourceUuidSchema.brand<'InspectionId'>();
+const sourceIdentitySchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine(
+    (value) =>
+      value === value.normalize('NFC') &&
+      [...value].every((character) => {
+        const codePoint = character.codePointAt(0);
+        return codePoint !== undefined && codePoint >= 0x20 && codePoint !== 0x7f;
+      }),
+  );
+export const runIdSchema = sourceIdentitySchema.brand<'RunId'>();
+export const specimenSourceIdSchema = sourceIdentitySchema.brand<'SpecimenSourceId'>();
+export const planIdSchema = sourceIdentitySchema.brand<'PlanId'>();
+export const measurementIdSchema = sourceIdentitySchema.brand<'MeasurementId'>();
+export const eventIdSchema = sourceIdentitySchema.brand<'EventId'>();
+export const inspectionIdSchema = sourceIdentitySchema.brand<'InspectionId'>();
 export const runPackageValidationStartCommandSchema = z
   .object({ jobId: entityIdSchema, replaceJobId: entityIdSchema.optional() })
   .strict();
@@ -493,7 +523,11 @@ export const runPackageProducerSchema = z
       .min(1)
       .max(128)
       .regex(/^[\x20-\x7e]+$/u),
-    gitCommit: z.string().regex(/^[0-9a-f]{40}$/u),
+    gitCommit: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[\x20-\x7e]+$/u),
   })
   .strict();
 export const runPackageSemanticCoverageSchema = z
@@ -527,10 +561,10 @@ export const runPackageFindingCountsSchema = z
   .strict();
 export const runPackageValidationReportSchema = z
   .object({
-    validatorVersion: z.literal('m03a.1'),
-    validationLevel: z.literal('synthetic_contract_foundation'),
+    validatorVersion: z.literal('m03b.1'),
+    validationLevel: z.literal('producer_m9a_contract'),
     upstreamRepository: z.literal('https://github.com/vitalcc55/R130SH'),
-    upstreamCommit: z.literal('f02f6d954246a5ab6f57d33dac724ce03d7fb841'),
+    upstreamCommit: z.literal('01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63'),
     contractSchema: z.literal('r130sh.run-package.v1'),
     sourceFileName: z
       .string()
@@ -602,6 +636,304 @@ export const runPackageValidationDiscardResultSchema = z
   .object({ jobId: entityIdSchema, discarded: z.literal(true) })
   .strict();
 
+export const runPackageImportStartCommandSchema = z
+  .object({
+    jobId: entityIdSchema,
+    replaceJobId: entityIdSchema.optional(),
+    allowDiagnosticPartial: z.boolean(),
+  })
+  .strict();
+export const runPackageImportStartPayloadSchema = runPackageImportStartCommandSchema
+  .extend({ sourcePath: z.string().min(1).max(32_767) })
+  .strict();
+export const runPackageImportJobPayloadSchema = z.object({ jobId: entityIdSchema }).strict();
+export const importedRunIdPayloadSchema = z.object({ localImportId: entityIdSchema }).strict();
+export const importedRunBindingCommandSchema = z
+  .object({
+    sourceSpecimenId: specimenSourceIdSchema,
+    localSpecimenId: entityIdSchema.nullable(),
+    expectedRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    actor: z.string().trim().min(1).max(200),
+    reason: z.string().trim().min(1).max(2_000),
+  })
+  .strict();
+export const importedRunResolutionStatePayloadSchema = z
+  .object({ sourceSpecimenId: specimenSourceIdSchema })
+  .strict();
+export const importedRunEnrichmentResolutionCommandSchema = importedRunIdPayloadSchema
+  .extend({
+    resolutionId: entityIdSchema,
+    sourcePayloadPath: z.string().min(1).max(512),
+    sourceField: z.string().min(1).max(200),
+    targetEntityType: z.enum(['customer_profile', 'wheel_model', 'specimen']),
+    targetEntityId: z.string().min(1).max(200),
+    targetField: z.string().min(1).max(100),
+    decision: z.enum(['use_source', 'use_analyst', 'copied_to_analyst']),
+    actor: z.string().trim().min(1).max(200),
+    reason: z.string().trim().max(2_000),
+    expectedTargetRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
+  })
+  .strict();
+
+export const importedRunSourceIntegritySchema = z.enum([
+  'verified',
+  'missing',
+  'modified',
+  'verification_error',
+]);
+export const importedRunSummarySchema = z
+  .object({
+    localImportId: entityIdSchema,
+    packageId: runPackageIdSchema,
+    exportRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    outerPackageSha256: z.string().regex(/^[0-9a-f]{64}$/u),
+    runId: runIdSchema,
+    packageKind: z.enum(['final', 'diagnostic_partial']),
+    packageSchema: z.literal('r130sh.run-package.v1'),
+    packageCreatedAtUtc: sourceUtcTimestampSchema,
+    sourceSnapshotSha256: z.string().regex(/^[0-9a-f]{64}$/u),
+    producerName: z.string().min(1).max(128),
+    producerVersion: z.string().min(1).max(64),
+    producerBuildId: z.string().min(1).max(128),
+    producerGitCommit: z.string().min(1).max(128),
+    outerSizeBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    importedAtUtc: canonicalUtcTimestampSchema,
+    validatorVersion: z.string().min(1),
+    validationContractCommit: z.literal('01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63'),
+    structuralVerdict: z.literal('passed'),
+    semanticVerdict: z.enum(['passed', 'passed_with_warnings']),
+    sourceIntegrity: importedRunSourceIntegritySchema,
+    sourceSpecimenId: specimenSourceIdSchema,
+    localSpecimenId: entityIdSchema.nullable(),
+    bindingRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    mode: z.enum(['pmn', 'rpt', 'rbd']),
+    technicalStatus: z.string().nullable(),
+    terminationReason: z.string().nullable(),
+    specimenOutcome: z.string().nullable(),
+    runValidity: z.string().nullable(),
+    dataCompleteness: z.string().nullable(),
+    importedExisting: z.boolean(),
+  })
+  .strict();
+export const importedRunPlanSchema = z
+  .object({
+    planId: planIdSchema,
+    planRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    mode: z.enum(['pmn', 'rpt', 'rbd']),
+    specimenId: specimenSourceIdSchema,
+    wheelIdentifier: z.string(),
+    laboratoryCaseReference: z.string(),
+    customerOrderReference: z.string(),
+    nominalRpm: z.string().nullable(),
+    targetCycles: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+    targetMaxRpm: z.string().nullable(),
+    lowerRpm: z.string().nullable(),
+    upperRpm: z.string().nullable(),
+    targetSteadyDurationS: z.string().nullable(),
+    totalDurationS: z.string().nullable(),
+    lowerPointPolicy: z.string().nullable(),
+    roundingPolicy: z.string().nullable(),
+    requiredCyclesExact: z.string().nullable(),
+    requiredSteadyDurationSExact: z.string().nullable(),
+    requiredTotalDurationSExact: z.string().nullable(),
+    cycleDurationSExact: z.string().nullable(),
+    targetMaxRpmExact: z.string().nullable(),
+  })
+  .strict();
+export const importedRunEnvironmentSchema = z
+  .object({
+    status: z.string().nullable(),
+    temperatureC: z.string().nullable(),
+    humidityPct: z.string().nullable(),
+    pressureKpa: z.string().nullable(),
+    source: z.string().nullable(),
+    deviationCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    confirmationActor: z.string().nullable(),
+    confirmationReason: z.string().nullable(),
+  })
+  .strict();
+export const importedRunProvenanceSchema = z
+  .object({
+    producerName: z.string().nullable(),
+    appVersion: z.string().nullable(),
+    buildId: z.string().nullable(),
+    gitCommit: z.string().nullable(),
+    databaseSchemaVersion: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+    standName: z.string().nullable(),
+    standSerialNumber: z.string().nullable(),
+    timeSource: z.string().nullable(),
+  })
+  .strict();
+export const importedRunProjectionSchema = z
+  .object({
+    startedAtUtc: sourceUtcTimestampSchema,
+    finishedAtUtc: sourceUtcTimestampSchema.nullable(),
+    resumeAvailable: z.boolean(),
+    partialReasons: z.array(z.string().min(1).max(512)).max(64),
+    customerFullName: z.string().nullable(),
+    customerAddress: z.string().nullable(),
+    customerOrderReference: z.string().nullable(),
+    wheelFullName: z.string().nullable(),
+    wheelIdentifier: z.string().nullable(),
+    workingDiameterMm: z.string().nullable(),
+    sampleLabel: z.string().nullable(),
+    originalPlan: importedRunPlanSchema,
+    effectivePlan: importedRunPlanSchema,
+    environment: importedRunEnvironmentSchema,
+    provenance: importedRunProvenanceSchema,
+    measurementCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    acceptedMeasurementCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    eventCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    inspectionCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    attachmentCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    amendmentCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    creditingPolicy: z.string().nullable(),
+    acceptedElapsedS: z.string().nullable(),
+  })
+  .strict();
+export const importedRunInventoryItemSchema = z
+  .object({
+    path: z.string().min(1).max(512),
+    mediaType: z.string().min(1).max(128),
+    sizeBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/u),
+    rowCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+    semanticCoverage: z.enum(['covered', 'structural_only']),
+  })
+  .strict();
+export const enrichmentResolutionSchema = z
+  .object({
+    resolutionId: entityIdSchema,
+    sourcePayloadPath: z.string(),
+    sourceField: z.string(),
+    targetEntityType: z.enum(['customer_profile', 'wheel_model', 'specimen']),
+    targetEntityId: z.string(),
+    targetField: z.string(),
+    decision: z.enum(['use_source', 'use_analyst', 'copied_to_analyst']),
+    actor: z.string(),
+    occurredAtUtc: canonicalUtcTimestampSchema,
+    reason: z.string(),
+  })
+  .strict();
+export const importedRunDetailSchema = z
+  .object({
+    summary: importedRunSummarySchema,
+    projection: importedRunProjectionSchema,
+    inventory: z.array(importedRunInventoryItemSchema).max(4096),
+    semanticCoverage: z.array(runPackageSemanticCoverageSchema).max(32),
+    validationFindings: z.array(runPackageFindingSchema).max(200),
+    enrichmentResolutions: z.array(enrichmentResolutionSchema).max(32),
+  })
+  .strict();
+export const specimenBindingSchema = z
+  .object({
+    sourceSpecimenId: specimenSourceIdSchema,
+    localSpecimenId: entityIdSchema.nullable(),
+    recordRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    updatedByActor: z.string().nullable(),
+    reason: z.string(),
+    createdAtUtc: canonicalUtcTimestampSchema,
+    updatedAtUtc: canonicalUtcTimestampSchema,
+  })
+  .strict();
+export const importedRunVerifyResultSchema = z
+  .object({ localImportId: entityIdSchema, sourceIntegrity: importedRunSourceIntegritySchema })
+  .strict();
+export const importedRunListResultSchema = z
+  .object({ items: z.array(importedRunSummarySchema) })
+  .strict();
+export const runPackageImportResultSchema = z
+  .object({
+    disposition: z.enum(['created', 'existing']),
+    importedRun: importedRunSummarySchema,
+  })
+  .strict();
+export const runPackageImportJobErrorSchema = z
+  .object({
+    code: z.enum([
+      'cancelled',
+      'timeout',
+      'source_changed',
+      'storage_error',
+      'validation_error',
+      'diagnostic_confirmation_required',
+      'import_integrity_conflict',
+      'project_not_open',
+      'interrupted',
+    ]),
+    message: z.string().min(1).max(512),
+    retryable: z.boolean(),
+  })
+  .strict();
+const runPackageImportJobBaseSchema = z
+  .object({
+    jobId: entityIdSchema,
+    phase: z.enum([
+      'queued',
+      'source_validation',
+      'streaming_copy',
+      'staged_validation',
+      'database_registration',
+      'terminal',
+    ]),
+    completedBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    totalBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    completedEntries: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    totalEntries: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    startedAtUtc: canonicalUtcTimestampSchema.nullable(),
+  })
+  .superRefine((value, context) => {
+    if (value.totalBytes > 0 && value.completedBytes > value.totalBytes)
+      context.addIssue({ code: 'custom', message: 'completedBytes exceeds totalBytes' });
+    if (value.totalEntries > 0 && value.completedEntries > value.totalEntries)
+      context.addIssue({ code: 'custom', message: 'completedEntries exceeds totalEntries' });
+  });
+const runPackageImportActiveJobSchema = runPackageImportJobBaseSchema.and(
+  z
+    .object({
+      state: z.enum([
+        'queued',
+        'validating',
+        'copying',
+        'revalidating',
+        'registering',
+        'cancelling',
+      ]),
+      finishedAtUtc: z.null(),
+      result: z.null(),
+      typedError: z.null(),
+    })
+    .strict(),
+);
+const runPackageImportCompletedJobSchema = runPackageImportJobBaseSchema.and(
+  z
+    .object({
+      state: z.literal('completed'),
+      finishedAtUtc: canonicalUtcTimestampSchema,
+      result: runPackageImportResultSchema,
+      typedError: z.null(),
+    })
+    .strict(),
+);
+const runPackageImportFailedJobSchema = runPackageImportJobBaseSchema.and(
+  z
+    .object({
+      state: z.enum(['failed', 'cancelled']),
+      finishedAtUtc: canonicalUtcTimestampSchema,
+      result: z.null(),
+      typedError: runPackageImportJobErrorSchema,
+    })
+    .strict(),
+);
+export const runPackageImportJobSchema = z.union([
+  runPackageImportActiveJobSchema,
+  runPackageImportCompletedJobSchema,
+  runPackageImportFailedJobSchema,
+]);
+export const runPackageImportDiscardResultSchema = z
+  .object({ jobId: entityIdSchema, discarded: z.literal(true) })
+  .strict();
+
 export type EmptyWorkerPayload = z.infer<typeof emptyPayloadSchema>;
 export type HandshakeResult = z.infer<typeof handshakeResultSchema>;
 export type PingResult = z.infer<typeof pingResultSchema>;
@@ -642,6 +974,15 @@ export type RunPackageValidationStartCommand = z.infer<
 export type RunPackageValidationJob = z.infer<typeof runPackageValidationJobSchema>;
 export type RunPackageValidationReport = z.infer<typeof runPackageValidationReportSchema>;
 export type RunPackageFinding = z.infer<typeof runPackageFindingSchema>;
+export type RunPackageImportStartCommand = z.infer<typeof runPackageImportStartCommandSchema>;
+export type RunPackageImportJob = z.infer<typeof runPackageImportJobSchema>;
+export type ImportedRunSummary = z.infer<typeof importedRunSummarySchema>;
+export type ImportedRunDetail = z.infer<typeof importedRunDetailSchema>;
+export type ImportedRunBindingCommand = z.infer<typeof importedRunBindingCommandSchema>;
+export type ImportedRunEnrichmentResolutionCommand = z.infer<
+  typeof importedRunEnrichmentResolutionCommandSchema
+>;
+export type SpecimenBinding = z.infer<typeof specimenBindingSchema>;
 
 export interface WorkerOperationMap {
   readonly 'system.handshake': {
@@ -795,6 +1136,46 @@ export interface WorkerOperationMap {
   readonly 'runPackageValidation.discard': {
     readonly request: z.infer<typeof runPackageValidationJobPayloadSchema>;
     readonly result: z.infer<typeof runPackageValidationDiscardResultSchema>;
+  };
+  readonly 'runPackageImport.start': {
+    readonly request: z.infer<typeof runPackageImportStartPayloadSchema>;
+    readonly result: RunPackageImportJob;
+  };
+  readonly 'runPackageImport.get': {
+    readonly request: z.infer<typeof runPackageImportJobPayloadSchema>;
+    readonly result: RunPackageImportJob;
+  };
+  readonly 'runPackageImport.cancel': {
+    readonly request: z.infer<typeof runPackageImportJobPayloadSchema>;
+    readonly result: RunPackageImportJob;
+  };
+  readonly 'runPackageImport.discard': {
+    readonly request: z.infer<typeof runPackageImportJobPayloadSchema>;
+    readonly result: z.infer<typeof runPackageImportDiscardResultSchema>;
+  };
+  readonly 'importedRun.list': {
+    readonly request: EmptyWorkerPayload;
+    readonly result: z.infer<typeof importedRunListResultSchema>;
+  };
+  readonly 'importedRun.get': {
+    readonly request: z.infer<typeof importedRunIdPayloadSchema>;
+    readonly result: ImportedRunDetail;
+  };
+  readonly 'importedRun.verifySource': {
+    readonly request: z.infer<typeof importedRunIdPayloadSchema>;
+    readonly result: z.infer<typeof importedRunVerifyResultSchema>;
+  };
+  readonly 'importedRun.getResolutionState': {
+    readonly request: z.infer<typeof importedRunResolutionStatePayloadSchema>;
+    readonly result: SpecimenBinding;
+  };
+  readonly 'importedRun.bindSpecimen': {
+    readonly request: ImportedRunBindingCommand;
+    readonly result: SpecimenBinding;
+  };
+  readonly 'importedRun.applyEnrichmentResolution': {
+    readonly request: ImportedRunEnrichmentResolutionCommand;
+    readonly result: ImportedRunDetail;
   };
 }
 
@@ -972,6 +1353,60 @@ export const workerRequestSchema = z.discriminatedUnion('operation', [
       payload: runPackageValidationJobPayloadSchema,
     })
     .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('runPackageImport.start'),
+      payload: runPackageImportStartPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('runPackageImport.get'),
+      payload: runPackageImportJobPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('runPackageImport.cancel'),
+      payload: runPackageImportJobPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('runPackageImport.discard'),
+      payload: runPackageImportJobPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('importedRun.list'), payload: emptyPayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('importedRun.get'), payload: importedRunIdPayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('importedRun.verifySource'),
+      payload: importedRunIdPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('importedRun.getResolutionState'),
+      payload: importedRunResolutionStatePayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('importedRun.bindSpecimen'),
+      payload: importedRunBindingCommandSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('importedRun.applyEnrichmentResolution'),
+      payload: importedRunEnrichmentResolutionCommandSchema,
+    })
+    .strict(),
 ]);
 
 export const workerErrorSchema = z
@@ -1001,6 +1436,8 @@ export const workerErrorSchema = z
       'internal_error',
       'operation_in_progress',
       'job_id_conflict',
+      'import_integrity_conflict',
+      'resolution_conflict',
     ]),
     message: z.string(),
     details: z.record(z.string(), z.unknown()),
@@ -1061,6 +1498,21 @@ export const runPackageValidationJobSuccessResponseSchema = createSuccessRespons
 export const runPackageValidationDiscardSuccessResponseSchema = createSuccessResponseSchema(
   runPackageValidationDiscardResultSchema,
 );
+export const runPackageImportJobSuccessResponseSchema =
+  createSuccessResponseSchema(runPackageImportJobSchema);
+export const runPackageImportDiscardSuccessResponseSchema = createSuccessResponseSchema(
+  runPackageImportDiscardResultSchema,
+);
+export const importedRunListSuccessResponseSchema = createSuccessResponseSchema(
+  importedRunListResultSchema,
+);
+export const importedRunDetailSuccessResponseSchema =
+  createSuccessResponseSchema(importedRunDetailSchema);
+export const importedRunVerifySuccessResponseSchema = createSuccessResponseSchema(
+  importedRunVerifyResultSchema,
+);
+export const specimenBindingSuccessResponseSchema =
+  createSuccessResponseSchema(specimenBindingSchema);
 export const workerErrorResponseSchema = responseBaseSchema
   .extend({
     ok: z.literal(false),
@@ -1128,6 +1580,30 @@ const runPackageValidationDiscardResponseSchema = z.union([
   runPackageValidationDiscardSuccessResponseSchema,
   workerErrorResponseSchema,
 ]);
+const runPackageImportJobResponseSchema = z.union([
+  runPackageImportJobSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const runPackageImportDiscardResponseSchema = z.union([
+  runPackageImportDiscardSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const importedRunListResponseSchema = z.union([
+  importedRunListSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const importedRunDetailResponseSchema = z.union([
+  importedRunDetailSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const importedRunVerifyResponseSchema = z.union([
+  importedRunVerifySuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const specimenBindingResponseSchema = z.union([
+  specimenBindingSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
 
 export type WorkerRequest = z.infer<typeof workerRequestSchema>;
 export type WorkerErrorResponse = z.infer<typeof workerErrorResponseSchema>;
@@ -1173,6 +1649,16 @@ export interface WorkerResponseMap {
   readonly 'runPackageValidation.discard': z.infer<
     typeof runPackageValidationDiscardResponseSchema
   >;
+  readonly 'runPackageImport.start': z.infer<typeof runPackageImportJobResponseSchema>;
+  readonly 'runPackageImport.get': z.infer<typeof runPackageImportJobResponseSchema>;
+  readonly 'runPackageImport.cancel': z.infer<typeof runPackageImportJobResponseSchema>;
+  readonly 'runPackageImport.discard': z.infer<typeof runPackageImportDiscardResponseSchema>;
+  readonly 'importedRun.list': z.infer<typeof importedRunListResponseSchema>;
+  readonly 'importedRun.get': z.infer<typeof importedRunDetailResponseSchema>;
+  readonly 'importedRun.verifySource': z.infer<typeof importedRunVerifyResponseSchema>;
+  readonly 'importedRun.getResolutionState': z.infer<typeof specimenBindingResponseSchema>;
+  readonly 'importedRun.bindSpecimen': z.infer<typeof specimenBindingResponseSchema>;
+  readonly 'importedRun.applyEnrichmentResolution': z.infer<typeof importedRunDetailResponseSchema>;
 }
 
 export type WorkerResponseFor<TOperation extends WorkerOperation> = WorkerResponseMap[TOperation];
@@ -1277,6 +1763,22 @@ export function parseWorkerResponse(operation: WorkerOperation, input: unknown):
       return runPackageValidationJobResponseSchema.parse(input);
     case 'runPackageValidation.discard':
       return runPackageValidationDiscardResponseSchema.parse(input);
+    case 'runPackageImport.start':
+    case 'runPackageImport.get':
+    case 'runPackageImport.cancel':
+      return runPackageImportJobResponseSchema.parse(input);
+    case 'runPackageImport.discard':
+      return runPackageImportDiscardResponseSchema.parse(input);
+    case 'importedRun.list':
+      return importedRunListResponseSchema.parse(input);
+    case 'importedRun.get':
+    case 'importedRun.applyEnrichmentResolution':
+      return importedRunDetailResponseSchema.parse(input);
+    case 'importedRun.verifySource':
+      return importedRunVerifyResponseSchema.parse(input);
+    case 'importedRun.getResolutionState':
+    case 'importedRun.bindSpecimen':
+      return specimenBindingResponseSchema.parse(input);
   }
 }
 
@@ -1320,6 +1822,8 @@ export const desktopErrorSchema = z
       'file_integrity_mismatch',
       'operation_in_progress',
       'job_id_conflict',
+      'import_integrity_conflict',
+      'resolution_conflict',
       'storage_error',
       'worker_unavailable',
       'timeout',
@@ -1430,5 +1934,27 @@ export interface ImpellerApi {
     discard(
       jobId: string,
     ): Promise<DesktopResult<{ readonly jobId: string; readonly discarded: true }>>;
+  };
+  readonly runPackageImport: {
+    selectAndStart(
+      command: RunPackageImportStartCommand,
+    ): Promise<DesktopResult<RunPackageImportJob>>;
+    get(jobId: string): Promise<DesktopResult<RunPackageImportJob>>;
+    cancel(jobId: string): Promise<DesktopResult<RunPackageImportJob>>;
+    discard(
+      jobId: string,
+    ): Promise<DesktopResult<{ readonly jobId: string; readonly discarded: true }>>;
+  };
+  readonly importedRun: {
+    list(): Promise<DesktopResult<readonly ImportedRunSummary[]>>;
+    get(localImportId: string): Promise<DesktopResult<ImportedRunDetail>>;
+    verifySource(
+      localImportId: string,
+    ): Promise<DesktopResult<z.infer<typeof importedRunVerifyResultSchema>>>;
+    getResolutionState(sourceSpecimenId: string): Promise<DesktopResult<SpecimenBinding>>;
+    bindSpecimen(command: ImportedRunBindingCommand): Promise<DesktopResult<SpecimenBinding>>;
+    applyEnrichmentResolution(
+      command: ImportedRunEnrichmentResolutionCommand,
+    ): Promise<DesktopResult<ImportedRunDetail>>;
   };
 }

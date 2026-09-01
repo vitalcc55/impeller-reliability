@@ -10,6 +10,7 @@ import type {
 } from '@impeller-reliability/contracts';
 
 import { AnalystDossier, type AnalystDossierHandle, type DossierSection } from './AnalystDossier';
+import { R130shResults, type R130shResultsHandle } from './R130shResults';
 
 const newProjectDraft: ProjectDraft = {
   name: 'Новый проект',
@@ -29,7 +30,7 @@ interface ProjectWorkspaceProps {
   readonly workerReady: boolean;
 }
 
-type WorkspaceSection = 'overview' | DossierSection;
+type WorkspaceSection = 'overview' | 'r130sh-results' | DossierSection;
 
 export interface ProjectWorkspaceHandle {
   hasDirtyDraft(): boolean;
@@ -52,16 +53,26 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     const [section, setSection] = useState<WorkspaceSection>('overview');
     const [dossierDirty, setDossierDirty] = useState(false);
     const [dossierPending, setDossierPending] = useState(false);
+    const [resultsDirty, setResultsDirty] = useState(false);
+    const [resultsPending, setResultsPending] = useState(false);
     const [pendingTransition, setPendingTransition] = useState<{
       readonly action: () => void;
       readonly discard: () => void;
       readonly returnFocus: HTMLElement | null;
     } | null>(null);
     const metadataDirty = isDraftDirty(project, draft);
-    const dirty = project !== null && (section === 'overview' ? metadataDirty : dossierDirty);
+    const dirty =
+      project !== null &&
+      (section === 'overview'
+        ? metadataDirty
+        : section === 'r130sh-results'
+          ? resultsDirty
+          : dossierDirty);
     const dirtyRef = useRef(dirty);
     const pendingSaveRef = useRef<Promise<void> | null>(null);
     const dossierRef = useRef<AnalystDossierHandle>(null);
+    const resultsRef = useRef<R130shResultsHandle>(null);
+    const sectionPending = dossierPending || resultsPending;
     const detached = project !== null && (!workerReady || reattachBlocked);
     useEffect(() => {
       dirtyRef.current = dirty;
@@ -113,6 +124,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
       setSection('overview');
       setDossierDirty(false);
       setDossierPending(false);
+      setResultsDirty(false);
+      setResultsPending(false);
       setPendingTransition(null);
       setMessage(notice);
       void refreshRecent();
@@ -191,6 +204,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           setSection('overview');
           setDossierDirty(false);
           setDossierPending(false);
+          setResultsDirty(false);
+          setResultsPending(false);
           setPendingTransition(null);
           setConfirmClose(false);
           setMessage(
@@ -267,8 +282,9 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           );
           return false;
         }
+        if (section === 'r130sh-results') await resultsRef.current?.verifyAfterReattach();
         const dossierReattach =
-          section === 'overview'
+          section === 'overview' || section === 'r130sh-results'
             ? { status: 'reconciled' as const }
             : await dossierRef.current?.verifyAfterReattach();
         if (dossierReattach?.status !== 'reconciled') {
@@ -316,6 +332,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           const pendingSave = pendingSaveRef.current;
           if (pendingSave !== null) await pendingSave;
           await dossierRef.current?.waitForPendingSave();
+          await resultsRef.current?.waitForPendingSave();
           return dirtyRef.current;
         },
         reattachAfterWorkerRestart,
@@ -361,6 +378,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
         setSection('overview');
         setDossierDirty(false);
         setDossierPending(false);
+        setResultsDirty(false);
+        setResultsPending(false);
         setPendingTransition(null);
         setMessage('Локальный черновик удалён. Файлы проекта не изменялись.');
         void refreshRecent();
@@ -453,7 +472,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
             <Button
               variant="default"
               loading={busy === 'backup'}
-              disabled={detached || busy !== null || dossierPending || pendingTransition !== null}
+              disabled={detached || busy !== null || sectionPending || pendingTransition !== null}
               onClick={() => void createBackup()}
             >
               Создать резервную копию базы проекта
@@ -461,7 +480,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
             <Button
               variant="subtle"
               loading={busy === 'close'}
-              disabled={detached || busy !== null || dossierPending || pendingTransition !== null}
+              disabled={detached || busy !== null || sectionPending || pendingTransition !== null}
               onClick={() => void closeProject()}
             >
               {confirmClose ? 'Закрыть без сохранения' : 'Закрыть проект'}
@@ -487,7 +506,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                   variant={confirmReload ? 'filled' : 'subtle'}
                   color={confirmReload ? 'red' : 'navy'}
                   loading={busy === 'reload'}
-                  disabled={busy !== null || dossierPending}
+                  disabled={busy !== null || sectionPending}
                   onClick={() => void reloadAfterConflict()}
                 >
                   {confirmReload ? 'Перечитать и удалить черновик' : 'Перечитать проект'}
@@ -496,7 +515,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                   <Button
                     size="compact-sm"
                     variant="subtle"
-                    disabled={busy !== null || dossierPending}
+                    disabled={busy !== null || sectionPending}
                     onClick={() => setConfirmReload(false)}
                   >
                     Оставить черновик
@@ -517,7 +536,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                     size="compact-sm"
                     variant={confirmDiscardLocal ? 'filled' : 'subtle'}
                     color="red"
-                    disabled={busy !== null || dossierPending}
+                    disabled={busy !== null || sectionPending}
                     onClick={() => void discardLocalWorkspace()}
                   >
                     {confirmDiscardLocal
@@ -528,7 +547,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                     <Button
                       size="compact-sm"
                       variant="subtle"
-                      disabled={busy !== null || dossierPending}
+                      disabled={busy !== null || sectionPending}
                       onClick={() => setConfirmDiscardLocal(false)}
                     >
                       Оставить черновик
@@ -561,6 +580,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           {(
             [
               ['overview', 'Обзор'],
+              ['r130sh-results', 'Результаты R130SH'],
               ['customer', 'Заказчик'],
               ['wheels', 'Модели колёс'],
               ['specimens', 'Образцы'],
@@ -570,7 +590,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
             <button
               key={value}
               type="button"
-              disabled={detached || busy !== null || dossierPending || pendingTransition !== null}
+              disabled={detached || busy !== null || sectionPending || pendingTransition !== null}
               aria-current={section === value ? 'page' : undefined}
               onClick={(event) => {
                 if (value === section) return;
@@ -583,7 +603,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                       description: project.description,
                       status: project.status,
                     });
-                  } else dossierRef.current?.discardActiveDraft();
+                  } else if (section === 'r130sh-results') resultsRef.current?.discardDraft();
+                  else dossierRef.current?.discardActiveDraft();
                 };
                 if (dirty)
                   setPendingTransition({
@@ -725,7 +746,26 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
               </Group>
             </form>
           </section>
-        ) : desktopApi === null ? null : (
+        ) : section === 'r130sh-results' && desktopApi !== null ? (
+          <R130shResults
+            ref={resultsRef}
+            desktopApi={desktopApi}
+            project={project}
+            disabled={detached || busy !== null || pendingTransition !== null}
+            onDirtyChange={setResultsDirty}
+            onPendingChange={setResultsPending}
+            requestTransition={(hasDirty, action, discard) => {
+              if (hasDirty)
+                setPendingTransition({
+                  action,
+                  discard,
+                  returnFocus:
+                    document.activeElement instanceof HTMLElement ? document.activeElement : null,
+                });
+              else action();
+            }}
+          />
+        ) : desktopApi === null || !isDossierSection(section) ? null : (
           <AnalystDossier
             ref={dossierRef}
             desktopApi={desktopApi}
@@ -758,6 +798,12 @@ function isDraftDirty(project: ProjectOverview | null, draft: ProjectDraft): boo
       draft.projectNumber !== project.projectNumber ||
       draft.description !== project.description ||
       draft.status !== project.status)
+  );
+}
+
+function isDossierSection(value: WorkspaceSection): value is DossierSection {
+  return (
+    value === 'customer' || value === 'wheels' || value === 'specimens' || value === 'documents'
   );
 }
 

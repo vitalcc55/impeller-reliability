@@ -9,8 +9,9 @@ from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 SNAPSHOT_ROOT = REPOSITORY_ROOT / "fixtures" / "contracts" / "r130run" / "v1"
+M9A_BASE_PACKAGE = SNAPSHOT_ROOT / "m9a" / "packages" / "normal_final_rbd.r130run"
 PACKAGE_ID = "019d3c80-3d21-7a65-8e5a-111111111111"
-RUN_ID = "019d3c80-3d21-7a65-8e5a-222222222222"
+RUN_ID = "normal_final_rbd"
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
 ManifestMutator = Callable[[dict[str, JsonValue]], None]
 
@@ -48,22 +49,35 @@ def build_synthetic_r130run(
         "run_id": RUN_ID,
         "package_kind": "final",
         "created_at_utc": "2026-08-29T12:00:00Z",
-        "source_snapshot_sha256": hashlib.sha256(b"downstream_synthetic_contract_fixture").hexdigest(),
+        "source_snapshot_sha256": "0" * 64,
         "producer": {
             "name": "R130SH",
             "version": "synthetic-m03a",
             "build_id": "downstream_synthetic_contract_fixture",
-            "git_commit": "f02f6d954246a5ab6f57d33dac724ce03d7fb841",
+            "git_commit": "downstream-synthetic-m9a",
         },
         "files": files_value,
     }
+    initial_snapshot = manifest["source_snapshot_sha256"]
     if manifest_mutator is not None:
         manifest_mutator(manifest)
-    checksum_lines = [f"{item['sha256']}  {item['path']}" for item in files]
+    manifest_files = manifest.get("files")
+    if not isinstance(manifest_files, list):
+        manifest_files = []
+    if manifest.get("source_snapshot_sha256") == initial_snapshot:
+        manifest["source_snapshot_sha256"] = _source_snapshot_hash(manifest.get("run_id"), manifest_files)
+    checksum_lines = [
+        f"{item['sha256']}  {item['size']}  {item['path']}"
+        for item in sorted(
+            (value for value in manifest_files if isinstance(value, dict)),
+            key=_manifest_path,
+        )
+        if isinstance(item.get("sha256"), str) and isinstance(item.get("size"), int) and isinstance(item.get("path"), str)
+    ]
     entries = [
         ("manifest.json", _json_bytes(manifest)),
         *payloads.items(),
-        ("checksums.sha256", ("\n".join(sorted(checksum_lines)) + "\n").encode("utf-8")),
+        ("checksums.sha256", ("\n".join(checksum_lines) + "\n").encode("utf-8")),
         *extra_entries,
     ]
     write_r130run(destination, entries, compression=compression)
@@ -84,26 +98,32 @@ def write_r130run(destination: Path, entries: Iterable[tuple[str, bytes]], *, co
 
 
 def _payloads() -> dict[str, bytes]:
-    plan = (SNAPSHOT_ROOT / "plan.rbd-rounding.example.json").read_bytes()
-    provenance = (SNAPSHOT_ROOT / "provenance.example.json").read_bytes()
-    event = json.loads((SNAPSHOT_ROOT / "event.example.json").read_text(encoding="utf-8"))
-    accepted = (SNAPSHOT_ROOT / "accepted-projection.example.json").read_bytes()
-    inspection = json.loads((SNAPSHOT_ROOT / "inspection.example.json").read_text(encoding="utf-8"))
-    return {
-        "plan/original.json": plan,
-        "plan/effective.json": plan,
-        "plan/amendments.jsonl": b"",
-        "run-summary.json": _json_bytes({"schema_version": "downstream.synthetic.uncovered.v1", "run_id": RUN_ID}),
-        "environment.json": _json_bytes({"schema_version": "downstream.synthetic.uncovered.v1", "run_id": RUN_ID}),
-        "provenance.json": provenance,
-        "events.jsonl": _json_bytes(event),
-        "measurements.csv": (f"measurement_id,run_id\n019d3c80-3d21-7a65-8e5a-555555555555,{RUN_ID}\n").encode(),
-        "measurement-descriptors.json": _json_bytes({"schema_version": "downstream.synthetic.uncovered.v1", "items": []}),
-        "accepted-summary.json": accepted,
-        "vibration-baseline.json": _json_bytes({"schema_version": "downstream.synthetic.uncovered.v1", "run_id": RUN_ID}),
-        "inspections.json": _json_bytes([inspection]),
-        "attachments/index.json": _json_bytes({"schema_version": "downstream.synthetic.uncovered.v1", "items": []}),
+    with ZipFile(M9A_BASE_PACKAGE, mode="r") as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        return {str(item["path"]): archive.read(str(item["path"])) for item in manifest["files"]}
+
+
+def _source_snapshot_hash(run_id: JsonValue, files: list[JsonValue]) -> str:
+    descriptors: list[dict[str, JsonValue]] = []
+    for raw in files:
+        if not isinstance(raw, dict):
+            continue
+        descriptor: dict[str, JsonValue] = {
+            "path": raw.get("path"),
+            "media_type": raw.get("media_type"),
+            "size": raw.get("size"),
+            "sha256": raw.get("sha256"),
+        }
+        if "row_count" in raw:
+            descriptor["row_count"] = raw["row_count"]
+        descriptors.append(descriptor)
+    descriptor_values: list[JsonValue] = [item for item in descriptors]
+    value: dict[str, JsonValue] = {
+        "schema_version": "r130sh.run-export-snapshot.v1",
+        "run_id": run_id,
+        "files": descriptor_values,
     }
+    return hashlib.sha256(_json_bytes(value)).hexdigest()
 
 
 def _json_bytes(value: JsonValue) -> bytes:
