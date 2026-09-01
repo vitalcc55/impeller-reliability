@@ -874,7 +874,7 @@ export const reliabilityExecutionSchema = z
   })
   .strict();
 export const reliabilityExecutionListResultSchema = z
-  .object({ items: z.array(reliabilityExecutionSchema).max(512) })
+  .object({ items: z.array(reliabilityExecutionSchema) })
   .strict();
 export const importedRunListResultSchema = z
   .object({ items: z.array(importedRunSummarySchema) })

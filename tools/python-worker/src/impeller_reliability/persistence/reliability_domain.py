@@ -67,12 +67,15 @@ class ReliabilityDomainRepository:
         deadline: RequestDeadline | None,
     ) -> TestExecution:
         _check_deadline(deadline, "reliability_materialize")
+        summary = detail.summary
+        existing = self._execution_by_import(summary.local_import_id, deadline)
+        if existing is not None:
+            return existing
         if source_integrity != "verified":
             raise ProjectOperationError(
                 "validation_error",
                 "Для создания аналитического исполнения нужен проверенный imported source.",
             )
-        summary = detail.summary
         if summary.local_specimen_id is None:
             raise ProjectOperationError(
                 "validation_error",
@@ -89,10 +92,6 @@ class ReliabilityDomainRepository:
                 "entity_archived",
                 "Архивный Specimen нельзя использовать для нового TestExecution.",
             )
-        existing = self._execution_by_import(summary.local_import_id, deadline)
-        if existing is not None:
-            return existing
-
         projection = detail.projection
         method = parse_test_method(summary.mode)
         lifecycle_status = _lifecycle_status(
@@ -174,7 +173,7 @@ class ReliabilityDomainRepository:
                     "plannedParametersSnapshotSha256": _snapshot_sha256(planned),
                     "resultSummarySha256": _snapshot_sha256(result),
                     "failureObservationIds": [item.failure_id for item in observations],
-                    "failureObservationsSha256": _observations_sha256(observations),
+                    "failureObservationsSha256": observations_sha256(observations),
                     "snapshotSha256": _execution_snapshot_sha256(
                         execution_id=execution_id,
                         local_import_id=summary.local_import_id,
@@ -188,7 +187,7 @@ class ReliabilityDomainRepository:
                         source_payload_path="run-summary.json",
                         source_field_reference="#/run_id",
                         materialized_at_utc=now,
-                        failure_observations_sha256=_observations_sha256(observations),
+                        failure_observations_sha256=observations_sha256(observations),
                     ),
                 },
             )
@@ -653,7 +652,7 @@ def _dataset_snapshot_sha256(
     ).hexdigest()
 
 
-def _observations_sha256(observations: tuple[FailureObservation, ...]) -> str:
+def observations_sha256(observations: tuple[FailureObservation, ...]) -> str:
     values = [
         {
             "failureId": item.failure_id,
@@ -668,7 +667,7 @@ def _observations_sha256(observations: tuple[FailureObservation, ...]) -> str:
             "observedAtUtc": item.observed_at_utc,
             "sourceOuterPackageSha256": item.source_outer_package_sha256,
         }
-        for item in observations
+        for item in sorted(observations, key=lambda item: item.failure_id)
     ]
     serialized = json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -700,7 +699,7 @@ def _execution_observations_sha256(connection: sqlite3.Connection, execution_id:
         )
         for row in rows
     )
-    return _observations_sha256(observations)
+    return observations_sha256(observations)
 
 
 def _json_object(value: str) -> dict[str, object]:

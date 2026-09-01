@@ -351,6 +351,7 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(tmp_pat
         deadline=None,
     )
     service.set_specimen_archived(specimen.specimen_id, specimen.record_revision, True, None)
+    assert service.materialize_reliability_execution(imported.local_import_id, None) == execution
     with pytest.raises(ProjectOperationError) as archived:
         service.materialize_reliability_execution(archived_source.local_import_id, None)
     assert archived.value.code == "entity_archived"

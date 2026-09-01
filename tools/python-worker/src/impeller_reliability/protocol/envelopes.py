@@ -994,7 +994,7 @@ class ReliabilityExecutionResult(BaseModel):
 class ReliabilityExecutionListResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    items: list[ReliabilityExecutionResult] = Field(max_length=512)
+    items: list[ReliabilityExecutionResult]
 
 
 class ErrorPayload(BaseModel):
