@@ -13,11 +13,11 @@ try {
     & pnpm test:e2e
     if ($LASTEXITCODE -ne 0) { throw "Electron E2E failed." }
     if ($IncludePackaging) {
-        & pnpm package:win-unpacked
+        & pwsh.exe -NoProfile -File scripts/build/package.ps1 -Target WinUnpacked -SkipWorkerCheck
         if ($LASTEXITCODE -ne 0) { throw "win-unpacked packaging failed." }
         & pnpm smoke:win-unpacked
         if ($LASTEXITCODE -ne 0) { throw "win-unpacked smoke failed." }
-        & pnpm package:portable
+        & pwsh.exe -NoProfile -File scripts/build/package.ps1 -Target Portable -SkipWorkerCheck
         if ($LASTEXITCODE -ne 0) { throw "Portable packaging failed." }
         & pnpm smoke:portable
         if ($LASTEXITCODE -ne 0) { throw "Portable smoke failed." }

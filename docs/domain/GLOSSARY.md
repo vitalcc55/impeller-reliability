@@ -5,9 +5,11 @@
 - **ProjectSession** — единственная активная Python-сессия, удерживающая OS lock и последовательный SQLite writer.
 - **Record revision** — optimistic revision изменяемой строки проекта; устаревший draft не может перезаписать новую редакцию.
 - **Specimen** — физический образец с системным UUID/ULID; заводской номер не primary key.
-- **ImportedRunPlanSnapshot** — неизменяемый снимок исходного/фактически применённого плана внутри будущего `.r130run`; принадлежит `r130sh_source`.
-- **ImportedTestRun** — неизменяемая импортная ревизия результата R130SH.
-- **R130SH contract validation** — ограниченная read-only проверка candidate `.r130run` по pinned synthetic baseline; выдаёт transient diagnostic report и не выполняет импорт.
+- **ImportedRunPlanSnapshot** — неизменяемый снимок исходного/фактически применённого плана внутри принятого `.r130run`; принадлежит `r130sh_source`.
+- **ImportedTestRun** — неизменяемая импортная export revision результата R130SH с managed archive, inventory и узкой projection.
+- **R130SH contract validation** — ограниченная read-only проверка candidate `.r130run`; выдаёт transient diagnostic report и не выполняет импорт.
+- **R130SH source** — immutable producer evidence; source values не редактируются и не заменяются analyst enrichment.
+- **Source specimen binding** — явная optimistic связь upstream `specimen_id` с локальным `Specimen`; marking не является identity и не вызывает auto-merge.
 - **Structural verdict** — итог проверки ZIP-envelope, inventory и заявленных size/CRC/SHA-256; `passed` не означает semantic completeness или production compatibility.
 - **Semantic coverage** — явный перечень замороженных проверяемых областей и upstream gaps; partial coverage допустимо и не является допуском к расчёту.
 - **Analysis eligibility** — будущее предметное решение конкретного расчёта о достаточности источников; не выводится из M03A validation report.

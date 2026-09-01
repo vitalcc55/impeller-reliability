@@ -4,7 +4,17 @@ import platform
 
 from impeller_reliability import __version__
 from impeller_reliability.application.project_service import ProjectService
+from impeller_reliability.integration.r130run.import_jobs import RunPackageImportJobManager
+from impeller_reliability.integration.r130run.import_models import (
+    ImportedRunVerifyResult,
+    imported_run_detail_model,
+    imported_run_summary_model,
+    specimen_binding_model,
+)
 from impeller_reliability.integration.r130run.jobs import RunPackageValidationJobManager
+from impeller_reliability.integration.r130run.m9a import M9aPackageFacts
+from impeller_reliability.integration.r130run.models import RunPackageValidationReport
+from impeller_reliability.persistence.r130sh_sources import ImportedRunSummary
 from impeller_reliability.persistence.sqlite_health import SCHEMA_VERSION, check_storage
 from impeller_reliability.protocol.envelopes import (
     CaseDocumentArchiveRequest,
@@ -28,6 +38,13 @@ from impeller_reliability.protocol.envelopes import (
     CustomerUpsertRequest,
     HandshakeRequest,
     HandshakeResult,
+    ImportedRunApplyEnrichmentResolutionRequest,
+    ImportedRunBindSpecimenRequest,
+    ImportedRunGetRequest,
+    ImportedRunGetResolutionStateRequest,
+    ImportedRunListRequest,
+    ImportedRunListResult,
+    ImportedRunVerifySourceRequest,
     Operation,
     PingRequest,
     PingResult,
@@ -41,6 +58,10 @@ from impeller_reliability.protocol.envelopes import (
     ProjectOverviewResult,
     ProjectUpdateMetadataRequest,
     RequestEnvelope,
+    RunPackageImportCancelRequest,
+    RunPackageImportDiscardRequest,
+    RunPackageImportGetRequest,
+    RunPackageImportStartRequest,
     RunPackageValidationCancelRequest,
     RunPackageValidationDiscardRequest,
     RunPackageValidationGetRequest,
@@ -111,6 +132,16 @@ CAPABILITIES: list[Operation] = [
     "runPackageValidation.get",
     "runPackageValidation.cancel",
     "runPackageValidation.discard",
+    "runPackageImport.start",
+    "runPackageImport.get",
+    "runPackageImport.cancel",
+    "runPackageImport.discard",
+    "importedRun.list",
+    "importedRun.get",
+    "importedRun.verifySource",
+    "importedRun.getResolutionState",
+    "importedRun.bindSpecimen",
+    "importedRun.applyEnrichmentResolution",
 ]
 
 
@@ -120,6 +151,7 @@ class Dispatcher:
         self._projects = ProjectService()
         self._run_package_jobs = RunPackageValidationJobManager()
         self._run_package_jobs_shutdown = False
+        self._import_jobs = RunPackageImportJobManager()
         self.shutdown_requested = False
 
     def dispatch(
@@ -141,7 +173,7 @@ class Dispatcher:
                     scipyVersion=version("scipy"),
                     databaseSchemaVersions=[SCHEMA_VERSION],
                     algorithmVersions={},
-                    supportedRunPackageSchemas=[],
+                    supportedRunPackageSchemas=["r130sh.run-package.v1"],
                     supportedPlanSchemas=[],
                     capabilities=CAPABILITIES,
                 ),
@@ -156,6 +188,7 @@ class Dispatcher:
             self.shutdown_requested = True
             self._run_package_jobs_shutdown = True
             self._run_package_jobs.shutdown(active_deadline.remaining_seconds(1.5))
+            self._import_jobs.shutdown(active_deadline.remaining_seconds(1.5))
             self._projects.close(deadline=active_deadline)
             return SuccessResponse[ShutdownResult](
                 requestId=request.requestId,
@@ -169,6 +202,7 @@ class Dispatcher:
                 result=StorageHealthResult.model_validate(check_storage(self._state_directory / "health.sqlite")),
             )
         if isinstance(request, ProjectCreateRequest):
+            self._reset_import_jobs(active_deadline)
             overview = self._projects.create(
                 path=request.payload.path,
                 application_instance_id=request.payload.applicationInstanceId,
@@ -181,6 +215,7 @@ class Dispatcher:
             )
             return self._overview_response(request.requestId, request.revision, overview)
         if isinstance(request, ProjectOpenRequest):
+            self._reset_import_jobs(active_deadline)
             overview = self._projects.open(
                 path=request.payload.path,
                 application_instance_id=request.payload.applicationInstanceId,
@@ -188,6 +223,7 @@ class Dispatcher:
             )
             return self._overview_response(request.requestId, request.revision, overview)
         if isinstance(request, ProjectCloseRequest):
+            self._reset_import_jobs(active_deadline)
             return SuccessResponse[ProjectCloseResult](
                 requestId=request.requestId,
                 revision=request.revision,
@@ -198,6 +234,21 @@ class Dispatcher:
                 request.requestId,
                 request.revision,
                 self._projects.get_overview(deadline=active_deadline),
+            )
+        if self._import_jobs.has_active_job and request.operation not in {
+            "runPackageImport.get",
+            "runPackageImport.cancel",
+            "runPackageImport.discard",
+            "importedRun.list",
+            "importedRun.get",
+            "importedRun.verifySource",
+            "importedRun.getResolutionState",
+        }:
+            from impeller_reliability.persistence.project_errors import ProjectOperationError
+
+            raise ProjectOperationError(
+                "operation_in_progress",
+                "Изменение проекта недоступно до завершения импорта R130SH.",
             )
         match request:
             case ProjectUpdateMetadataRequest():
@@ -376,12 +427,142 @@ class Dispatcher:
                     revision=request.revision,
                     result=self._run_package_jobs.discard(request.payload.jobId),
                 )
+            case RunPackageImportStartRequest():
+                return SuccessResponse(
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._import_jobs.start(
+                        job_id=request.payload.jobId,
+                        project_path=self._projects.active_project_path,
+                        source_path=Path(request.payload.sourcePath),
+                        allow_diagnostic_partial=request.payload.allowDiagnosticPartial,
+                        replace_job_id=request.payload.replaceJobId,
+                    ),
+                )
+            case RunPackageImportGetRequest():
+                return SuccessResponse(
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._import_jobs.get(
+                        request.payload.jobId,
+                        finalize=self._finalize_import,
+                        deadline=active_deadline,
+                    ),
+                )
+            case RunPackageImportCancelRequest():
+                return SuccessResponse(
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._import_jobs.cancel(request.payload.jobId),
+                )
+            case RunPackageImportDiscardRequest():
+                return SuccessResponse(
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._import_jobs.discard(request.payload.jobId),
+                )
+            case ImportedRunListRequest():
+                return SuccessResponse[ImportedRunListResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=ImportedRunListResult(
+                        items=[imported_run_summary_model(item) for item in self._projects.list_imported_runs(active_deadline)],
+                    ),
+                )
+            case ImportedRunGetRequest():
+                return SuccessResponse(
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=imported_run_detail_model(
+                        self._projects.get_imported_run(request.payload.localImportId, active_deadline),
+                    ),
+                )
+            case ImportedRunVerifySourceRequest():
+                return SuccessResponse(
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=ImportedRunVerifyResult(
+                        localImportId=request.payload.localImportId,
+                        sourceIntegrity=self._projects.verify_imported_run_source(
+                            request.payload.localImportId,
+                            active_deadline,
+                        ),
+                    ),
+                )
+            case ImportedRunGetResolutionStateRequest():
+                return SuccessResponse(
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=specimen_binding_model(
+                        self._projects.get_imported_run_binding(
+                            request.payload.sourceSpecimenId,
+                            active_deadline,
+                        ),
+                    ),
+                )
+            case ImportedRunBindSpecimenRequest():
+                return SuccessResponse(
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=specimen_binding_model(
+                        self._projects.bind_imported_run_specimen(
+                            source_specimen_id=request.payload.sourceSpecimenId,
+                            local_specimen_id=request.payload.localSpecimenId,
+                            expected_revision=request.payload.expectedRevision,
+                            actor=request.payload.actor,
+                            reason=request.payload.reason,
+                            deadline=active_deadline,
+                        ),
+                    ),
+                )
+            case ImportedRunApplyEnrichmentResolutionRequest():
+                return SuccessResponse(
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=imported_run_detail_model(
+                        self._projects.record_imported_run_resolution(
+                            resolution_id=request.payload.resolutionId,
+                            local_import_id=request.payload.localImportId,
+                            source_payload_path=request.payload.sourcePayloadPath,
+                            source_field=request.payload.sourceField,
+                            target_entity_type=request.payload.targetEntityType,
+                            target_entity_id=request.payload.targetEntityId,
+                            target_field=request.payload.targetField,
+                            decision=request.payload.decision,
+                            actor=request.payload.actor,
+                            reason=request.payload.reason,
+                            expected_target_revision=request.payload.expectedTargetRevision,
+                            deadline=active_deadline,
+                        ),
+                    ),
+                )
 
     def close(self) -> None:
         if not self._run_package_jobs_shutdown:
             self._run_package_jobs.shutdown()
             self._run_package_jobs_shutdown = True
+        self._import_jobs.shutdown()
         self._projects.close()
+
+    def _reset_import_jobs(self, deadline: RequestDeadline) -> None:
+        self._import_jobs.shutdown(deadline.remaining_seconds(1.5))
+        self._import_jobs = RunPackageImportJobManager()
+
+    def _finalize_import(
+        self,
+        local_import_id: str,
+        staged_path: Path,
+        facts: M9aPackageFacts,
+        report: RunPackageValidationReport,
+        deadline: RequestDeadline | None,
+    ) -> ImportedRunSummary:
+        return self._projects.register_imported_run(
+            local_import_id=local_import_id,
+            staged_path=staged_path,
+            facts=facts,
+            report=report,
+            deadline=deadline,
+        )
 
     @staticmethod
     def _overview_response(request_id: str, revision: int, overview: object) -> SuccessResponse[ProjectOverviewResult]:

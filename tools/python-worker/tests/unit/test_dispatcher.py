@@ -2,6 +2,8 @@ from pathlib import Path
 from time import monotonic, sleep
 from uuid import uuid4
 
+from pydantic import TypeAdapter
+
 from impeller_reliability.integration.r130run.models import RunPackageValidationReport
 from impeller_reliability.protocol.envelopes import (
     REQUEST_ENVELOPE_ADAPTER,
@@ -19,6 +21,11 @@ from impeller_reliability.protocol.envelopes import (
 )
 from impeller_reliability.worker.dispatcher import Dispatcher
 from support.r130run_builder import build_synthetic_r130run
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+M9A_PACKAGES = REPOSITORY_ROOT / "fixtures" / "contracts" / "r130run" / "v1" / "m9a" / "packages"
+OBJECT_ADAPTER: TypeAdapter[dict[str, object]] = TypeAdapter(dict[str, object])
+OBJECT_LIST_ADAPTER: TypeAdapter[list[object]] = TypeAdapter(list[object])
 
 
 def _dispatch(dispatcher: Dispatcher, operation: str, payload: dict[str, object], revision: int) -> dict[str, object]:
@@ -90,8 +97,18 @@ def test_handshake_reports_current_capabilities_and_revision(tmp_path: Path) -> 
         "runPackageValidation.get",
         "runPackageValidation.cancel",
         "runPackageValidation.discard",
+        "runPackageImport.start",
+        "runPackageImport.get",
+        "runPackageImport.cancel",
+        "runPackageImport.discard",
+        "importedRun.list",
+        "importedRun.get",
+        "importedRun.verifySource",
+        "importedRun.getResolutionState",
+        "importedRun.bindSpecimen",
+        "importedRun.applyEnrichmentResolution",
     ]
-    assert response.result.supportedRunPackageSchemas == []
+    assert response.result.supportedRunPackageSchemas == ["r130sh.run-package.v1"]
     assert response.result.supportedPlanSchemas == []
 
 
@@ -119,7 +136,7 @@ def test_run_package_validation_dispatch_stays_request_response_only(tmp_path: P
         sleep(0.01)
     assert snapshot["state"] == "completed"
     report = RunPackageValidationReport.model_validate(snapshot["report"])
-    assert report.validationLevel == "synthetic_contract_foundation"
+    assert report.validationLevel == "producer_m9a_contract"
     assert report.structuralVerdict == "passed"
     assert _dispatch(dispatcher, "runPackageValidation.discard", {"jobId": job_id}, 4) == {
         "jobId": job_id,
@@ -160,6 +177,95 @@ def test_run_package_validation_does_not_mutate_open_project(tmp_path: Path) -> 
     assert snapshot["state"] == "completed"
     assert _dispatch(dispatcher, "project.getOverview", {}, 5) == overview_before
     assert _project_file_evidence(project_path) == before
+    dispatcher.close()
+
+
+def test_dispatcher_covers_production_import_read_binding_and_resolution_operations(tmp_path: Path) -> None:
+    dispatcher = Dispatcher(tmp_path / "state")
+    project_path = tmp_path / "m03b-dispatcher.irproj"
+    project = _dispatch(
+        dispatcher,
+        "project.create",
+        {
+            "path": str(project_path),
+            "applicationInstanceId": str(uuid4()),
+            "applicationVersion": "0.1.0",
+            "draft": {"name": "M03B", "projectNumber": "", "description": "", "status": "draft"},
+        },
+        1,
+    )
+    job_id = str(uuid4())
+    snapshot = _dispatch(
+        dispatcher,
+        "runPackageImport.start",
+        {
+            "jobId": job_id,
+            "sourcePath": str(M9A_PACKAGES / "normal_final_rbd.r130run"),
+            "allowDiagnosticPartial": False,
+        },
+        2,
+    )
+    expires = monotonic() + 5
+    while snapshot["state"] not in {"completed", "failed", "cancelled"} and monotonic() < expires:
+        sleep(0.01)
+        snapshot = _dispatch(dispatcher, "runPackageImport.get", {"jobId": job_id}, 3)
+    assert snapshot["state"] == "completed"
+    imported = OBJECT_ADAPTER.validate_python(OBJECT_ADAPTER.validate_python(snapshot["result"])["importedRun"])
+    local_import_id = str(imported["localImportId"])
+    source_specimen_id = str(imported["sourceSpecimenId"])
+
+    listed = _dispatch(dispatcher, "importedRun.list", {}, 4)
+    listed_items = OBJECT_LIST_ADAPTER.validate_python(listed["items"])
+    assert OBJECT_ADAPTER.validate_python(listed_items[0])["localImportId"] == local_import_id
+    detail = _dispatch(dispatcher, "importedRun.get", {"localImportId": local_import_id}, 5)
+    assert OBJECT_ADAPTER.validate_python(detail["summary"])["runId"] == imported["runId"]
+    assert _dispatch(dispatcher, "importedRun.verifySource", {"localImportId": local_import_id}, 6) == {
+        "localImportId": local_import_id,
+        "sourceIntegrity": "verified",
+    }
+    binding = _dispatch(
+        dispatcher,
+        "importedRun.getResolutionState",
+        {"sourceSpecimenId": source_specimen_id},
+        7,
+    )
+    assert binding["recordRevision"] == 1
+    rebound = _dispatch(
+        dispatcher,
+        "importedRun.bindSpecimen",
+        {
+            "sourceSpecimenId": source_specimen_id,
+            "localSpecimenId": None,
+            "expectedRevision": 1,
+            "actor": "local_user",
+            "reason": "Явно оставлено unresolved",
+        },
+        8,
+    )
+    assert rebound["recordRevision"] == 1
+    resolved = _dispatch(
+        dispatcher,
+        "importedRun.applyEnrichmentResolution",
+        {
+            "resolutionId": str(uuid4()),
+            "localImportId": local_import_id,
+            "sourcePayloadPath": "run-summary.json",
+            "sourceField": "run_card.customer_name",
+            "targetEntityType": "customer_profile",
+            "targetEntityId": project["projectId"],
+            "targetField": "fullName",
+            "decision": "use_source",
+            "actor": "local_user",
+            "reason": "Источник выбран явно",
+            "expectedTargetRevision": None,
+        },
+        9,
+    )
+    assert len(OBJECT_LIST_ADAPTER.validate_python(resolved["enrichmentResolutions"])) == 1
+    assert _dispatch(dispatcher, "runPackageImport.discard", {"jobId": job_id}, 10) == {
+        "jobId": job_id,
+        "discarded": True,
+    }
     dispatcher.close()
 
 

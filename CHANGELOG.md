@@ -7,6 +7,7 @@
 - Ручная операция честно названа резервной копией базы проекта; полный перенос до `.irpkg` выполняется копированием закрытого каталога `.irproj`.
 - Закреплены interaction-state, draft, focus, keyboard и responsive-контракты текущего engineering workspace; последующее развитие commands/jobs/tables/charts/recovery распределено по предметным этапам.
 - M03A: добавлена диагностическая read-only проверка candidate `.r130run` по зафиксированному синтетическому baseline R130SH: потоковые ZIP/CRC/SHA-256 и покрытые semantic checks, ограниченная отменяемая job, typed progress/findings/provenance и экран в «Диагностике». Project schema остаётся v1; импорт, `r130sh_source` и допуск к расчётам не создаются.
+- M03B: clean pre-release schema v1 расширена production import контуром `.r130run`: immutable managed archive, `r130sh_source` registry/inventory/projection, явная specimen binding и provenance решений source/enrichment. Все 21 producer-generated M9a packages exact R130SH commit `01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63` закреплены offline и проходят M9b import/reopen acceptance; расчётные eligibility и результаты не создаются.
 
 ## 0.1.0 — 2026-08-25
 

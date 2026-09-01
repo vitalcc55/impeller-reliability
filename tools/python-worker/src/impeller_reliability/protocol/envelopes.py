@@ -4,6 +4,14 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
+from impeller_reliability.integration.r130run.import_models import (
+    ImportedRunDetailModel,
+    ImportedRunSummaryModel,
+    ImportedRunVerifyResult,
+    RunPackageImportDiscardResult,
+    RunPackageImportJobSnapshot,
+    SpecimenBindingModel,
+)
 from impeller_reliability.integration.r130run.models import (
     RunPackageValidationDiscardResult,
     RunPackageValidationJobSnapshot,
@@ -54,6 +62,16 @@ Operation = Literal[
     "runPackageValidation.get",
     "runPackageValidation.cancel",
     "runPackageValidation.discard",
+    "runPackageImport.start",
+    "runPackageImport.get",
+    "runPackageImport.cancel",
+    "runPackageImport.discard",
+    "importedRun.list",
+    "importedRun.get",
+    "importedRun.verifySource",
+    "importedRun.getResolutionState",
+    "importedRun.bindSpecimen",
+    "importedRun.applyEnrichmentResolution",
 ]
 
 ProjectStatus = Literal["draft", "active", "completed", "archived"]
@@ -153,7 +171,7 @@ class ProjectOpenPayload(BaseModel):
 class ProjectUpdateMetadataPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    expectedRevision: int = Field(ge=1)
+    expectedRevision: int = Field(ge=1, le=9_007_199_254_740_991)
     metadata: ProjectDraft
 
 
@@ -394,6 +412,56 @@ class RunPackageValidationJobPayload(BaseModel):
     jobId: EntityId
 
 
+class RunPackageImportStartPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    jobId: EntityId
+    replaceJobId: EntityId | None = None
+    sourcePath: str = Field(min_length=1, max_length=32_767)
+    allowDiagnosticPartial: bool
+
+
+class RunPackageImportJobPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    jobId: EntityId
+
+
+class ImportedRunIdPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    localImportId: EntityId
+
+
+class ImportedRunBindingPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    sourceSpecimenId: str = Field(min_length=1, max_length=200)
+    localSpecimenId: EntityId | None
+    expectedRevision: int = Field(ge=1, le=9_007_199_254_740_991)
+    actor: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=2_000)
+
+
+class ImportedRunResolutionStatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    sourceSpecimenId: str = Field(min_length=1, max_length=200)
+
+
+class ImportedRunEnrichmentResolutionPayload(ImportedRunIdPayload):
+    resolutionId: EntityId
+    sourcePayloadPath: str = Field(min_length=1, max_length=512)
+    sourceField: str = Field(min_length=1, max_length=200)
+    targetEntityType: Literal["customer_profile", "wheel_model", "specimen"]
+    targetEntityId: str = Field(min_length=1, max_length=200)
+    targetField: str = Field(min_length=1, max_length=100)
+    decision: Literal["use_source", "use_analyst", "copied_to_analyst"]
+    actor: str = Field(min_length=1, max_length=200)
+    reason: str = Field(max_length=2_000)
+    expectedTargetRevision: int | None = Field(ge=1, le=9_007_199_254_740_991)
+
+
 class CustomerGetRequest(RequestBase):
     operation: Literal["caseCustomer.get"]
     payload: EmptyPayload
@@ -534,6 +602,56 @@ class RunPackageValidationDiscardRequest(RequestBase):
     payload: RunPackageValidationJobPayload
 
 
+class RunPackageImportStartRequest(RequestBase):
+    operation: Literal["runPackageImport.start"]
+    payload: RunPackageImportStartPayload
+
+
+class RunPackageImportGetRequest(RequestBase):
+    operation: Literal["runPackageImport.get"]
+    payload: RunPackageImportJobPayload
+
+
+class RunPackageImportCancelRequest(RequestBase):
+    operation: Literal["runPackageImport.cancel"]
+    payload: RunPackageImportJobPayload
+
+
+class RunPackageImportDiscardRequest(RequestBase):
+    operation: Literal["runPackageImport.discard"]
+    payload: RunPackageImportJobPayload
+
+
+class ImportedRunListRequest(RequestBase):
+    operation: Literal["importedRun.list"]
+    payload: EmptyPayload
+
+
+class ImportedRunGetRequest(RequestBase):
+    operation: Literal["importedRun.get"]
+    payload: ImportedRunIdPayload
+
+
+class ImportedRunVerifySourceRequest(RequestBase):
+    operation: Literal["importedRun.verifySource"]
+    payload: ImportedRunIdPayload
+
+
+class ImportedRunGetResolutionStateRequest(RequestBase):
+    operation: Literal["importedRun.getResolutionState"]
+    payload: ImportedRunResolutionStatePayload
+
+
+class ImportedRunBindSpecimenRequest(RequestBase):
+    operation: Literal["importedRun.bindSpecimen"]
+    payload: ImportedRunBindingPayload
+
+
+class ImportedRunApplyEnrichmentResolutionRequest(RequestBase):
+    operation: Literal["importedRun.applyEnrichmentResolution"]
+    payload: ImportedRunEnrichmentResolutionPayload
+
+
 type RequestEnvelope = Annotated[
     HandshakeRequest
     | PingRequest
@@ -572,7 +690,17 @@ type RequestEnvelope = Annotated[
     | RunPackageValidationStartRequest
     | RunPackageValidationGetRequest
     | RunPackageValidationCancelRequest
-    | RunPackageValidationDiscardRequest,
+    | RunPackageValidationDiscardRequest
+    | RunPackageImportStartRequest
+    | RunPackageImportGetRequest
+    | RunPackageImportCancelRequest
+    | RunPackageImportDiscardRequest
+    | ImportedRunListRequest
+    | ImportedRunGetRequest
+    | ImportedRunVerifySourceRequest
+    | ImportedRunGetResolutionStateRequest
+    | ImportedRunBindSpecimenRequest
+    | ImportedRunApplyEnrichmentResolutionRequest,
     Field(discriminator="operation"),
 ]
 REQUEST_ENVELOPE_ADAPTER: TypeAdapter[RequestEnvelope] = TypeAdapter(RequestEnvelope)
@@ -806,6 +934,12 @@ class CaseDocumentResolveFileResult(BaseModel):
     absolutePath: str = Field(min_length=1, max_length=32_767)
 
 
+class ImportedRunListResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    items: list[ImportedRunSummaryModel]
+
+
 class ErrorPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -834,6 +968,8 @@ class ErrorPayload(BaseModel):
         "internal_error",
         "operation_in_progress",
         "job_id_conflict",
+        "import_integrity_conflict",
+        "resolution_conflict",
     ]
     message: str
     details: dict[str, object]
@@ -872,6 +1008,12 @@ type SuccessResponseType = (
     | SuccessResponse[CaseDocumentResolveFileResult]
     | SuccessResponse[RunPackageValidationJobSnapshot]
     | SuccessResponse[RunPackageValidationDiscardResult]
+    | SuccessResponse[RunPackageImportJobSnapshot]
+    | SuccessResponse[RunPackageImportDiscardResult]
+    | SuccessResponse[ImportedRunListResult]
+    | SuccessResponse[ImportedRunDetailModel]
+    | SuccessResponse[ImportedRunVerifyResult]
+    | SuccessResponse[SpecimenBindingModel]
 )
 
 

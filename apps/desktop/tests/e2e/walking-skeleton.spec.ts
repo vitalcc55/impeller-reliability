@@ -50,6 +50,8 @@ test('renderer reflects worker failure and controlled restart through the narrow
       'specimen',
       'caseDocument',
       'runPackageValidation',
+      'runPackageImport',
+      'importedRun',
     ]);
     expect(
       await page.evaluate(() => {
@@ -954,6 +956,177 @@ test('reconciles a clean document after a committed attachment response is not a
   }
 });
 
+test('imports an M9a result, binds its source specimen and reopens persisted provenance', async () => {
+  const repositoryRoot = resolve(import.meta.dirname, '../../../..');
+  const evidenceRoot = resolve(repositoryRoot, '.tmp/.codex/evidence/m03b-import-e2e');
+  const projectPath = join(evidenceRoot, 'm03b-import.irproj');
+  const userDataPath = join(evidenceRoot, 'user-data');
+  const packagePath = join(
+    repositoryRoot,
+    'fixtures/contracts/r130run/v1/m9a/packages/normal_final_rbd.r130run',
+  );
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(evidenceRoot, { recursive: true });
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: repositoryRoot,
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
+      IMPELLER_AUTOMATED_R130RUN_PATH: packagePath,
+      IMPELLER_TEST_USER_DATA: userDataPath,
+    },
+  });
+  const consoleErrors: string[] = [];
+  try {
+    const page = await app.firstWindow();
+    page.on('console', (message) => {
+      if (message.type() === 'error') consoleErrors.push(message.text());
+    });
+    page.on('pageerror', (error) => consoleErrors.push(error.message));
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.getByRole('button', { name: 'Создать проект' }).click();
+
+    await page.getByRole('button', { name: 'Модели колёс' }).click();
+    await page.getByRole('button', { name: 'Новая модель' }).click();
+    await page.getByLabel('Полное наименование').fill('Локальная модель M03B');
+    await page.getByRole('button', { name: 'Сохранить модель' }).click();
+    await page.getByRole('button', { name: 'Образцы' }).click();
+    await page.getByRole('button', { name: 'Новый образец' }).click();
+    await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
+    await page.getByRole('option', { name: 'Локальная модель M03B' }).click();
+    await page.getByLabel('Идентификационный номер').fill('LOCAL-M03B-001');
+    await page.getByRole('button', { name: 'Сохранить образец' }).click();
+
+    await page.getByRole('button', { name: 'Результаты R130SH' }).click();
+    await page.getByRole('button', { name: 'Импортировать результат R130SH' }).click();
+    await expect(page.getByText('Импорт завершён')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'normal_final_rbd' })).toBeVisible();
+    await expect(page.getByText('Источник проверен', { exact: true })).toBeVisible();
+
+    await page.getByRole('combobox', { name: 'Local Specimen' }).click();
+    await page.getByRole('option', { name: 'LOCAL-M03B-001 — Локальная модель M03B' }).click();
+    await page.getByLabel('Причина привязки').fill('Идентичность подтверждена инженером');
+    await page.getByRole('button', { name: 'Сохранить привязку' }).click();
+    await expect(page.getByText(/Привязка source specimen сохранена/u)).toBeVisible();
+
+    await page.getByRole('combobox', { name: 'Существенное поле' }).click();
+    await page.getByRole('option', { name: 'Заказчик: полное наименование' }).click();
+    await page.getByRole('combobox', { name: 'Решение' }).click();
+    await page.getByRole('option', { name: 'Скопировать только в пустое analyst field' }).click();
+    await page.getByLabel('Причина решения').fill('Создание новой analyst-карточки');
+    await page.getByRole('button', { name: 'Зафиксировать решение' }).click();
+    await expect(page.getByText(/Решение по расхождению сохранено/u)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Импортировать результат R130SH' }).click();
+    await expect(page.getByText('Этот пакет уже зарегистрирован.')).toBeVisible();
+    await page.getByRole('button', { name: 'Закрыть проект' }).click();
+    await page.getByRole('button', { name: 'Новый проект' }).click();
+    await page.getByRole('button', { name: 'Результаты R130SH' }).click();
+    await expect(page.getByRole('heading', { name: 'normal_final_rbd' })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'Local Specimen' })).toHaveValue(
+      'LOCAL-M03B-001 — Локальная модель M03B',
+    );
+    expect(consoleErrors).toEqual([]);
+  } finally {
+    await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
+test('requires explicit confirmation for an M9a diagnostic partial import', async () => {
+  const repositoryRoot = resolve(import.meta.dirname, '../../../..');
+  const evidenceRoot = resolve(repositoryRoot, '.tmp/.codex/evidence/m03b-diagnostic-e2e');
+  const projectPath = join(evidenceRoot, 'm03b-diagnostic.irproj');
+  const packagePath = join(
+    repositoryRoot,
+    'fixtures/contracts/r130run/v1/m9a/packages/diagnostic_partial.r130run',
+  );
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(evidenceRoot, { recursive: true });
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: repositoryRoot,
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
+      IMPELLER_AUTOMATED_R130RUN_PATH: packagePath,
+      IMPELLER_TEST_USER_DATA: join(evidenceRoot, 'user-data'),
+    },
+  });
+  try {
+    const page = await app.firstWindow();
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.getByRole('button', { name: 'Создать проект' }).click();
+    await page.getByRole('button', { name: 'Результаты R130SH' }).click();
+    await page.getByRole('button', { name: 'Импортировать результат R130SH' }).click();
+    await expect(page.getByText('Пакет содержит диагностический неполный результат')).toBeVisible();
+    await expect(page.getByText('Импортированных запусков пока нет.')).toBeVisible();
+    await page.getByRole('button', { name: 'Импортировать как диагностический' }).click();
+    await expect(page.getByText('Импорт завершён')).toBeVisible();
+    await expect(page.getByText('Диагностический неполный результат.')).toBeVisible();
+    await expect(page.getByText('По умолчанию не используется в расчётах.')).toBeVisible();
+    await expect(page.getByText(/^Причины:/u)).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'diagnostic_partial' })).toBeVisible();
+  } finally {
+    await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
+test('closes cleanly when the worker fails during an active M9a import', async () => {
+  const repositoryRoot = resolve(import.meta.dirname, '../../../..');
+  const evidenceRoot = resolve(repositoryRoot, '.tmp/.codex/evidence/m03b-import-close-e2e');
+  const projectPath = join(evidenceRoot, 'm03b-import-close.irproj');
+  const packagePath = join(
+    repositoryRoot,
+    'fixtures/contracts/r130run/v1/m9a/packages/normal_final_rbd.r130run',
+  );
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(evidenceRoot, { recursive: true });
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: repositoryRoot,
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
+      IMPELLER_AUTOMATED_R130RUN_PATH: packagePath,
+      IMPELLER_TEST_USER_DATA: join(evidenceRoot, 'user-data'),
+    },
+  });
+  let exited = false;
+  try {
+    const page = await app.firstWindow();
+    await page.getByRole('button', { name: 'Создать проект' }).click();
+    await page.getByRole('button', { name: 'Результаты R130SH' }).click();
+    await page.getByRole('button', { name: 'Импортировать результат R130SH' }).click();
+    const mainProcessId = app.process().pid;
+    if (mainProcessId === undefined) throw new Error('electron_main_process_missing');
+    const workerId = workerProcessIds(mainProcessId)[0];
+    if (workerId === undefined) throw new Error('worker_process_missing');
+    process.kill(workerId);
+    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
+
+    const exitPromise = new Promise<void>((resolveExit) => {
+      app.process().once('exit', () => resolveExit());
+    });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.close());
+    await Promise.race([
+      exitPromise,
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error('m03b_import_close_timeout')), 5_000),
+      ),
+    ]);
+    exited = true;
+  } finally {
+    if (!exited) await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
 test('validates a synthetic R130SH package without importing or mutating the project', async () => {
   const evidenceRoot = resolve(
     import.meta.dirname,
@@ -996,15 +1169,15 @@ test('validates a synthetic R130SH package without importing or mutating the pro
     await expect(page.getByRole('heading', { name: 'Проверка контракта R130SH' })).toBeVisible();
     await expect(
       page.getByText(
-        'Проверка не импортирует данные в дело и не подтверждает пригодность результата для расчётов. Используется синтетический контрактный baseline; production exporter и M9a golden packages ещё не готовы.',
+        'Проверка не импортирует данные в дело и не подтверждает пригодность результата для расчётов. Валидатор привязан к production M9a contract; producer compatibility подтверждается отдельно M03B acceptance.',
       ),
     ).toBeVisible();
     await page.getByRole('button', { name: 'Проверить пакет R130SH' }).click();
     await expect(page.locator('[data-validation-state="completed"]')).toBeVisible();
     await expect(page.getByText('Пройдена', { exact: true })).toBeVisible();
-    await expect(page.getByText('Частичное', { exact: true })).toBeVisible();
+    await expect(page.getByText('Полное в доступном профиле', { exact: true })).toBeVisible();
     await expect(page.getByText('synthetic.r130run')).toBeVisible();
-    await expect(page.getByText('f02f6d954246a5ab6f57d33dac724ce03d7fb841')).toBeVisible();
+    await expect(page.getByText('01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63')).toBeVisible();
     await expect(page.getByRole('button', { name: /Импорт/u })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Повторить проверку' })).toBeFocused();
     await page.setViewportSize({ width: 640, height: 900 });

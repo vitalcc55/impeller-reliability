@@ -42,6 +42,14 @@ def inspect_reserved_directory(path: Path, label: str) -> None:
         raise ProjectOperationError("corrupt_project", f"Зарезервированный путь {label} не является каталогом.")
 
 
+def ensure_managed_directory(path: Path, label: str) -> None:
+    try:
+        path.mkdir(exist_ok=True)
+    except OSError as error:
+        raise ProjectOperationError("storage_error", f"Managed directory {label} недоступна.") from error
+    inspect_reserved_directory(path, label)
+
+
 def inspect_opened_regular_file(descriptor: int, label: str) -> None:
     try:
         path_stat = os.fstat(descriptor)

@@ -603,6 +603,7 @@ def validate_dossier_evidence(
         FROM project_audit_events
         WHERE event_type NOT IN ('project.created', 'project.metadata_updated')
           AND event_type NOT LIKE 'case_document.%'
+          AND event_type NOT GLOB 'r130sh_*'
         ORDER BY sequence
         """,
         (MAX_DOSSIER_AUDIT_PAYLOAD_BYTES,),

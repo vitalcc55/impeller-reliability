@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "repository": "https://github.com/vitalcc55/R130SH",
   "commit": "f02f6d954246a5ab6f57d33dac724ce03d7fb841",
+  "snapshotRole": "historical M03A synthetic unit/negative/safety fixture source; current production baseline is the separate m9a snapshot",
   "snapshotCreatedAtUtc": "2026-08-29T19:36:09.996Z",
   "statement": "synthetic target examples, not M9a golden packages",
   "files": [

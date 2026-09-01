@@ -5,6 +5,8 @@ from pathlib import Path
 import shutil
 from uuid import uuid4
 
+from impeller_reliability.integration.r130run.m9a import M9aPackageFacts
+from impeller_reliability.integration.r130run.models import RunPackageValidationReport
 from impeller_reliability.persistence.analyst_dossier import CustomerProfile, Specimen, WheelModel
 from impeller_reliability.persistence.case_documents import CaseDocument
 from impeller_reliability.persistence.project_database import (
@@ -23,6 +25,12 @@ from impeller_reliability.persistence.project_paths import (
     validate_project_container,
 )
 from impeller_reliability.persistence.project_session import ProjectOverview, ProjectSession
+from impeller_reliability.persistence.r130sh_sources import (
+    ImportedRunDetail,
+    ImportedRunSummary,
+    SourceIntegrityStatus,
+    SpecimenBinding,
+)
 from impeller_reliability.persistence.timestamps import utc_now
 from impeller_reliability.worker.deadline import RequestDeadline
 
@@ -35,6 +43,10 @@ class ProjectService:
     @property
     def has_active_session(self) -> bool:
         return self._session is not None
+
+    @property
+    def active_project_path(self) -> Path:
+        return self._require_session().path
 
     def create(
         self,
@@ -261,6 +273,89 @@ class ProjectService:
 
     def resolve_case_document_file(self, document_id: str, deadline: RequestDeadline | None) -> Path:
         return self._require_session().resolve_case_document_file(document_id, deadline)
+
+    def register_imported_run(
+        self,
+        *,
+        local_import_id: str,
+        staged_path: Path,
+        facts: M9aPackageFacts,
+        report: RunPackageValidationReport,
+        deadline: RequestDeadline | None,
+    ) -> ImportedRunSummary:
+        return self._require_session().register_imported_run(
+            local_import_id=local_import_id,
+            staged_path=staged_path,
+            facts=facts,
+            report=report,
+            deadline=deadline,
+        )
+
+    def list_imported_runs(self, deadline: RequestDeadline | None = None) -> tuple[ImportedRunSummary, ...]:
+        return self._require_session().list_imported_runs(deadline)
+
+    def get_imported_run(self, local_import_id: str, deadline: RequestDeadline | None = None) -> ImportedRunDetail:
+        return self._require_session().get_imported_run(local_import_id, deadline)
+
+    def verify_imported_run_source(self, local_import_id: str, deadline: RequestDeadline | None = None) -> SourceIntegrityStatus:
+        return self._require_session().verify_imported_run_source(local_import_id, deadline)
+
+    def get_imported_run_binding(
+        self,
+        source_specimen_id: str,
+        deadline: RequestDeadline | None = None,
+    ) -> SpecimenBinding:
+        return self._require_session().get_imported_run_binding(source_specimen_id, deadline)
+
+    def bind_imported_run_specimen(
+        self,
+        *,
+        source_specimen_id: str,
+        local_specimen_id: str | None,
+        expected_revision: int,
+        actor: str,
+        reason: str,
+        deadline: RequestDeadline | None,
+    ) -> SpecimenBinding:
+        return self._require_session().bind_imported_run_specimen(
+            source_specimen_id=source_specimen_id,
+            local_specimen_id=local_specimen_id,
+            expected_revision=expected_revision,
+            actor=actor,
+            reason=reason,
+            deadline=deadline,
+        )
+
+    def record_imported_run_resolution(
+        self,
+        *,
+        resolution_id: str,
+        local_import_id: str,
+        source_payload_path: str,
+        source_field: str,
+        target_entity_type: str,
+        target_entity_id: str,
+        target_field: str,
+        decision: str,
+        actor: str,
+        reason: str,
+        expected_target_revision: int | None,
+        deadline: RequestDeadline | None,
+    ) -> ImportedRunDetail:
+        return self._require_session().record_imported_run_resolution(
+            resolution_id=resolution_id,
+            local_import_id=local_import_id,
+            source_payload_path=source_payload_path,
+            source_field=source_field,
+            target_entity_type=target_entity_type,
+            target_entity_id=target_entity_id,
+            target_field=target_field,
+            decision=decision,
+            actor=actor,
+            reason=reason,
+            expected_target_revision=expected_target_revision,
+            deadline=deadline,
+        )
 
     def close(self, *, deadline: RequestDeadline | None = None) -> bool:
         _check_deadline(deadline, "project_close")

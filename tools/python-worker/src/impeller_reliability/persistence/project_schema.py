@@ -165,6 +165,140 @@ CASE_DOCUMENTS_TITLE_INDEX_SQL: Final = "CREATE INDEX case_documents_title_idx O
 CASE_DOCUMENT_FILES_SHA256_INDEX_SQL: Final = "CREATE INDEX case_document_files_sha256_idx ON case_document_files(sha256)"
 CASE_DOCUMENT_WHEEL_MODELS_TARGET_INDEX_SQL: Final = "CREATE INDEX case_document_wheel_models_target_idx ON case_document_wheel_models(wheel_model_id)"
 CASE_DOCUMENT_SPECIMENS_TARGET_INDEX_SQL: Final = "CREATE INDEX case_document_specimens_target_idx ON case_document_specimens(specimen_id)"
+R130SH_SOURCES_TABLE_SQL: Final = """
+CREATE TABLE r130sh_sources (
+    local_import_id TEXT PRIMARY KEY,
+    package_id TEXT NOT NULL,
+    export_revision INTEGER NOT NULL CHECK (export_revision >= 1),
+    outer_package_sha256 TEXT NOT NULL CHECK (length(outer_package_sha256) = 64),
+    run_id TEXT NOT NULL,
+    package_kind TEXT NOT NULL CHECK (package_kind IN ('final', 'diagnostic_partial')),
+    package_schema TEXT NOT NULL,
+    package_created_at_utc TEXT NOT NULL,
+    source_snapshot_sha256 TEXT NOT NULL CHECK (length(source_snapshot_sha256) = 64),
+    producer_name TEXT NOT NULL,
+    producer_version TEXT NOT NULL,
+    producer_build_id TEXT NOT NULL,
+    producer_git_commit TEXT NOT NULL,
+    managed_relative_path TEXT NOT NULL UNIQUE,
+    outer_size_bytes INTEGER NOT NULL CHECK (outer_size_bytes > 0),
+    imported_at_utc TEXT NOT NULL,
+    validator_version TEXT NOT NULL,
+    validation_contract_commit TEXT NOT NULL,
+    structural_verdict TEXT NOT NULL CHECK (structural_verdict = 'passed'),
+    semantic_verdict TEXT NOT NULL CHECK (semantic_verdict IN ('passed', 'passed_with_warnings')),
+    semantic_coverage_json TEXT NOT NULL CHECK (json_valid(semantic_coverage_json)),
+    validation_findings_json TEXT NOT NULL CHECK (json_valid(validation_findings_json)),
+    UNIQUE (package_id, export_revision)
+)
+"""
+R130SH_SOURCE_INVENTORY_TABLE_SQL: Final = """
+CREATE TABLE r130sh_source_inventory (
+    local_import_id TEXT NOT NULL REFERENCES r130sh_sources(local_import_id),
+    path TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+    row_count INTEGER NULL CHECK (row_count IS NULL OR row_count >= 0),
+    semantic_coverage TEXT NOT NULL CHECK (semantic_coverage IN ('covered', 'structural_only')),
+    PRIMARY KEY (local_import_id, path)
+)
+"""
+R130SH_SPECIMEN_BINDINGS_TABLE_SQL: Final = """
+CREATE TABLE r130sh_specimen_bindings (
+    source_specimen_id TEXT PRIMARY KEY,
+    local_specimen_id TEXT NULL REFERENCES specimens(specimen_id),
+    record_revision INTEGER NOT NULL CHECK (record_revision >= 1),
+    updated_by_actor TEXT NULL,
+    reason TEXT NOT NULL DEFAULT '' CHECK (length(reason) <= 2000),
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+)
+"""
+R130SH_RUN_PROJECTIONS_TABLE_SQL: Final = """
+CREATE TABLE r130sh_run_projections (
+    local_import_id TEXT PRIMARY KEY REFERENCES r130sh_sources(local_import_id),
+    run_id TEXT NOT NULL,
+    source_specimen_id TEXT NOT NULL REFERENCES r130sh_specimen_bindings(source_specimen_id),
+    mode TEXT NOT NULL CHECK (mode IN ('pmn', 'rpt', 'rbd')),
+    package_kind TEXT NOT NULL CHECK (package_kind IN ('final', 'diagnostic_partial')),
+    technical_status TEXT NULL,
+    termination_reason TEXT NULL,
+    specimen_outcome TEXT NULL,
+    run_validity TEXT NULL,
+    data_completeness TEXT NULL,
+    partial_reasons_json TEXT NOT NULL CHECK (json_valid(partial_reasons_json)),
+    resume_available INTEGER NOT NULL CHECK (resume_available IN (0, 1)),
+    original_plan_id TEXT NOT NULL,
+    original_plan_revision INTEGER NOT NULL CHECK (original_plan_revision >= 1),
+    original_plan_sha256 TEXT NOT NULL CHECK (length(original_plan_sha256) = 64),
+    effective_plan_id TEXT NOT NULL,
+    effective_plan_revision INTEGER NOT NULL CHECK (effective_plan_revision >= 1),
+    effective_plan_sha256 TEXT NOT NULL CHECK (length(effective_plan_sha256) = 64),
+    original_plan_summary_json TEXT NOT NULL CHECK (json_valid(original_plan_summary_json)),
+    effective_plan_summary_json TEXT NOT NULL CHECK (json_valid(effective_plan_summary_json)),
+    started_at_utc TEXT NOT NULL,
+    finished_at_utc TEXT NULL,
+    customer_full_name TEXT NULL,
+    customer_address TEXT NULL,
+    customer_order_reference TEXT NULL,
+    wheel_full_name TEXT NULL,
+    wheel_identifier TEXT NULL,
+    working_diameter_mm TEXT NULL,
+    sample_label TEXT NULL,
+    environment_status TEXT NULL,
+    environment_summary_json TEXT NOT NULL CHECK (json_valid(environment_summary_json)),
+    provenance_summary_json TEXT NOT NULL CHECK (json_valid(provenance_summary_json)),
+    measurement_count INTEGER NOT NULL CHECK (measurement_count >= 0),
+    accepted_measurement_count INTEGER NOT NULL CHECK (accepted_measurement_count >= 0),
+    event_count INTEGER NOT NULL CHECK (event_count >= 0),
+    inspection_count INTEGER NOT NULL CHECK (inspection_count >= 0),
+    attachment_count INTEGER NOT NULL CHECK (attachment_count >= 0),
+    amendment_count INTEGER NOT NULL CHECK (amendment_count >= 0),
+    crediting_policy TEXT NULL,
+    accepted_elapsed_s TEXT NULL
+)
+"""
+R130SH_ENRICHMENT_RESOLUTIONS_TABLE_SQL: Final = """
+CREATE TABLE r130sh_enrichment_resolutions (
+    resolution_id TEXT PRIMARY KEY,
+    local_import_id TEXT NOT NULL REFERENCES r130sh_sources(local_import_id),
+    source_payload_path TEXT NOT NULL,
+    source_field TEXT NOT NULL,
+    target_entity_type TEXT NOT NULL CHECK (target_entity_type IN ('customer_profile', 'wheel_model', 'specimen')),
+    target_entity_id TEXT NOT NULL,
+    target_field TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('use_source', 'use_analyst', 'copied_to_analyst')),
+    actor TEXT NOT NULL,
+    occurred_at_utc TEXT NOT NULL,
+    reason TEXT NOT NULL CHECK (length(reason) <= 2000),
+    UNIQUE (local_import_id, source_payload_path, source_field, target_entity_type, target_entity_id, target_field)
+)
+"""
+R130SH_SOURCES_NO_UPDATE_TRIGGER_SQL: Final = "CREATE TRIGGER r130sh_sources_no_update BEFORE UPDATE ON r130sh_sources BEGIN SELECT RAISE(ABORT, 'r130sh_source_immutable'); END"
+R130SH_SOURCES_NO_DELETE_TRIGGER_SQL: Final = "CREATE TRIGGER r130sh_sources_no_delete BEFORE DELETE ON r130sh_sources BEGIN SELECT RAISE(ABORT, 'r130sh_source_immutable'); END"
+R130SH_INVENTORY_NO_UPDATE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER r130sh_source_inventory_no_update BEFORE UPDATE ON r130sh_source_inventory BEGIN SELECT RAISE(ABORT, 'r130sh_source_inventory_immutable'); END"
+)
+R130SH_INVENTORY_NO_DELETE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER r130sh_source_inventory_no_delete BEFORE DELETE ON r130sh_source_inventory BEGIN SELECT RAISE(ABORT, 'r130sh_source_inventory_immutable'); END"
+)
+R130SH_PROJECTIONS_NO_UPDATE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER r130sh_run_projections_no_update BEFORE UPDATE ON r130sh_run_projections BEGIN SELECT RAISE(ABORT, 'r130sh_run_projection_immutable'); END"
+)
+R130SH_PROJECTIONS_NO_DELETE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER r130sh_run_projections_no_delete BEFORE DELETE ON r130sh_run_projections BEGIN SELECT RAISE(ABORT, 'r130sh_run_projection_immutable'); END"
+)
+R130SH_RESOLUTIONS_NO_UPDATE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER r130sh_enrichment_resolutions_no_update BEFORE UPDATE ON r130sh_enrichment_resolutions BEGIN SELECT RAISE(ABORT, 'r130sh_enrichment_resolution_immutable'); END"
+)
+R130SH_RESOLUTIONS_NO_DELETE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER r130sh_enrichment_resolutions_no_delete BEFORE DELETE ON r130sh_enrichment_resolutions BEGIN SELECT RAISE(ABORT, 'r130sh_enrichment_resolution_immutable'); END"
+)
+R130SH_SOURCES_RUN_INDEX_SQL: Final = "CREATE INDEX r130sh_sources_run_idx ON r130sh_sources(run_id, export_revision)"
+R130SH_PROJECTIONS_SPECIMEN_INDEX_SQL: Final = "CREATE INDEX r130sh_run_projections_specimen_idx ON r130sh_run_projections(source_specimen_id)"
+R130SH_BINDINGS_LOCAL_INDEX_SQL: Final = "CREATE INDEX r130sh_specimen_bindings_local_idx ON r130sh_specimen_bindings(local_specimen_id)"
+R130SH_RESOLUTIONS_IMPORT_INDEX_SQL: Final = "CREATE INDEX r130sh_enrichment_resolutions_import_idx ON r130sh_enrichment_resolutions(local_import_id)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +349,23 @@ SCHEMA_V1_OBJECTS: Final = (
         "case_document_specimens_target_idx",
         CASE_DOCUMENT_SPECIMENS_TARGET_INDEX_SQL,
     ),
+    SchemaObject("table", "r130sh_sources", R130SH_SOURCES_TABLE_SQL),
+    SchemaObject("table", "r130sh_source_inventory", R130SH_SOURCE_INVENTORY_TABLE_SQL),
+    SchemaObject("table", "r130sh_specimen_bindings", R130SH_SPECIMEN_BINDINGS_TABLE_SQL),
+    SchemaObject("table", "r130sh_run_projections", R130SH_RUN_PROJECTIONS_TABLE_SQL),
+    SchemaObject("table", "r130sh_enrichment_resolutions", R130SH_ENRICHMENT_RESOLUTIONS_TABLE_SQL),
+    SchemaObject("trigger", "r130sh_sources_no_update", R130SH_SOURCES_NO_UPDATE_TRIGGER_SQL),
+    SchemaObject("trigger", "r130sh_sources_no_delete", R130SH_SOURCES_NO_DELETE_TRIGGER_SQL),
+    SchemaObject("trigger", "r130sh_source_inventory_no_update", R130SH_INVENTORY_NO_UPDATE_TRIGGER_SQL),
+    SchemaObject("trigger", "r130sh_source_inventory_no_delete", R130SH_INVENTORY_NO_DELETE_TRIGGER_SQL),
+    SchemaObject("trigger", "r130sh_run_projections_no_update", R130SH_PROJECTIONS_NO_UPDATE_TRIGGER_SQL),
+    SchemaObject("trigger", "r130sh_run_projections_no_delete", R130SH_PROJECTIONS_NO_DELETE_TRIGGER_SQL),
+    SchemaObject("trigger", "r130sh_enrichment_resolutions_no_update", R130SH_RESOLUTIONS_NO_UPDATE_TRIGGER_SQL),
+    SchemaObject("trigger", "r130sh_enrichment_resolutions_no_delete", R130SH_RESOLUTIONS_NO_DELETE_TRIGGER_SQL),
+    SchemaObject("index", "r130sh_sources_run_idx", R130SH_SOURCES_RUN_INDEX_SQL),
+    SchemaObject("index", "r130sh_run_projections_specimen_idx", R130SH_PROJECTIONS_SPECIMEN_INDEX_SQL),
+    SchemaObject("index", "r130sh_specimen_bindings_local_idx", R130SH_BINDINGS_LOCAL_INDEX_SQL),
+    SchemaObject("index", "r130sh_enrichment_resolutions_import_idx", R130SH_RESOLUTIONS_IMPORT_INDEX_SQL),
 )
 SCHEMA_V1_CONTRACT: Final = PublishedSchemaContract(
     version=1,
@@ -408,6 +559,9 @@ def _validate_audit_stream(connection: sqlite3.Connection, deadline: RequestDead
         "case_document.file_attached",
         "case_document.archived",
         "case_document.restored",
+        "r130sh_import.completed",
+        "r130sh_source.specimen_bound",
+        "r130sh_source.enrichment_resolution_recorded",
     }
     rows = sqlite_query_rows_with_deadline(
         connection,

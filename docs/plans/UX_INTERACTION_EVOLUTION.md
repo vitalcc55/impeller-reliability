@@ -16,7 +16,7 @@ Impeller Reliability развивается как desktop engineering workspace
 - validation/conflict/transport failure сохраняют локальный ввод;
 - статус не забирает focus, ошибка выражена текстом, цвет не является единственным сигналом;
 - focus видим, порядок DOM и визуальный порядок согласованы, положительный `tabindex` запрещён;
-- обязательная функция не исчезает в узком окне; master-detail перестраивается сверху вниз;
+- обязательная функция не исчезает в поддерживаемом desktop диапазоне; master-detail сохраняет читаемую пропорцию от 1280×720;
 - reversible действие использует archive/restore; необратимое действие требует осознанного подтверждения;
 - provenance, единица, warning и integrity показываются рядом с инженерным значением, когда они существуют в предметном контракте;
 - autosave domain data не вводится: audit и optimistic revision создаются только явной предметной операцией.
@@ -31,9 +31,9 @@ Impeller Reliability развивается как desktop engineering workspace
 - последовательная загрузка ProjectSession без конкурирующих запросов к сериализованной сессии;
 - семантические headings/regions/status/alert, доступные имена, keyboard activation и видимый focus;
 - возврат focus после подтверждения и разумный focus после create/archive/restore без самопроизвольных прыжков после фонового ответа;
-- desktop и 640 px без горизонтального overflow, перенос длинных имён, SHA-256 и русских строк;
+- Windows desktop/laptop от 1280×720, оптимизация 1536×864–1920×1080; mobile/640 px и отдельная узкоэкранная композиция исключены; перенос длинных имён, SHA-256 и русских строк;
 - empty/error/warning/integrity состояния документов и честная семантика SQLite-only backup;
-- Browser/Electron E2E для keyboard, dirty-loss, focus, narrow layout, clean console и worker failure.
+- Browser/Electron E2E для keyboard, dirty-loss, focus, поддерживаемых Windows desktop layouts, clean console и worker failure.
 
 M02.2B не создаёт command palette, универсальный router/history, recovery-хранилище черновиков, job framework, DataGrid, chart framework или новую компонентную библиотеку.
 
@@ -43,7 +43,7 @@ M03A вводит минимальный повторяемый UX read-only job
 
 ## M03B — импорт и persisted provenance
 
-После R130SH M9a production importer расширяет job lifecycle staging/commit/reopen postconditions, immutable `r130sh_source`, import receipt и source/enrichment resolution. Persisted provenance primitive появляется здесь, а не ретроспективно при M03A. Job journal допускается только если изменяющая Project операция докажет необходимость crash recovery; in-memory validation job его не создаёт.
+M03B production importer расширяет job lifecycle состояниями validation/copy/revalidation/commit, bounded cancel/drain и reopen reconciliation. В project workspace появляется «Результаты R130SH»: master-detail список, десять bounded detail-секций, постоянная diagnostic-partial метка, source/analyst comparison, явная specimen binding и resolution provenance. Persisted truth — immutable `r130sh_source` и managed archive; runtime job остаётся in-memory, общий job journal не создаётся.
 
 ## M04 — расчётная вертикаль и визуализация
 
@@ -64,4 +64,4 @@ Command/shortcut layer становится единым владельцем д
 
 ## Критерий готовности каждого будущего UX-пакета
 
-Решение имеет одного владельца, описывает normal/empty/loading/error/conflict/detached/archived состояния по применимости, работает с клавиатуры и в узком окне, не теряет draft, не скрывает обязательную функцию, проверено детерминированным тестом и одним ограниченным визуальным проходом. Новая системная абстракция появляется только после подтверждённого повторения или до первого экрана, который без неё создаст несовместимые реализации.
+Решение имеет одного владельца, описывает normal/empty/loading/error/conflict/detached/archived состояния по применимости, работает с клавиатуры в поддерживаемом Windows desktop диапазоне, не теряет draft, не скрывает обязательную функцию, проверено детерминированным тестом и одним ограниченным визуальным проходом. Новая системная абстракция появляется только после подтверждённого повторения или до первого экрана, который без неё создаст несовместимые реализации.

@@ -8,17 +8,17 @@ M02.1 создаёт устойчивый контейнер и сессию п�
 
 M02.2A добавляет только analyst dossier: CustomerProfile, WheelModel и Specimen в редактируемом `analyst_enrichment`. M02.2B отдельно добавляет нормативные источники и project documents. `TestCampaign` появляется позднее только как downstream-группировка импортированных запусков.
 
-M02.2B одновременно закрепляет только текущий UX-фундамент: общий interaction-state vocabulary, draft/pending/focus/error contracts, keyboard semantics и adaptive master-detail на 640 px. Дальнейшая последовательность command/jobs/tables/charts/recovery и release accessibility принадлежит `UX_INTERACTION_EVOLUTION.md`; она не разрешает преждевременные компоненты в M02.2B.
+M02.2B одновременно закрепил UX-фундамент: общий interaction-state vocabulary, draft/pending/focus/error contracts, keyboard semantics и существующий defensive reflow. Уже реализованный reflow не удаляется, но для новых этапов он не создаёт mobile/640 px acceptance: целевая Windows desktop-композиция начинается с 1280×720. Дальнейшая последовательность command/jobs/tables/charts/recovery и release accessibility принадлежит `UX_INTERACTION_EVOLUTION.md`; она не разрешает преждевременные компоненты в M02.2B.
 
 Одновременно расширяются существующие owners требований, domain model, glossary и traceability. Новые параллельные спецификации не создаются.
 
-## R130SH baseline и frozen examples
+## R130SH baseline и M9a goldens
 
-Проверенный baseline `vitalcc55/R130SH@f02f6d954246a5ab6f57d33dac724ce03d7fb841`: M0, M1, M2, M3, M4a и M5a завершены, следующий upstream-этап — M4b. R130SH владеет package schema и frozen target examples; examples синтетические и не являются M9a golden packages. Exporter M8 и независимые M9a goldens отсутствуют, поэтому Impeller Reliability не объявляет production importer готовым.
+Проверенный baseline `vitalcc55/R130SH@01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63`: M9a завершён, опубликован 21 producer-generated package file для 18 сценариев с реальными outer SHA-256. Exact offline snapshot принадлежит M03B acceptance; ветка upstream указана только как provenance, runtime/CI связи между репозиториями нет.
 
 ## M03A/M03B — входной результат R130SH
 
-M03A создаёт только contract/validation foundation по frozen synthetic examples: pinned offline snapshot, read-only bounded validation job и diagnostics report не меняют Project schema v1 и не считаются импортом или допуском к расчёту. M03A не добавляет и не запускает новую forward migration; существующие clean schema v1 и initial ledger не меняются. Staging/assets, `r130sh_source`, import receipt и compatibility tables не создаются. M03B заблокирован до R130SH M9a independent golden matrix; только он реализует полный импорт: staging → immutable `r130sh_source` → source/enrichment resolution → повторное открытие. Прямое чтение SQLite R130SH, исходящий план и управление стендом запрещены. Общий job/error/provenance UX начинается с реального длительного validation-сценария M03A и расширяется для изменяющего Project импорта только в M03B.
+M03A — read-only validation foundation в Diagnostics; он не меняет Project и не является import/eligibility. M03B — production import: staged revalidation → immutable managed archive → `r130sh_source` registry/inventory/projection → explicit binding/source-enrichment resolution → reopen. Clean pre-release schema остаётся v1 без фиктивной migration/compatibility. Прямое чтение SQLite R130SH, исходящий план и управление стендом запрещены. M03B не создаёт расчётный snapshot.
 
 ## M04 — расчёты испытаний
 
@@ -45,7 +45,7 @@ TypeScript 7/Vite 8 переходят только цельной совмес�
 1. `codex/m02-2a-analyst-dossier`
 2. M02.2B normative sources
 3. M03A run-package contract validation foundation после frozen R130SH examples
-4. M03B production importer после R130SH M9a golden packages
+4. M03B production importer + immutable `r130sh_source` + M9b acceptance по 21 M9a packages
 5. M04 RBD/RPT/PMN analysis
 
 Каждая ветка заканчивается наблюдаемым вертикальным результатом и собственным verification gate; M02 не начинается из M01.1 автоматически.

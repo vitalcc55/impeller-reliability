@@ -7,6 +7,8 @@ import type {
   DesktopResult,
   RunPackageValidationJob,
   RunPackageValidationStartCommand,
+  RunPackageImportJob,
+  RunPackageImportStartCommand,
 } from '@impeller-reliability/contracts';
 
 import { showSystemDialog } from './system-dialog';
@@ -19,6 +21,7 @@ interface RunPackageSourceSelectionOptions {
   readonly automatedCancelled: boolean;
   readonly automatedPath: string | null;
   readonly showOpenDialog: ShowOpenDialog;
+  readonly buttonLabel?: string;
 }
 
 export async function selectRunPackageSource(
@@ -32,7 +35,7 @@ export async function selectRunPackageSource(
     const dialogResult = await showSystemDialog(() =>
       options.showOpenDialog({
         title: 'Выбрать пакет результата R130SH',
-        buttonLabel: 'Проверить пакет',
+        buttonLabel: options.buttonLabel ?? 'Проверить пакет',
         properties: ['openFile'],
         filters: [{ name: 'Пакет результата R130SH', extensions: ['r130run'] }],
       }),
@@ -79,6 +82,26 @@ export async function runPackageValidationStart(
     ...(command.replaceJobId === undefined ? {} : { replaceJobId: command.replaceJobId }),
     sourcePath: selected.result,
     validationBudgetMs: RUN_PACKAGE_VALIDATION_BUDGET_MS,
+  });
+}
+
+export async function runPackageImportStart(
+  command: RunPackageImportStartCommand,
+  selectSource: () => Promise<DesktopResult<string>>,
+  request: (payload: {
+    readonly jobId: string;
+    readonly replaceJobId?: string;
+    readonly sourcePath: string;
+    readonly allowDiagnosticPartial: boolean;
+  }) => Promise<DesktopResult<RunPackageImportJob>>,
+): Promise<DesktopResult<RunPackageImportJob>> {
+  const selected = await selectSource();
+  if (!selected.ok) return { ok: false, error: selected.error };
+  return request({
+    jobId: command.jobId,
+    ...(command.replaceJobId === undefined ? {} : { replaceJobId: command.replaceJobId }),
+    sourcePath: selected.result,
+    allowDiagnosticPartial: command.allowDiagnosticPartial,
   });
 }
 

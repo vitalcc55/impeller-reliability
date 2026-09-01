@@ -19,12 +19,24 @@ import {
   projectDraftSchema,
   projectOverviewSchema,
   projectUpdateMetadataPayloadSchema,
+  importedRunBindingCommandSchema,
+  importedRunDetailSchema,
+  importedRunEnrichmentResolutionCommandSchema,
+  importedRunIdPayloadSchema,
+  importedRunListResultSchema,
+  importedRunResolutionStatePayloadSchema,
+  importedRunVerifyResultSchema,
   recentProjectsSchema,
   runtimeStatusSchema,
   runPackageValidationDiscardResultSchema,
   runPackageValidationJobPayloadSchema,
   runPackageValidationJobSchema,
   runPackageValidationStartCommandSchema,
+  runPackageImportDiscardResultSchema,
+  runPackageImportJobPayloadSchema,
+  runPackageImportJobSchema,
+  runPackageImportStartCommandSchema,
+  specimenBindingSchema,
   specimenCreatePayloadSchema,
   specimenListResultSchema,
   specimenRevisionPayloadSchema,
@@ -332,6 +344,82 @@ const api: ImpellerApi = {
         runPackageValidationJobPayloadSchema,
         { jobId },
         createDesktopResultSchema(runPackageValidationDiscardResultSchema),
+      ),
+  },
+  runPackageImport: {
+    selectAndStart: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.runPackageImportStart,
+        runPackageImportStartCommandSchema,
+        command,
+        createDesktopResultSchema(runPackageImportJobSchema),
+      ),
+    get: async (jobId) =>
+      invokeValidated(
+        IPC_CHANNELS.runPackageImportGet,
+        runPackageImportJobPayloadSchema,
+        { jobId },
+        createDesktopResultSchema(runPackageImportJobSchema),
+      ),
+    cancel: async (jobId) =>
+      invokeValidated(
+        IPC_CHANNELS.runPackageImportCancel,
+        runPackageImportJobPayloadSchema,
+        { jobId },
+        createDesktopResultSchema(runPackageImportJobSchema),
+      ),
+    discard: async (jobId) =>
+      invokeValidated(
+        IPC_CHANNELS.runPackageImportDiscard,
+        runPackageImportJobPayloadSchema,
+        { jobId },
+        createDesktopResultSchema(runPackageImportDiscardResultSchema),
+      ),
+  },
+  importedRun: {
+    list: async () => {
+      const result = await invokeValidated(
+        IPC_CHANNELS.importedRunList,
+        z.object({}).strict(),
+        {},
+        createDesktopResultSchema(importedRunListResultSchema),
+      );
+      return result.ok ? { ok: true, result: result.result.items } : result;
+    },
+    get: async (localImportId) =>
+      invokeValidated(
+        IPC_CHANNELS.importedRunGet,
+        importedRunIdPayloadSchema,
+        { localImportId },
+        createDesktopResultSchema(importedRunDetailSchema),
+      ),
+    verifySource: async (localImportId) =>
+      invokeValidated(
+        IPC_CHANNELS.importedRunVerifySource,
+        importedRunIdPayloadSchema,
+        { localImportId },
+        createDesktopResultSchema(importedRunVerifyResultSchema),
+      ),
+    getResolutionState: async (sourceSpecimenId) =>
+      invokeValidated(
+        IPC_CHANNELS.importedRunGetResolutionState,
+        importedRunResolutionStatePayloadSchema,
+        { sourceSpecimenId },
+        createDesktopResultSchema(specimenBindingSchema),
+      ),
+    bindSpecimen: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.importedRunBindSpecimen,
+        importedRunBindingCommandSchema,
+        command,
+        createDesktopResultSchema(specimenBindingSchema),
+      ),
+    applyEnrichmentResolution: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.importedRunApplyEnrichmentResolution,
+        importedRunEnrichmentResolutionCommandSchema,
+        command,
+        createDesktopResultSchema(importedRunDetailSchema),
       ),
   },
 };

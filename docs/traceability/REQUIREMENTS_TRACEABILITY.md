@@ -46,15 +46,21 @@
 | Document integrity isolation | missing/modified status without corrupting ProjectSession | pytest close/reopen + Electron E2E |
 | Renderer path secrecy | DTO/preload omit source/absolute/managed path; open resolves only in Main | Zod/Vitest + IPC review |
 | Shared document draft/focus | one draft owner; transition confirmation restores focus and preserves input | Electron E2E keyboard/dirty/restart/close |
-| Narrow document workspace | adaptive master-detail and wrapping metadata at 640 px | Browser + Electron E2E |
+| Windows desktop workspace | supported from 1280×720; optimized 1536×864–1920×1080; mobile/640 excluded | Chrome + Electron E2E |
 | Honest backup scope | UI/docs say SQLite-only; full transfer copies closed `.irproj` | copy assertions + E2E |
-| Pinned R130SH synthetic contract | exact fixture snapshot + `UPSTREAM_SOURCE.json` | offline blob/SHA-256 drift test |
+| Pinned R130SH producer contract | exact M9a commit + 21 packages/18 scenarios + `UPSTREAM_SOURCE.json` | offline set/size/blob/SHA-256 drift gate |
 | Bounded read-only package validation | Python Integration validator + one in-memory job | pytest ZIP/semantic/resource/cancel matrix |
 | Independent package identity | upstream UUID v4/v7 types separate from local entity UUID v4 | Zod/Pydantic regression tests |
 | Strict ZIP and payload integrity | raw stored/DEFLATE stream, CRC/size/SHA-256, inventory and path profile | negative synthetic package matrix |
-| Honest semantic coverage | covered/not_available/contract_gap report | frozen-shape/value + gap tests |
-| No Project mutation in M03A | validation has no ProjectService/SQLite edge; schema remains v1 | overview before/after + pytest + E2E/packaged smoke |
+| Honest semantic coverage | producer M9a contract coverage and bounded findings | 21-package semantic matrix + negative synthetic fixtures |
+| No Project mutation in M03A | diagnostics has no ProjectService/SQLite edge | overview before/after + pytest + E2E/packaged smoke |
 | Validation job lifecycle | start/get/cancel/discard, atomic terminal replacement, bounded shutdown | pytest races + Vitest + Electron E2E |
 | Run-package path secrecy | Main dialog injects path only into worker payload | Main seam + Zod/Preload review + E2E |
-| Validation diagnostics UX | progress, verdicts, provenance, findings, focus and 640 px | Browser QA + Electron E2E |
-| No import or analysis claim | empty supported schema claims; no import fields/tables/receipts | contract/source review + negative UI/E2E |
+| Validation diagnostics UX | progress, verdicts, provenance, findings and focus | Browser QA + Electron E2E |
+| Immutable production import | staged revalidation → atomic archive → registry/inventory/projection/audit | all-21 M9b import/reopen matrix + failure injection |
+| Import idempotency/integrity | exact tuple no-op; hash conflict; revision coexistence | pytest registry/audit assertions + Electron repeat/conflict |
+| Source specimen identity | shared identity binding; same marking never auto-merges distinct identities | M9a shared/distinct fixture acceptance + optimistic bind tests |
+| Source/enrichment separation | immutable source + finite whitelist + empty-only confirmed copy | schema triggers + provenance/no-overwrite tests + UI comparison |
+| Managed archive isolation | missing/modified status does not corrupt project; explicit verify revalidates | pytest damage/reopen + Electron source-status E2E |
+| Import lifecycle | one in-memory job; cancel/drain/commit fence/lost-response reconciliation | pytest + Vitest + Electron crash/close tests |
+| No analysis claim in M03B | supported run-package schema only; plan schemas empty; no eligibility/readiness | contract/source review + negative DTO/UI assertions |

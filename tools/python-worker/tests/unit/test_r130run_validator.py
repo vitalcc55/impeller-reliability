@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 from pathlib import Path
 import stat
@@ -13,6 +15,10 @@ import zlib
 from pydantic import TypeAdapter
 import pytest
 
+from impeller_reliability.integration.r130run.m9a import (
+    M9aContractError,
+    validate_measurement_row,
+)
 from impeller_reliability.integration.r130run.models import JobPhase
 from impeller_reliability.integration.r130run.validator import (
     ProgressCallback,
@@ -22,7 +28,7 @@ from impeller_reliability.integration.r130run.validator import (
     ValidationControl,
     ValidationTimeoutError,
 )
-from support.r130run_builder import JsonValue, build_synthetic_r130run, write_r130run
+from support.r130run_builder import RUN_ID, JsonValue, build_synthetic_r130run, write_r130run
 
 
 def test_validates_downstream_synthetic_package_without_extraction(tmp_path: Path) -> None:
@@ -31,12 +37,12 @@ def test_validates_downstream_synthetic_package_without_extraction(tmp_path: Pat
     report = RunPackageValidator().validate(package, _control())
 
     assert report.structuralVerdict == "passed"
-    assert report.semanticVerdict == "partial"
+    assert report.semanticVerdict == "passed"
     assert report.packageId == "019d3c80-3d21-7a65-8e5a-111111111111"
-    assert report.runId == "019d3c80-3d21-7a65-8e5a-222222222222"
+    assert report.runId == RUN_ID
     assert report.outerPackageSha256 == hashlib.sha256(package.read_bytes()).hexdigest()
     assert report.findingCounts.error == 0
-    assert {item.status for item in report.semanticCoverage} >= {"covered", "not_available", "contract_gap"}
+    assert {item.status for item in report.semanticCoverage} == {"covered"}
     assert list(tmp_path.iterdir()) == [package]
 
 
@@ -411,7 +417,7 @@ def test_jsonl_blank_line_and_row_count_mismatch_are_rejected(tmp_path: Path) ->
 
 
 def test_jsonl_final_record_without_newline_is_validated(tmp_path: Path) -> None:
-    event = _fixture_object("event.example.json")
+    event = _m9a_jsonl_object("events.jsonl")
     package = build_synthetic_r130run(
         tmp_path / "final-record.r130run",
         payload_overrides={"events.jsonl": json.dumps(event, ensure_ascii=False).encode("utf-8")},
@@ -464,9 +470,25 @@ def test_rejects_invalid_source_identity_and_expired_budget(tmp_path: Path) -> N
         )
 
 
-def test_large_measurement_csv_is_streamed_without_semantic_claim(tmp_path: Path) -> None:
-    row = b"019d3c80-3d21-7a65-8e5a-555555555555,019d3c80-3d21-7a65-8e5a-222222222222\n"
-    csv_payload = b"measurement_id,run_id\n" + row * 20_000
+def test_large_measurement_csv_is_streamed_with_bounded_syntax_validation(tmp_path: Path) -> None:
+    with (
+        ZipFile(_m9a_package("normal_final_rbd.r130run")) as archive,
+        archive.open("measurements.csv") as raw,
+        io.TextIOWrapper(raw, encoding="utf-8") as text,
+    ):
+        source_rows = list(csv.reader(text))
+    header, source_row = source_rows[:2]
+    sequence_index = header.index("measurement_sequence")
+    measurement_id_index = header.index("measurement_id")
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(header)
+    for sequence in range(1, 20_001):
+        row = source_row.copy()
+        row[sequence_index] = str(sequence)
+        row[measurement_id_index] = f"measurement-{sequence}"
+        writer.writerow(row)
+    csv_payload = output.getvalue().encode("utf-8")
     package = build_synthetic_r130run(
         tmp_path / "large-csv.r130run",
         payload_overrides={"measurements.csv": csv_payload},
@@ -475,8 +497,29 @@ def test_large_measurement_csv_is_streamed_without_semantic_claim(tmp_path: Path
     report = RunPackageValidator().validate(package, _control())
 
     assert report.structuralVerdict == "passed"
-    assert report.semanticVerdict == "partial"
-    assert next(item for item in report.semanticCoverage if item.area == "measurements_csv").status == "not_available"
+    assert report.semanticVerdict == "passed"
+    assert next(item for item in report.semanticCoverage if item.area == "measurements_csv").status == "covered"
+
+
+def test_measurement_row_contract_preserves_accepted_and_rejected_physical_stream_rows() -> None:
+    accepted = next(row for row in _m9a_measurement_rows("normal_final_rbd.r130run") if row["accepted"] == "true")
+    rejected = next(row for row in _m9a_measurement_rows("measurement_retained_after_attempt_rejection.r130run") if row["accepted"] == "false")
+
+    accepted_sequence = validate_measurement_row(accepted, accepted["run_id"], -1)
+    assert accepted_sequence == int(accepted["measurement_sequence"])
+    assert validate_measurement_row(rejected, rejected["run_id"], -1) == int(
+        rejected["measurement_sequence"],
+    )
+
+    invalid = accepted.copy()
+    invalid["axis_synchrony"] = "unknown"
+    with pytest.raises(M9aContractError, match="measurement_axis_synchrony_invalid"):
+        validate_measurement_row(invalid, invalid["run_id"], -1)
+
+    fallback_rows = _m9a_measurement_rows("non_synchronous_xyz_rpm_fallback.r130run")
+    assert fallback_rows
+    assert all(row["axis_synchrony"] == "non_synchronous" for row in fallback_rows)
+    assert any(row["rpm_fallback_active"] == "true" for row in fallback_rows)
 
 
 def test_csv_field_within_published_one_mib_bound_is_accepted(tmp_path: Path) -> None:
@@ -506,7 +549,7 @@ def test_frozen_semantic_shape_requires_example_fields(tmp_path: Path) -> None:
 
 
 def test_frozen_plan_exact_and_rounding_values_are_checked(tmp_path: Path) -> None:
-    plan = _fixture_object("plan.rbd-rounding.example.json")
+    plan = _m9a_json_object("plan/original.json")
     targets = plan["execution_targets"]
     assert isinstance(targets, dict)
     targets["target_cycles"] = 1500
@@ -522,7 +565,7 @@ def test_frozen_plan_exact_and_rounding_values_are_checked(tmp_path: Path) -> No
 
 
 def test_frozen_plan_rejects_non_finite_decimal_strings_as_semantic_finding(tmp_path: Path) -> None:
-    plan = _fixture_object("plan.rbd-rounding.example.json")
+    plan = _m9a_json_object("plan/original.json")
     source_values = plan["source_values"]
     requirements = plan["methodical_requirements"]
     assert isinstance(source_values, dict)
@@ -557,7 +600,7 @@ def test_frozen_plan_rejects_non_finite_decimal_strings_as_semantic_finding(tmp_
     ],
 )
 def test_frozen_plan_bounds_every_decimal_string_before_arithmetic(tmp_path: Path, field: str) -> None:
-    plan = _fixture_object("plan.rbd-rounding.example.json")
+    plan = _m9a_json_object("plan/original.json")
     _set_nested_value(plan, field, "1e999999999")
     package = build_synthetic_r130run(
         tmp_path / "unbounded-decimal-plan.r130run",
@@ -572,22 +615,21 @@ def test_frozen_plan_bounds_every_decimal_string_before_arithmetic(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    ("path", "fixture_name", "mutated_field"),
+    ("path", "mutated_field", "replacement"),
     [
-        ("provenance.json", "provenance.example.json", "stand.stand_spec_sha256"),
-        ("accepted-summary.json", "accepted-projection.example.json", "points.0.measurement_id"),
-        ("inspections.json", "inspection.example.json", "inspection_id"),
+        ("provenance.json", "provenance.stand_configuration_sha256", "invalid"),
+        ("accepted-summary.json", "accepted_measurement_count", -1),
+        ("inspections.json", "inspections.0.inspection_id", ""),
     ],
 )
-def test_frozen_semantic_identity_and_hash_values_are_checked(
+def test_m9a_semantic_identity_hash_and_counts_are_checked(
     tmp_path: Path,
     path: str,
-    fixture_name: str,
     mutated_field: str,
+    replacement: JsonValue,
 ) -> None:
-    value = _fixture_object(fixture_name)
-    _set_nested_value(value, mutated_field, "invalid")
-    payload: JsonValue = [value] if path == "inspections.json" else value
+    payload = _m9a_json_object(path)
+    _set_nested_value(payload, mutated_field, replacement)
     package = build_synthetic_r130run(
         tmp_path / "invalid-semantic-value.r130run",
         payload_overrides={path: json.dumps(payload, ensure_ascii=False).encode("utf-8")},
@@ -600,7 +642,7 @@ def test_frozen_semantic_identity_and_hash_values_are_checked(
 
 
 def test_event_payload_hash_is_checked(tmp_path: Path) -> None:
-    event = _fixture_object("event.example.json")
+    event = _m9a_jsonl_object("events.jsonl")
     event["payload_sha256"] = "0" * 64
     package = build_synthetic_r130run(
         tmp_path / "invalid-event-hash.r130run",
@@ -613,28 +655,26 @@ def test_event_payload_hash_is_checked(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("fixture_name", "path", "field", "value", "container"),
+    ("path", "field", "value", "jsonl"),
     [
-        ("plan.rbd-rounding.example.json", "plan/original.json", "plan_id", "not-a-uuid", "object"),
-        ("plan.rbd-rounding.example.json", "plan/original.json", "source_values.nominal_rpm", "zero", "object"),
-        ("event.example.json", "events.jsonl", "actor_json", 42, "jsonl"),
-        ("provenance.example.json", "provenance.json", "producer.git_commit", "short", "object"),
-        ("inspection.example.json", "inspections.json", "trip_index", -1, "array"),
+        ("plan/original.json", "plan_id", "", False),
+        ("plan/original.json", "source_values.nominal_rpm", "zero", False),
+        ("events.jsonl", "actor_json", 42, True),
+        ("provenance.json", "provenance.database_schema_version", -1, False),
+        ("inspections.json", "inspections.0.trip_index", -1, False),
     ],
 )
-def test_frozen_semantic_profiles_reject_invalid_identity_shape_and_values(
+def test_m9a_semantic_profiles_reject_invalid_identity_shape_and_values(
     tmp_path: Path,
-    fixture_name: str,
     path: str,
     field: str,
     value: JsonValue,
-    container: str,
+    jsonl: bool,
 ) -> None:
-    payload = _fixture_object(fixture_name)
+    payload = _m9a_jsonl_object(path) if jsonl else _m9a_json_object(path)
     _set_nested_value(payload, field, value)
-    document: JsonValue = [payload] if container == "array" else payload
-    encoded = json.dumps(document, ensure_ascii=False).encode("utf-8")
-    if container == "jsonl":
+    encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    if jsonl:
         encoded += b"\n"
     package = build_synthetic_r130run(
         tmp_path / "semantic-profile.r130run",
@@ -719,7 +759,9 @@ def test_manifest_rejects_non_ascii_producer_projection(tmp_path: Path) -> None:
     ("field", "value", "expected_code"),
     [
         ("row_count", -1, "manifest_row_count"),
+        ("row_count", 9_007_199_254_740_992, "manifest_row_count"),
         ("size", -1, "manifest_size"),
+        ("size", 9_007_199_254_740_992, "manifest_size"),
         ("media_type", "", "string_invalid"),
     ],
 )
@@ -796,20 +838,84 @@ def test_manifest_contract_rejects_invalid_identity_and_inventory_cases(
     assert report.findings[0].code == expected_code
 
 
-def test_diagnostic_partial_package_kind_is_reported_without_import_claim(tmp_path: Path) -> None:
-    def diagnostic_partial(manifest: dict[str, JsonValue]) -> None:
-        manifest["package_kind"] = "diagnostic_partial"
+def test_diagnostic_partial_package_kind_is_reported_without_import_claim() -> None:
+    package = _m9a_package("diagnostic_partial.r130run")
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert report.semanticVerdict == "passed"
+    assert report.packageKind == "diagnostic_partial"
+
+
+def test_diagnostic_partial_rejects_malformed_optional_finished_timestamp(tmp_path: Path) -> None:
+    base = build_synthetic_r130run(tmp_path / "base-partial.r130run")
+    with ZipFile(base) as archive:
+        summary = TypeAdapter(dict[str, JsonValue]).validate_json(archive.read("run-summary.json"))
+    summary["package_kind"] = "diagnostic_partial"
+    summary["partial_reasons"] = ["diagnostic"]
+    summary["resume_available"] = False
+    summary["finished_at_utc"] = "2026-08-29T12:00:00.12Z"
 
     package = build_synthetic_r130run(
-        tmp_path / "diagnostic-partial.r130run",
-        manifest_mutator=diagnostic_partial,
+        tmp_path / "invalid-partial-finished-at.r130run",
+        payload_overrides={
+            "run-summary.json": json.dumps(summary, ensure_ascii=False).encode("utf-8") + b"\n",
+        },
+        manifest_mutator=lambda manifest: manifest.update({"package_kind": "diagnostic_partial"}),
     )
 
     report = RunPackageValidator().validate(package, _control())
 
     assert report.structuralVerdict == "passed"
-    assert report.semanticVerdict == "partial"
-    assert report.packageKind == "diagnostic_partial"
+    assert any(finding.code == "semantic_value_mismatch" for finding in report.findings), report.findings
+
+
+def test_plan_revision_rejects_values_outside_javascript_safe_integer(tmp_path: Path) -> None:
+    base = build_synthetic_r130run(tmp_path / "base-plan.r130run")
+    with ZipFile(base) as archive:
+        plan = TypeAdapter(dict[str, JsonValue]).validate_json(archive.read("plan/original.json"))
+    plan["plan_revision"] = 9_007_199_254_740_992
+    package = build_synthetic_r130run(
+        tmp_path / "unsafe-plan-revision.r130run",
+        payload_overrides={"plan/original.json": json.dumps(plan).encode("utf-8")},
+    )
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert any(finding.code == "semantic_value_mismatch" for finding in report.findings)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_code"),
+    [
+        ("technical_status", None, "semantic_value_mismatch"),
+        ("finished_at_utc", None, "semantic_value_mismatch"),
+        ("started_at_utc", "2026-08-29T12:00:00.12Z", "semantic_shape_mismatch"),
+        ("partial_reasons", ["reason"] * 65, "semantic_shape_mismatch"),
+    ],
+)
+def test_final_summary_requires_terminal_values_and_exact_source_timestamp(
+    tmp_path: Path,
+    field: str,
+    value: JsonValue,
+    expected_code: str,
+) -> None:
+    summary = _m9a_json_object("run-summary.json")
+    summary[field] = value
+    package = build_synthetic_r130run(
+        tmp_path / "invalid-final-summary.r130run",
+        payload_overrides={
+            "run-summary.json": json.dumps(summary, ensure_ascii=False).encode("utf-8") + b"\n",
+        },
+    )
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert report.semanticVerdict == "failed"
+    assert any(item.code == expected_code for item in report.findings)
 
 
 @pytest.mark.parametrize(
@@ -839,7 +945,9 @@ def test_covered_semantic_payloads_require_frozen_shape(tmp_path: Path, path: st
 
 
 def test_cross_file_run_identity_mismatch_is_semantic_failure(tmp_path: Path) -> None:
-    wrong_plan = b'{"schema_version":"r130sh.run-plan.v1","run_id":"8ab377f2-cfd8-4983-86ea-25f5d0171bd7"}\n'
+    wrong_plan_value = _m9a_json_object("plan/original.json")
+    wrong_plan_value["run_id"] = "different-run"
+    wrong_plan = json.dumps(wrong_plan_value, ensure_ascii=False).encode("utf-8") + b"\n"
     package = build_synthetic_r130run(
         tmp_path / "wrong-run.r130run",
         payload_overrides={"plan/original.json": wrong_plan},
@@ -857,9 +965,32 @@ def _entries(package: Path) -> list[tuple[str, bytes]]:
         return [(info.filename, archive.read(info)) for info in archive.infolist()]
 
 
-def _fixture_object(name: str) -> dict[str, JsonValue]:
+def _m9a_package(name: str) -> Path:
     repository_root = Path(__file__).resolve().parents[4]
-    return TypeAdapter(dict[str, JsonValue]).validate_json((repository_root / "fixtures/contracts/r130run/v1" / name).read_bytes())
+    return repository_root / "fixtures/contracts/r130run/v1/m9a/packages" / name
+
+
+def _m9a_json_object(path: str) -> dict[str, JsonValue]:
+    return _m9a_json_object_from("normal_final_rbd.r130run", path)
+
+
+def _m9a_json_object_from(package_name: str, path: str) -> dict[str, JsonValue]:
+    with ZipFile(_m9a_package(package_name)) as archive:
+        return TypeAdapter(dict[str, JsonValue]).validate_json(archive.read(path))
+
+
+def _m9a_jsonl_object(path: str) -> dict[str, JsonValue]:
+    with ZipFile(_m9a_package("normal_final_rbd.r130run")) as archive:
+        return TypeAdapter(dict[str, JsonValue]).validate_json(archive.read(path).splitlines()[0])
+
+
+def _m9a_measurement_rows(package_name: str) -> list[dict[str, str]]:
+    with (
+        ZipFile(_m9a_package(package_name)) as archive,
+        archive.open("measurements.csv") as raw,
+        io.TextIOWrapper(raw, encoding="utf-8") as text,
+    ):
+        return list(csv.DictReader(text))
 
 
 def _set_nested_value(root: dict[str, JsonValue], dotted_path: str, value: JsonValue) -> None:
