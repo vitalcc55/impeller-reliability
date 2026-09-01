@@ -602,8 +602,9 @@ def validate_dossier_evidence(
                CASE WHEN typeof(payload_json)='text' AND length(CAST(payload_json AS BLOB)) <= ? THEN payload_json END
         FROM project_audit_events
         WHERE event_type NOT IN ('project.created', 'project.metadata_updated')
-          AND event_type NOT LIKE 'case_document.%'
-          AND event_type NOT GLOB 'r130sh_*'
+              AND event_type NOT LIKE 'case_document.%'
+              AND event_type NOT GLOB 'r130sh_*'
+              AND event_type NOT GLOB 'reliability_*'
         ORDER BY sequence
         """,
         (MAX_DOSSIER_AUDIT_PAYLOAD_BYTES,),

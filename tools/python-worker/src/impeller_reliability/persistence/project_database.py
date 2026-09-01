@@ -22,6 +22,7 @@ from impeller_reliability.persistence.project_schema import (
     validate_published_schema,
 )
 from impeller_reliability.persistence.r130sh_sources import validate_r130sh_source_evidence
+from impeller_reliability.persistence.reliability_domain import validate_reliability_evidence
 from impeller_reliability.persistence.sqlite_deadline import sqlite_deadline_guard
 from impeller_reliability.persistence.timestamps import utc_now
 from impeller_reliability.worker.deadline import RequestDeadline
@@ -379,6 +380,7 @@ def _validate_open_connection_identity(
     validate_dossier_evidence(connection, manifest.projectId, deadline)
     validate_case_document_evidence(connection, deadline)
     validate_r130sh_source_evidence(connection, deadline)
+    validate_reliability_evidence(connection, deadline)
 
 
 def validate_project_database(
@@ -409,6 +411,7 @@ def validate_project_database(
     validate_dossier_evidence(connection, manifest.projectId, deadline)
     validate_case_document_evidence(connection, deadline)
     validate_r130sh_source_evidence(connection, deadline)
+    validate_reliability_evidence(connection, deadline)
 
 
 def quick_check_with_deadline(

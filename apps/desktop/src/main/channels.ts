@@ -55,4 +55,6 @@ export const IPC_CHANNELS = {
   importedRunGetResolutionState: 'impeller:imported-run:get-resolution-state',
   importedRunBindSpecimen: 'impeller:imported-run:bind-specimen',
   importedRunApplyEnrichmentResolution: 'impeller:imported-run:apply-enrichment-resolution',
+  reliabilityExecutionMaterialize: 'impeller:reliability-execution:materialize',
+  reliabilityExecutionListByWheel: 'impeller:reliability-execution:list-by-wheel',
 } as const;

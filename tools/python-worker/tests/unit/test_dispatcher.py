@@ -107,6 +107,8 @@ def test_handshake_reports_current_capabilities_and_revision(tmp_path: Path) -> 
         "importedRun.getResolutionState",
         "importedRun.bindSpecimen",
         "importedRun.applyEnrichmentResolution",
+        "reliabilityExecution.materialize",
+        "reliabilityExecution.listByWheel",
     ]
     assert response.result.supportedRunPackageSchemas == ["r130sh.run-package.v1"]
     assert response.result.supportedPlanSchemas == []
@@ -262,7 +264,67 @@ def test_dispatcher_covers_production_import_read_binding_and_resolution_operati
         9,
     )
     assert len(OBJECT_LIST_ADAPTER.validate_python(resolved["enrichmentResolutions"])) == 1
-    assert _dispatch(dispatcher, "runPackageImport.discard", {"jobId": job_id}, 10) == {
+    wheel = _dispatch(
+        dispatcher,
+        "wheelModel.create",
+        {
+            "wheelModelId": str(uuid4()),
+            "fullName": "M04A wheel",
+            "designation": "",
+            "nominalDiameterMm": None,
+            "nominalSpeedRpm": None,
+            "bladeCount": None,
+            "geometryDescription": "",
+            "compositionDescription": "",
+            "materialDescription": "",
+            "notes": "",
+        },
+        10,
+    )
+    specimen = _dispatch(
+        dispatcher,
+        "specimen.create",
+        {
+            "specimenId": str(uuid4()),
+            "wheelModelId": wheel["wheelModelId"],
+            "identificationNumber": "M04A-dispatcher",
+            "batchNumber": "",
+            "marking": "",
+            "manufacturedOn": None,
+            "receivedOn": None,
+            "workingDiameterMm": None,
+            "initialConditionNotes": "",
+            "notes": "",
+        },
+        11,
+    )
+    _dispatch(
+        dispatcher,
+        "importedRun.bindSpecimen",
+        {
+            "sourceSpecimenId": source_specimen_id,
+            "localSpecimenId": specimen["specimenId"],
+            "expectedRevision": 1,
+            "actor": "local_user",
+            "reason": "Явная связь для M04A",
+        },
+        12,
+    )
+    execution = _dispatch(
+        dispatcher,
+        "reliabilityExecution.materialize",
+        {"localImportId": local_import_id},
+        13,
+    )
+    assert execution["method"] == "rbd"
+    listed_executions = _dispatch(
+        dispatcher,
+        "reliabilityExecution.listByWheel",
+        {"wheelModelId": wheel["wheelModelId"]},
+        14,
+    )
+    assert OBJECT_LIST_ADAPTER.validate_python(listed_executions["items"])[0] == execution
+    assert _dispatch(dispatcher, "runPackageImport.discard", {"jobId": job_id}, 15) == {
         "jobId": job_id,
         "discarded": True,
     }

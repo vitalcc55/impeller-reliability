@@ -36,6 +36,7 @@ from impeller_reliability.protocol.envelopes import (
     CustomerGetResult,
     CustomerProfileResult,
     CustomerUpsertRequest,
+    FailureObservationResult,
     HandshakeRequest,
     HandshakeResult,
     ImportedRunApplyEnrichmentResolutionRequest,
@@ -57,6 +58,10 @@ from impeller_reliability.protocol.envelopes import (
     ProjectOpenRequest,
     ProjectOverviewResult,
     ProjectUpdateMetadataRequest,
+    ReliabilityExecutionListByWheelRequest,
+    ReliabilityExecutionListResult,
+    ReliabilityExecutionMaterializeRequest,
+    ReliabilityExecutionResult,
     RequestEnvelope,
     RunPackageImportCancelRequest,
     RunPackageImportDiscardRequest,
@@ -142,6 +147,8 @@ CAPABILITIES: list[Operation] = [
     "importedRun.getResolutionState",
     "importedRun.bindSpecimen",
     "importedRun.applyEnrichmentResolution",
+    "reliabilityExecution.materialize",
+    "reliabilityExecution.listByWheel",
 ]
 
 
@@ -243,6 +250,7 @@ class Dispatcher:
             "importedRun.get",
             "importedRun.verifySource",
             "importedRun.getResolutionState",
+            "reliabilityExecution.listByWheel",
         }:
             from impeller_reliability.persistence.project_errors import ProjectOperationError
 
@@ -536,6 +544,31 @@ class Dispatcher:
                         ),
                     ),
                 )
+            case ReliabilityExecutionMaterializeRequest():
+                return SuccessResponse[ReliabilityExecutionResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._reliability_execution_result(
+                        self._projects.materialize_reliability_execution(
+                            request.payload.localImportId,
+                            active_deadline,
+                        ),
+                    ),
+                )
+            case ReliabilityExecutionListByWheelRequest():
+                return SuccessResponse[ReliabilityExecutionListResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=ReliabilityExecutionListResult(
+                        items=[
+                            self._reliability_execution_result(item)
+                            for item in self._projects.list_reliability_executions(
+                                request.payload.wheelModelId,
+                                active_deadline,
+                            )
+                        ],
+                    ),
+                )
 
     def close(self) -> None:
         if not self._run_package_jobs_shutdown:
@@ -696,6 +729,40 @@ class Dispatcher:
             requestId=request_id,
             revision=revision,
             result=Dispatcher._case_document_result(document),
+        )
+
+    @staticmethod
+    def _reliability_execution_result(execution: object) -> ReliabilityExecutionResult:
+        from impeller_reliability.persistence.reliability_domain import TestExecution
+
+        if not isinstance(execution, TestExecution):
+            raise AssertionError("invalid_reliability_execution")
+        return ReliabilityExecutionResult(
+            executionId=execution.execution_id,
+            localImportId=execution.local_import_id,
+            localSpecimenId=execution.local_specimen_id,
+            sourceSpecimenId=execution.source_specimen_id,
+            method=execution.method,
+            lifecycleStatus=execution.lifecycle_status,
+            plannedParametersSnapshot=execution.planned_parameters_snapshot,
+            resultSummary=execution.result_summary,
+            sourceOuterPackageSha256=execution.source_outer_package_sha256,
+            materializedAtUtc=execution.materialized_at_utc,
+            failureObservations=[
+                FailureObservationResult(
+                    failureId=item.failure_id,
+                    failureType=item.failure_type,
+                    subjectKind=item.subject_kind,
+                    sourceEventReference=item.source_event_reference,
+                    sourceFieldReference=item.source_field_reference,
+                    cyclesAtFailure=item.cycles_at_failure,
+                    durationS=item.duration_s,
+                    rpm=item.rpm,
+                    vibrationSummary=item.vibration_summary,
+                    observedAtUtc=item.observed_at_utc,
+                )
+                for item in execution.failure_observations
+            ],
         )
 
     @staticmethod

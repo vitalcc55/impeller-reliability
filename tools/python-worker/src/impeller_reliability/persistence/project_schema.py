@@ -299,6 +299,94 @@ R130SH_SOURCES_RUN_INDEX_SQL: Final = "CREATE INDEX r130sh_sources_run_idx ON r1
 R130SH_PROJECTIONS_SPECIMEN_INDEX_SQL: Final = "CREATE INDEX r130sh_run_projections_specimen_idx ON r130sh_run_projections(source_specimen_id)"
 R130SH_BINDINGS_LOCAL_INDEX_SQL: Final = "CREATE INDEX r130sh_specimen_bindings_local_idx ON r130sh_specimen_bindings(local_specimen_id)"
 R130SH_RESOLUTIONS_IMPORT_INDEX_SQL: Final = "CREATE INDEX r130sh_enrichment_resolutions_import_idx ON r130sh_enrichment_resolutions(local_import_id)"
+RELIABILITY_TEST_EXECUTIONS_TABLE_SQL: Final = """
+CREATE TABLE reliability_test_executions (
+    execution_id TEXT PRIMARY KEY,
+    local_import_id TEXT NOT NULL UNIQUE REFERENCES r130sh_sources(local_import_id),
+    local_specimen_id TEXT NOT NULL REFERENCES specimens(specimen_id),
+    source_specimen_id TEXT NOT NULL,
+    method TEXT NOT NULL CHECK (method IN ('rbd', 'rpt', 'pmn')),
+    lifecycle_status TEXT NOT NULL CHECK (lifecycle_status IN ('completed', 'interrupted', 'failed')),
+    planned_parameters_snapshot_json TEXT NOT NULL CHECK (json_valid(planned_parameters_snapshot_json)),
+    result_summary_json TEXT NOT NULL CHECK (json_valid(result_summary_json)),
+    source_outer_package_sha256 TEXT NOT NULL CHECK (length(source_outer_package_sha256) = 64),
+    source_payload_path TEXT NOT NULL CHECK (length(source_payload_path) BETWEEN 1 AND 512),
+    source_field_reference TEXT NOT NULL CHECK (length(source_field_reference) BETWEEN 1 AND 512),
+    materialized_at_utc TEXT NOT NULL
+)
+"""
+FAILURE_OBSERVATIONS_TABLE_SQL: Final = """
+CREATE TABLE failure_observations (
+    failure_id TEXT PRIMARY KEY,
+    execution_id TEXT NOT NULL REFERENCES reliability_test_executions(execution_id),
+    failure_type TEXT NOT NULL CHECK (failure_type IN ('specimen_outcome', 'technical_interruption')),
+    subject_kind TEXT NOT NULL CHECK (subject_kind IN ('specimen', 'equipment', 'unknown')),
+    source_event_reference TEXT NOT NULL CHECK (length(source_event_reference) BETWEEN 1 AND 512),
+    source_field_reference TEXT NOT NULL CHECK (length(source_field_reference) BETWEEN 1 AND 512),
+    cycles_at_failure INTEGER NULL CHECK (cycles_at_failure IS NULL OR cycles_at_failure >= 0),
+    duration_s TEXT NULL CHECK (duration_s IS NULL OR length(duration_s) <= 64),
+    rpm TEXT NULL CHECK (rpm IS NULL OR length(rpm) <= 64),
+    vibration_summary_json TEXT NOT NULL CHECK (json_valid(vibration_summary_json)),
+    observed_at_utc TEXT NULL,
+    source_outer_package_sha256 TEXT NOT NULL CHECK (length(source_outer_package_sha256) = 64)
+)
+"""
+RELIABILITY_DATASETS_TABLE_SQL: Final = """
+CREATE TABLE reliability_datasets (
+    dataset_id TEXT PRIMARY KEY,
+    life_metric_unit TEXT NOT NULL CHECK (life_metric_unit IN ('cycles', 'hours', 'unknown')),
+    censoring_policy TEXT NOT NULL CHECK (censoring_policy IN ('not_classified', 'explicit')),
+    created_at_utc TEXT NOT NULL
+)
+"""
+RELIABILITY_DATASET_EXECUTIONS_TABLE_SQL: Final = """
+CREATE TABLE reliability_dataset_executions (
+    dataset_id TEXT NOT NULL REFERENCES reliability_datasets(dataset_id),
+    execution_id TEXT NOT NULL REFERENCES reliability_test_executions(execution_id),
+    censoring_type TEXT NOT NULL CHECK (censoring_type IN ('not_classified', 'failure', 'right_censored', 'withdrawn', 'invalid')),
+    inclusion_reason TEXT NOT NULL CHECK (length(inclusion_reason) BETWEEN 1 AND 2000),
+    PRIMARY KEY (dataset_id, execution_id)
+)
+"""
+RELIABILITY_DATASET_OBSERVATIONS_TABLE_SQL: Final = """
+CREATE TABLE reliability_dataset_observations (
+    dataset_id TEXT NOT NULL REFERENCES reliability_datasets(dataset_id),
+    failure_id TEXT NOT NULL REFERENCES failure_observations(failure_id),
+    PRIMARY KEY (dataset_id, failure_id)
+)
+"""
+RELIABILITY_EXECUTIONS_NO_UPDATE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER reliability_test_executions_no_update BEFORE UPDATE ON reliability_test_executions BEGIN SELECT RAISE(ABORT, 'reliability_execution_immutable'); END"
+)
+RELIABILITY_EXECUTIONS_NO_DELETE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER reliability_test_executions_no_delete BEFORE DELETE ON reliability_test_executions BEGIN SELECT RAISE(ABORT, 'reliability_execution_immutable'); END"
+)
+FAILURE_OBSERVATIONS_NO_UPDATE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER failure_observations_no_update BEFORE UPDATE ON failure_observations BEGIN SELECT RAISE(ABORT, 'failure_observation_immutable'); END"
+)
+FAILURE_OBSERVATIONS_NO_DELETE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER failure_observations_no_delete BEFORE DELETE ON failure_observations BEGIN SELECT RAISE(ABORT, 'failure_observation_immutable'); END"
+)
+RELIABILITY_DATASETS_NO_UPDATE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER reliability_datasets_no_update BEFORE UPDATE ON reliability_datasets BEGIN SELECT RAISE(ABORT, 'reliability_dataset_immutable'); END"
+)
+RELIABILITY_DATASETS_NO_DELETE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER reliability_datasets_no_delete BEFORE DELETE ON reliability_datasets BEGIN SELECT RAISE(ABORT, 'reliability_dataset_immutable'); END"
+)
+RELIABILITY_DATASET_EXECUTIONS_NO_UPDATE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER reliability_dataset_executions_no_update BEFORE UPDATE ON reliability_dataset_executions BEGIN SELECT RAISE(ABORT, 'reliability_dataset_execution_immutable'); END"
+)
+RELIABILITY_DATASET_EXECUTIONS_NO_DELETE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER reliability_dataset_executions_no_delete BEFORE DELETE ON reliability_dataset_executions BEGIN SELECT RAISE(ABORT, 'reliability_dataset_execution_immutable'); END"
+)
+RELIABILITY_DATASET_OBSERVATIONS_NO_UPDATE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER reliability_dataset_observations_no_update BEFORE UPDATE ON reliability_dataset_observations BEGIN SELECT RAISE(ABORT, 'reliability_dataset_observation_immutable'); END"
+)
+RELIABILITY_DATASET_OBSERVATIONS_NO_DELETE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER reliability_dataset_observations_no_delete BEFORE DELETE ON reliability_dataset_observations BEGIN SELECT RAISE(ABORT, 'reliability_dataset_observation_immutable'); END"
+)
+RELIABILITY_EXECUTIONS_SPECIMEN_INDEX_SQL: Final = "CREATE INDEX reliability_test_executions_specimen_idx ON reliability_test_executions(local_specimen_id)"
+FAILURE_OBSERVATIONS_EXECUTION_INDEX_SQL: Final = "CREATE INDEX failure_observations_execution_idx ON failure_observations(execution_id)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,6 +454,23 @@ SCHEMA_V1_OBJECTS: Final = (
     SchemaObject("index", "r130sh_run_projections_specimen_idx", R130SH_PROJECTIONS_SPECIMEN_INDEX_SQL),
     SchemaObject("index", "r130sh_specimen_bindings_local_idx", R130SH_BINDINGS_LOCAL_INDEX_SQL),
     SchemaObject("index", "r130sh_enrichment_resolutions_import_idx", R130SH_RESOLUTIONS_IMPORT_INDEX_SQL),
+    SchemaObject("table", "reliability_test_executions", RELIABILITY_TEST_EXECUTIONS_TABLE_SQL),
+    SchemaObject("table", "failure_observations", FAILURE_OBSERVATIONS_TABLE_SQL),
+    SchemaObject("table", "reliability_datasets", RELIABILITY_DATASETS_TABLE_SQL),
+    SchemaObject("table", "reliability_dataset_executions", RELIABILITY_DATASET_EXECUTIONS_TABLE_SQL),
+    SchemaObject("table", "reliability_dataset_observations", RELIABILITY_DATASET_OBSERVATIONS_TABLE_SQL),
+    SchemaObject("trigger", "reliability_test_executions_no_update", RELIABILITY_EXECUTIONS_NO_UPDATE_TRIGGER_SQL),
+    SchemaObject("trigger", "reliability_test_executions_no_delete", RELIABILITY_EXECUTIONS_NO_DELETE_TRIGGER_SQL),
+    SchemaObject("trigger", "failure_observations_no_update", FAILURE_OBSERVATIONS_NO_UPDATE_TRIGGER_SQL),
+    SchemaObject("trigger", "failure_observations_no_delete", FAILURE_OBSERVATIONS_NO_DELETE_TRIGGER_SQL),
+    SchemaObject("trigger", "reliability_datasets_no_update", RELIABILITY_DATASETS_NO_UPDATE_TRIGGER_SQL),
+    SchemaObject("trigger", "reliability_datasets_no_delete", RELIABILITY_DATASETS_NO_DELETE_TRIGGER_SQL),
+    SchemaObject("trigger", "reliability_dataset_executions_no_update", RELIABILITY_DATASET_EXECUTIONS_NO_UPDATE_TRIGGER_SQL),
+    SchemaObject("trigger", "reliability_dataset_executions_no_delete", RELIABILITY_DATASET_EXECUTIONS_NO_DELETE_TRIGGER_SQL),
+    SchemaObject("trigger", "reliability_dataset_observations_no_update", RELIABILITY_DATASET_OBSERVATIONS_NO_UPDATE_TRIGGER_SQL),
+    SchemaObject("trigger", "reliability_dataset_observations_no_delete", RELIABILITY_DATASET_OBSERVATIONS_NO_DELETE_TRIGGER_SQL),
+    SchemaObject("index", "reliability_test_executions_specimen_idx", RELIABILITY_EXECUTIONS_SPECIMEN_INDEX_SQL),
+    SchemaObject("index", "failure_observations_execution_idx", FAILURE_OBSERVATIONS_EXECUTION_INDEX_SQL),
 )
 SCHEMA_V1_CONTRACT: Final = PublishedSchemaContract(
     version=1,
@@ -562,6 +667,8 @@ def _validate_audit_stream(connection: sqlite3.Connection, deadline: RequestDead
         "r130sh_import.completed",
         "r130sh_source.specimen_bound",
         "r130sh_source.enrichment_resolution_recorded",
+        "reliability_execution.materialized",
+        "reliability_dataset.created",
     }
     rows = sqlite_query_rows_with_deadline(
         connection,

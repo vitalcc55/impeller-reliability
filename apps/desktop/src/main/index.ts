@@ -29,6 +29,7 @@ import {
   importedRunEnrichmentResolutionCommandSchema,
   importedRunIdPayloadSchema,
   importedRunResolutionStatePayloadSchema,
+  reliabilityExecutionListByWheelPayloadSchema,
   runPackageImportJobPayloadSchema,
   runPackageImportStartCommandSchema,
   runPackageValidationJobPayloadSchema,
@@ -619,6 +620,20 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
     if (!parsed.success) return validationFailure<ImportedRunDetail>();
     return runProjectOperation(workerClient, async (client) =>
       client.request('importedRun.applyEnrichmentResolution', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.reliabilityExecutionMaterialize, (_event, raw: unknown) => {
+    const parsed = importedRunIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('reliabilityExecution.materialize', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.reliabilityExecutionListByWheel, (_event, raw: unknown) => {
+    const parsed = reliabilityExecutionListByWheelPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('reliabilityExecution.listByWheel', parsed.data),
     );
   });
 }

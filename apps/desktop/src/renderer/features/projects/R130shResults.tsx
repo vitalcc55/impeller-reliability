@@ -383,6 +383,28 @@ export const R130shResults = forwardRef<R130shResultsHandle, R130shResultsProps>
       });
     };
 
+    const materializeReliabilityExecution = (): void => {
+      if (detail === null) return;
+      const operation = desktopApi.reliabilityExecution
+        .materialize(detail.summary.localImportId)
+        .then((result) => {
+          if (!result.ok) return handleError(result.error);
+          setError(null);
+          setMessage(
+            `Аналитическое исполнение ${result.result.method.toUpperCase()} подтверждено для связанного образца.`,
+          );
+        })
+        .catch(() => handleError(unavailableError()));
+      setMutationPending(true);
+      pendingRef.current = operation;
+      void operation.finally(() => {
+        if (pendingRef.current === operation) {
+          pendingRef.current = null;
+          setMutationPending(false);
+        }
+      });
+    };
+
     const resolutionTargets = buildResolutionTargets(
       project,
       detail,
@@ -662,6 +684,12 @@ export const R130shResults = forwardRef<R130shResultsHandle, R130shResultsProps>
                 onResolutionReasonChange={setResolutionReason}
                 onSaveResolution={saveResolution}
                 onVerifySource={() => requestTransition(dirty, verifySource, discardDraft)}
+                onMaterializeReliabilityExecution={() =>
+                  requestTransition(dirty, materializeReliabilityExecution, discardDraft)
+                }
+                boundSpecimenArchived={
+                  boundSpecimen !== null && boundSpecimen.archivedAtUtc !== null
+                }
                 disabled={disabled || mutationPending || importPending || startAttemptId !== null}
               />
             )}
@@ -723,6 +751,8 @@ interface RunDetailProps {
   readonly onResolutionReasonChange: (value: string) => void;
   readonly onSaveResolution: () => void;
   readonly onVerifySource: () => void;
+  readonly onMaterializeReliabilityExecution: () => void;
+  readonly boundSpecimenArchived: boolean;
   readonly disabled: boolean;
 }
 
@@ -749,6 +779,18 @@ function RunDetail(props: RunDetailProps): React.JSX.Element {
             onClick={props.onVerifySource}
           >
             Проверить источник
+          </Button>
+          <Button
+            size="compact-sm"
+            disabled={
+              props.disabled ||
+              detail.summary.sourceIntegrity !== 'verified' ||
+              detail.summary.localSpecimenId === null ||
+              props.boundSpecimenArchived
+            }
+            onClick={props.onMaterializeReliabilityExecution}
+          >
+            Создать исполнение M04A
           </Button>
         </div>
       </header>

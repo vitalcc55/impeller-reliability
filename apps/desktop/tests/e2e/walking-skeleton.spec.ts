@@ -52,6 +52,7 @@ test('renderer reflects worker failure and controlled restart through the narrow
       'runPackageValidation',
       'runPackageImport',
       'importedRun',
+      'reliabilityExecution',
     ]);
     expect(
       await page.evaluate(() => {
