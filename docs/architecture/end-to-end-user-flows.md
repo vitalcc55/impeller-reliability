@@ -86,7 +86,16 @@ Worker -> Project: "binding mutation или append-only provenance; source uncha
 User -> Renderer: "Закрыть/открыть дело"
 Project -> Renderer: "тот же source/archive/provenance; broken archive локализован"
 
-User -> Renderer: "Выбрать значения и выполнить расчёты (M04+)"
+User -> Renderer: "Интерпретировать исполнение (M04B)"
+Renderer -> Worker: "classification + endpoint/life metric + document/evidence + expected head"
+Worker -> Project: "immutable ReliabilityObservation version + audit"
+User -> Renderer: "Собрать выборку"
+Renderer -> Worker: "exact observation versions + include/exclude decisions"
+Worker -> Project: "policy eligibility + immutable ReliabilityDataset version + audit"
+User -> Renderer: "Исправить решение / закрыть и открыть дело"
+Project -> Renderer: "предыдущая и новая версии, тот же frozen provenance"
+
+User -> Renderer: "Выбрать значения и выполнить расчёты (M04C+)"
 Renderer -> Worker: "r130sh_source + analyst_enrichment selection"
 Worker -> Project: "AnalysisInputSnapshot + CalculationSnapshot"
 

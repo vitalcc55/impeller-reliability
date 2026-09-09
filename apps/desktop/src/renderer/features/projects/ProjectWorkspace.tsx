@@ -11,6 +11,10 @@ import type {
 
 import { AnalystDossier, type AnalystDossierHandle, type DossierSection } from './AnalystDossier';
 import { R130shResults, type R130shResultsHandle } from './R130shResults';
+import {
+  ReliabilityPreparation,
+  type ReliabilityPreparationHandle,
+} from './ReliabilityPreparation';
 
 const newProjectDraft: ProjectDraft = {
   name: 'Новый проект',
@@ -30,7 +34,7 @@ interface ProjectWorkspaceProps {
   readonly workerReady: boolean;
 }
 
-type WorkspaceSection = 'overview' | 'r130sh-results' | DossierSection;
+type WorkspaceSection = 'overview' | 'r130sh-results' | 'reliability' | DossierSection;
 
 export interface ProjectWorkspaceHandle {
   hasDirtyDraft(): boolean;
@@ -55,6 +59,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     const [dossierPending, setDossierPending] = useState(false);
     const [resultsDirty, setResultsDirty] = useState(false);
     const [resultsPending, setResultsPending] = useState(false);
+    const [reliabilityDirty, setReliabilityDirty] = useState(false);
+    const [reliabilityPending, setReliabilityPending] = useState(false);
     const [pendingTransition, setPendingTransition] = useState<{
       readonly action: () => void;
       readonly discard: () => void;
@@ -67,12 +73,15 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
         ? metadataDirty
         : section === 'r130sh-results'
           ? resultsDirty
-          : dossierDirty);
+          : section === 'reliability'
+            ? reliabilityDirty
+            : dossierDirty);
     const dirtyRef = useRef(dirty);
     const pendingSaveRef = useRef<Promise<void> | null>(null);
     const dossierRef = useRef<AnalystDossierHandle>(null);
     const resultsRef = useRef<R130shResultsHandle>(null);
-    const sectionPending = dossierPending || resultsPending;
+    const reliabilityRef = useRef<ReliabilityPreparationHandle>(null);
+    const sectionPending = dossierPending || resultsPending || reliabilityPending;
     const detached = project !== null && (!workerReady || reattachBlocked);
     useEffect(() => {
       dirtyRef.current = dirty;
@@ -126,6 +135,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
       setDossierPending(false);
       setResultsDirty(false);
       setResultsPending(false);
+      setReliabilityDirty(false);
+      setReliabilityPending(false);
       setPendingTransition(null);
       setMessage(notice);
       void refreshRecent();
@@ -199,6 +210,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
         }
         const result = await desktopApi.project.close();
         if (result.ok) {
+          dirtyRef.current = false;
           setProject(null);
           setDraft(newProjectDraft);
           setSection('overview');
@@ -206,6 +218,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           setDossierPending(false);
           setResultsDirty(false);
           setResultsPending(false);
+          setReliabilityDirty(false);
+          setReliabilityPending(false);
           setPendingTransition(null);
           setConfirmClose(false);
           setMessage(
@@ -283,8 +297,12 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           return false;
         }
         if (section === 'r130sh-results') await resultsRef.current?.verifyAfterReattach();
+        if (section === 'reliability') {
+          const reconciled = await reliabilityRef.current?.verifyAfterReattach();
+          if (reconciled === false) throw new Error('reliability_reattach_failed');
+        }
         const dossierReattach =
-          section === 'overview' || section === 'r130sh-results'
+          section === 'overview' || section === 'r130sh-results' || section === 'reliability'
             ? { status: 'reconciled' as const }
             : await dossierRef.current?.verifyAfterReattach();
         if (dossierReattach?.status !== 'reconciled') {
@@ -333,6 +351,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           if (pendingSave !== null) await pendingSave;
           await dossierRef.current?.waitForPendingSave();
           await resultsRef.current?.waitForPendingSave();
+          await reliabilityRef.current?.waitForPendingSave();
           return dirtyRef.current;
         },
         reattachAfterWorkerRestart,
@@ -581,6 +600,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
             [
               ['overview', 'Обзор'],
               ['r130sh-results', 'Результаты R130SH'],
+              ['reliability', 'Данные надёжности'],
               ['customer', 'Заказчик'],
               ['wheels', 'Модели колёс'],
               ['specimens', 'Образцы'],
@@ -604,6 +624,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                       status: project.status,
                     });
                   } else if (section === 'r130sh-results') resultsRef.current?.discardDraft();
+                  else if (section === 'reliability') reliabilityRef.current?.discardDraft();
                   else dossierRef.current?.discardActiveDraft();
                 };
                 if (dirty)
@@ -764,6 +785,14 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                 });
               else action();
             }}
+          />
+        ) : section === 'reliability' && desktopApi !== null ? (
+          <ReliabilityPreparation
+            ref={reliabilityRef}
+            desktopApi={desktopApi}
+            disabled={detached || busy !== null || pendingTransition !== null}
+            onDirtyChange={setReliabilityDirty}
+            onPendingChange={setReliabilityPending}
           />
         ) : desktopApi === null || !isDossierSection(section) ? null : (
           <AnalystDossier

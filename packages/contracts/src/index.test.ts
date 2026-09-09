@@ -13,6 +13,9 @@ import {
   projectIdSchema,
   projectBackupResultSchema,
   projectOverviewSchema,
+  reliabilityDatasetCreateVersionCommandSchema,
+  reliabilityExecutionPageSchema,
+  reliabilityObservationCreateVersionCommandSchema,
   runIdSchema,
   runPackageIdSchema,
   runPackageValidationJobSchema,
@@ -55,6 +58,82 @@ describe('worker contracts', () => {
         revision: 0,
         deadlineMs: 1_000,
         payload: {},
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps M04B inputs bounded and explicit across the typed boundary', () => {
+    const entity = '8ab377f2-cfd8-4983-86ea-25f5d0171bd7';
+    const observation = {
+      observationId: entity,
+      observationVersionId: '40f4acbf-5f06-4d75-a65c-382141d785aa',
+      executionId: 'ec7cc676-e40d-4ad7-b038-83e0035dc212',
+      expectedPreviousVersionId: null,
+      classification: 'failure',
+      endpointKind: 'unavailable',
+      metricKind: null,
+      metricUnit: null,
+      metricOrigin: null,
+      lowerValue: null,
+      upperValue: null,
+      originBasis: 'Начало не установлено',
+      endpointBasis: 'Момент отказа неизвестен',
+      documentId: '31871fa4-2088-4f0d-bcb4-dd5454294edc',
+      documentLocator: 'Заключение 1',
+      failureIds: [],
+      actor: 'local_user',
+      reason: 'Отказ подтверждён без точной наработки',
+    } as const;
+    expect(reliabilityObservationCreateVersionCommandSchema.parse(observation)).toEqual(
+      observation,
+    );
+    expect(
+      reliabilityObservationCreateVersionCommandSchema.safeParse({
+        ...observation,
+        acceptedElapsedS: '12.5',
+      }).success,
+    ).toBe(false);
+    expect(
+      reliabilityObservationCreateVersionCommandSchema.safeParse({
+        ...observation,
+        metricKind: 'rbd_steady_rotation_time',
+        metricUnit: 'hours',
+        metricOrigin: 'source_measured',
+        lowerValue: '1',
+      }).success,
+    ).toBe(false);
+    expect(
+      reliabilityExecutionPageSchema.safeParse({
+        items: Array.from({ length: 51 }, () => ({})),
+        nextCursor: null,
+      }).success,
+    ).toBe(false);
+    const decision = {
+      observationVersionId: observation.observationVersionId,
+      decision: 'excluded' as const,
+      reason: 'Нет точной наработки',
+    };
+    const dataset = {
+      datasetId: entity,
+      datasetVersionId: 'fa50e13e-2944-4874-9cf7-b4747d57ae09',
+      wheelModelId: '28723636-fdd5-47bd-b0e2-e02c21f36f2e',
+      expectedPreviousVersionId: null,
+      title: 'Выборка РБД',
+      method: 'rbd',
+      metricKind: 'rbd_steady_rotation_time',
+      metricUnit: 'hours',
+      populationBasis: 'Одна модель колеса',
+      methodologyBasis: 'ПМИ Р130У',
+      comparabilityBasis: 'Отобрано инженером',
+      decisions: [decision],
+      actor: 'local_user',
+      reason: 'Первая версия',
+    } as const;
+    expect(reliabilityDatasetCreateVersionCommandSchema.parse(dataset)).toEqual(dataset);
+    expect(
+      reliabilityDatasetCreateVersionCommandSchema.safeParse({
+        ...dataset,
+        decisions: Array.from({ length: 101 }, () => decision),
       }).success,
     ).toBe(false);
   });

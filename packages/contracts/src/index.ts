@@ -54,7 +54,14 @@ export const workerOperationSchema = z.enum([
   'importedRun.bindSpecimen',
   'importedRun.applyEnrichmentResolution',
   'reliabilityExecution.materialize',
-  'reliabilityExecution.listByWheel',
+  'reliabilityExecution.listPage',
+  'reliabilityExecution.getDetail',
+  'reliabilityObservation.listVersions',
+  'reliabilityObservation.getVersion',
+  'reliabilityObservation.createVersion',
+  'reliabilityDataset.listPage',
+  'reliabilityDataset.getVersion',
+  'reliabilityDataset.createVersion',
 ]);
 
 export type WorkerOperation = z.infer<typeof workerOperationSchema>;
@@ -841,8 +848,85 @@ export const specimenBindingSchema = z
 export const importedRunVerifyResultSchema = z
   .object({ localImportId: entityIdSchema, sourceIntegrity: importedRunSourceIntegritySchema })
   .strict();
-export const reliabilityExecutionListByWheelPayloadSchema = z
-  .object({ wheelModelId: entityIdSchema })
+export const reliabilityPagePayloadSchema = z
+  .object({
+    wheelModelId: entityIdSchema,
+    cursor: z.string().min(1).max(512).nullable().default(null),
+    limit: z.number().int().min(1).max(50).default(25),
+  })
+  .strict();
+export const reliabilityExecutionIdPayloadSchema = z
+  .object({ executionId: entityIdSchema })
+  .strict();
+export const reliabilityObservationVersionIdPayloadSchema = z
+  .object({ observationVersionId: entityIdSchema })
+  .strict();
+export const reliabilityDatasetVersionIdPayloadSchema = z
+  .object({ datasetVersionId: entityIdSchema })
+  .strict();
+export const reliabilityClassificationSchema = z.enum([
+  'failure',
+  'right_censored',
+  'withdrawn',
+  'invalid',
+]);
+export const reliabilityEndpointKindSchema = z.enum([
+  'exact',
+  'right_bound',
+  'interval',
+  'unavailable',
+]);
+export const reliabilityMetricKindSchema = z.enum([
+  'rbd_steady_rotation_time',
+  'rpt_start_stop_cycles',
+]);
+export const reliabilityMetricUnitSchema = z.enum(['hours', 'count']);
+export const reliabilityObservationCreateVersionCommandSchema = z
+  .object({
+    observationId: entityIdSchema,
+    observationVersionId: entityIdSchema,
+    executionId: entityIdSchema,
+    expectedPreviousVersionId: entityIdSchema.nullable(),
+    classification: reliabilityClassificationSchema,
+    endpointKind: reliabilityEndpointKindSchema,
+    metricKind: reliabilityMetricKindSchema.nullable(),
+    metricUnit: reliabilityMetricUnitSchema.nullable(),
+    metricOrigin: z.literal('analyst_provided').nullable(),
+    lowerValue: z.string().max(64).nullable(),
+    upperValue: z.string().max(64).nullable(),
+    originBasis: z.string().min(1).max(1_000),
+    endpointBasis: z.string().min(1).max(1_000),
+    documentId: entityIdSchema,
+    documentLocator: z.string().min(1).max(1_000),
+    failureIds: z.array(entityIdSchema).max(64),
+    actor: z.string().min(1).max(200),
+    reason: z.string().min(1).max(2_000),
+  })
+  .strict();
+export const reliabilityDatasetDecisionSchema = z
+  .object({
+    observationVersionId: entityIdSchema,
+    decision: z.enum(['included', 'excluded']),
+    reason: z.string().min(1).max(2_000),
+  })
+  .strict();
+export const reliabilityDatasetCreateVersionCommandSchema = z
+  .object({
+    datasetId: entityIdSchema,
+    datasetVersionId: entityIdSchema,
+    wheelModelId: entityIdSchema,
+    expectedPreviousVersionId: entityIdSchema.nullable(),
+    title: z.string().min(1).max(200),
+    method: z.enum(['rbd', 'rpt']),
+    metricKind: reliabilityMetricKindSchema,
+    metricUnit: reliabilityMetricUnitSchema,
+    populationBasis: z.string().min(1).max(2_000),
+    methodologyBasis: z.string().min(1).max(2_000),
+    comparabilityBasis: z.string().min(1).max(2_000),
+    decisions: z.array(reliabilityDatasetDecisionSchema).min(1).max(100),
+    actor: z.string().min(1).max(200),
+    reason: z.string().min(1).max(2_000),
+  })
   .strict();
 export const failureObservationSchema = z
   .object({
@@ -856,6 +940,7 @@ export const failureObservationSchema = z
     rpm: z.string().max(64).nullable(),
     vibrationSummary: z.record(z.string(), z.unknown()),
     observedAtUtc: sourceUtcTimestampSchema.nullable(),
+    sourceOuterPackageSha256: z.string().regex(/^[0-9a-f]{64}$/u),
   })
   .strict();
 export const reliabilityExecutionSchema = z
@@ -863,7 +948,11 @@ export const reliabilityExecutionSchema = z
     executionId: entityIdSchema,
     localImportId: entityIdSchema,
     localSpecimenId: entityIdSchema,
+    wheelModelId: entityIdSchema,
     sourceSpecimenId: specimenSourceIdSchema,
+    sourceRunId: runIdSchema,
+    exportRevision: z.number().int().positive(),
+    packageKind: z.enum(['final', 'diagnostic_partial']),
     method: z.enum(['rbd', 'rpt', 'pmn']),
     lifecycleStatus: z.enum(['completed', 'interrupted', 'failed']),
     plannedParametersSnapshot: z.record(z.string(), z.unknown()),
@@ -873,8 +962,141 @@ export const reliabilityExecutionSchema = z
     failureObservations: z.array(failureObservationSchema).max(64),
   })
   .strict();
-export const reliabilityExecutionListResultSchema = z
-  .object({ items: z.array(reliabilityExecutionSchema) })
+export const reliabilityExecutionSummarySchema = z
+  .object({
+    executionId: entityIdSchema,
+    localSpecimenId: entityIdSchema,
+    sourceSpecimenId: specimenSourceIdSchema,
+    sourceRunId: runIdSchema,
+    exportRevision: z.number().int().positive(),
+    packageKind: z.enum(['final', 'diagnostic_partial']),
+    method: z.enum(['rbd', 'rpt', 'pmn']),
+    lifecycleStatus: z.enum(['completed', 'interrupted', 'failed']),
+    technicalStatus: z.string().nullable(),
+    specimenOutcome: z.string().nullable(),
+    runValidity: z.string().nullable(),
+    dataCompleteness: z.string().nullable(),
+    materializedAtUtc: sourceUtcTimestampSchema,
+    failureObservationCount: z.number().int().min(0).max(64),
+    currentObservationVersionId: entityIdSchema.nullable(),
+    currentObservationVersionNumber: z.number().int().positive().nullable(),
+    currentClassification: reliabilityClassificationSchema.nullable(),
+  })
+  .strict();
+export const reliabilityExecutionPageSchema = z
+  .object({
+    items: z.array(reliabilityExecutionSummarySchema).max(50),
+    nextCursor: z.string().max(512).nullable(),
+  })
+  .strict();
+export const analystDocumentSnapshotSchema = z
+  .object({
+    documentId: entityIdSchema,
+    documentKind: z.string().min(1).max(100),
+    title: z.string().min(1).max(300),
+    designation: z.string().max(200),
+    revisionLabel: z.string().max(200),
+    recordRevision: z.number().int().positive(),
+    managedFileSha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/u)
+      .nullable(),
+  })
+  .strict();
+export const reliabilityObservationVersionSchema = z
+  .object({
+    observationId: entityIdSchema,
+    observationVersionId: entityIdSchema,
+    executionId: entityIdSchema,
+    versionNumber: z.number().int().positive(),
+    previousVersionId: entityIdSchema.nullable(),
+    classification: reliabilityClassificationSchema,
+    endpointKind: reliabilityEndpointKindSchema,
+    metricKind: reliabilityMetricKindSchema.nullable(),
+    metricUnit: reliabilityMetricUnitSchema.nullable(),
+    metricOrigin: z.literal('analyst_provided').nullable(),
+    lowerValue: z.string().max(64).nullable(),
+    upperValue: z.string().max(64).nullable(),
+    originBasis: z.string().min(1).max(1_000),
+    endpointBasis: z.string().min(1).max(1_000),
+    documentSnapshot: analystDocumentSnapshotSchema,
+    documentLocator: z.string().min(1).max(1_000),
+    failureIds: z.array(entityIdSchema).max(64),
+    actor: z.string().min(1).max(200),
+    decisionReason: z.string().min(1).max(2_000),
+    createdAtUtc: sourceUtcTimestampSchema,
+    contentSha256: z.string().regex(/^[0-9a-f]{64}$/u),
+  })
+  .strict();
+export const reliabilityObservationVersionListSchema = z
+  .object({ items: z.array(reliabilityObservationVersionSchema).max(50) })
+  .strict();
+export const reliabilityObservationWriteResultSchema = z
+  .object({
+    disposition: z.enum(['created', 'existing']),
+    version: reliabilityObservationVersionSchema,
+  })
+  .strict();
+export const reliabilityDatasetMemberSchema = z
+  .object({
+    observationVersionId: entityIdSchema,
+    executionId: entityIdSchema,
+    localSpecimenId: entityIdSchema,
+    sourceRunId: runIdSchema,
+    policyEligibility: z.enum(['eligible', 'ineligible']),
+    policyReason: z.string().min(1).max(1_000),
+    decision: z.enum(['included', 'excluded']),
+    inclusionReason: z.string().min(1).max(2_000),
+  })
+  .strict();
+export const reliabilityDatasetVersionSchema = z
+  .object({
+    datasetId: entityIdSchema,
+    datasetVersionId: entityIdSchema,
+    wheelModelId: entityIdSchema,
+    versionNumber: z.number().int().positive(),
+    previousVersionId: entityIdSchema.nullable(),
+    policyId: z.literal('life_metric_exact_v1'),
+    title: z.string().min(1).max(200),
+    method: z.enum(['rbd', 'rpt']),
+    metricKind: reliabilityMetricKindSchema,
+    metricUnit: reliabilityMetricUnitSchema,
+    populationBasis: z.string().min(1).max(2_000),
+    methodologyBasis: z.string().min(1).max(2_000),
+    comparabilityBasis: z.string().min(1).max(2_000),
+    members: z.array(reliabilityDatasetMemberSchema).max(100),
+    actor: z.string().min(1).max(200),
+    decisionReason: z.string().min(1).max(2_000),
+    createdAtUtc: sourceUtcTimestampSchema,
+    contentSha256: z.string().regex(/^[0-9a-f]{64}$/u),
+  })
+  .strict();
+export const reliabilityDatasetWriteResultSchema = z
+  .object({
+    disposition: z.enum(['created', 'existing']),
+    version: reliabilityDatasetVersionSchema,
+  })
+  .strict();
+export const reliabilityDatasetSummarySchema = z
+  .object({
+    datasetId: entityIdSchema,
+    wheelModelId: entityIdSchema,
+    latestVersionId: entityIdSchema,
+    latestVersionNumber: z.number().int().positive(),
+    title: z.string().min(1).max(200),
+    method: z.enum(['rbd', 'rpt']),
+    metricKind: reliabilityMetricKindSchema,
+    metricUnit: reliabilityMetricUnitSchema,
+    includedCount: z.number().int().min(0).max(100),
+    excludedCount: z.number().int().min(0).max(100),
+    createdAtUtc: sourceUtcTimestampSchema,
+  })
+  .strict();
+export const reliabilityDatasetPageSchema = z
+  .object({
+    items: z.array(reliabilityDatasetSummarySchema).max(50),
+    nextCursor: z.string().max(512).nullable(),
+  })
   .strict();
 export const importedRunListResultSchema = z
   .object({ items: z.array(importedRunSummarySchema) })
@@ -1021,6 +1243,22 @@ export type ImportedRunEnrichmentResolutionCommand = z.infer<
 >;
 export type SpecimenBinding = z.infer<typeof specimenBindingSchema>;
 export type ReliabilityExecution = z.infer<typeof reliabilityExecutionSchema>;
+export type ReliabilityExecutionSummary = z.infer<typeof reliabilityExecutionSummarySchema>;
+export type ReliabilityExecutionPage = z.infer<typeof reliabilityExecutionPageSchema>;
+export type ReliabilityObservationVersion = z.infer<typeof reliabilityObservationVersionSchema>;
+export type ReliabilityObservationCreateVersionCommand = z.infer<
+  typeof reliabilityObservationCreateVersionCommandSchema
+>;
+export type ReliabilityObservationWriteResult = z.infer<
+  typeof reliabilityObservationWriteResultSchema
+>;
+export type ReliabilityDatasetVersion = z.infer<typeof reliabilityDatasetVersionSchema>;
+export type ReliabilityDatasetSummary = z.infer<typeof reliabilityDatasetSummarySchema>;
+export type ReliabilityDatasetPage = z.infer<typeof reliabilityDatasetPageSchema>;
+export type ReliabilityDatasetCreateVersionCommand = z.infer<
+  typeof reliabilityDatasetCreateVersionCommandSchema
+>;
+export type ReliabilityDatasetWriteResult = z.infer<typeof reliabilityDatasetWriteResultSchema>;
 
 export interface WorkerOperationMap {
   readonly 'system.handshake': {
@@ -1219,9 +1457,37 @@ export interface WorkerOperationMap {
     readonly request: z.infer<typeof importedRunIdPayloadSchema>;
     readonly result: ReliabilityExecution;
   };
-  readonly 'reliabilityExecution.listByWheel': {
-    readonly request: z.infer<typeof reliabilityExecutionListByWheelPayloadSchema>;
-    readonly result: z.infer<typeof reliabilityExecutionListResultSchema>;
+  readonly 'reliabilityExecution.listPage': {
+    readonly request: z.infer<typeof reliabilityPagePayloadSchema>;
+    readonly result: ReliabilityExecutionPage;
+  };
+  readonly 'reliabilityExecution.getDetail': {
+    readonly request: z.infer<typeof reliabilityExecutionIdPayloadSchema>;
+    readonly result: ReliabilityExecution;
+  };
+  readonly 'reliabilityObservation.listVersions': {
+    readonly request: z.infer<typeof reliabilityExecutionIdPayloadSchema>;
+    readonly result: z.infer<typeof reliabilityObservationVersionListSchema>;
+  };
+  readonly 'reliabilityObservation.getVersion': {
+    readonly request: z.infer<typeof reliabilityObservationVersionIdPayloadSchema>;
+    readonly result: ReliabilityObservationVersion;
+  };
+  readonly 'reliabilityObservation.createVersion': {
+    readonly request: ReliabilityObservationCreateVersionCommand;
+    readonly result: ReliabilityObservationWriteResult;
+  };
+  readonly 'reliabilityDataset.listPage': {
+    readonly request: z.infer<typeof reliabilityPagePayloadSchema>;
+    readonly result: ReliabilityDatasetPage;
+  };
+  readonly 'reliabilityDataset.getVersion': {
+    readonly request: z.infer<typeof reliabilityDatasetVersionIdPayloadSchema>;
+    readonly result: ReliabilityDatasetVersion;
+  };
+  readonly 'reliabilityDataset.createVersion': {
+    readonly request: ReliabilityDatasetCreateVersionCommand;
+    readonly result: ReliabilityDatasetWriteResult;
   };
 }
 
@@ -1461,8 +1727,50 @@ export const workerRequestSchema = z.discriminatedUnion('operation', [
     .strict(),
   requestBaseSchema
     .extend({
-      operation: z.literal('reliabilityExecution.listByWheel'),
-      payload: reliabilityExecutionListByWheelPayloadSchema,
+      operation: z.literal('reliabilityExecution.listPage'),
+      payload: reliabilityPagePayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('reliabilityExecution.getDetail'),
+      payload: reliabilityExecutionIdPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('reliabilityObservation.listVersions'),
+      payload: reliabilityExecutionIdPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('reliabilityObservation.getVersion'),
+      payload: reliabilityObservationVersionIdPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('reliabilityObservation.createVersion'),
+      payload: reliabilityObservationCreateVersionCommandSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('reliabilityDataset.listPage'),
+      payload: reliabilityPagePayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('reliabilityDataset.getVersion'),
+      payload: reliabilityDatasetVersionIdPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('reliabilityDataset.createVersion'),
+      payload: reliabilityDatasetCreateVersionCommandSchema,
     })
     .strict(),
 ]);
@@ -1574,8 +1882,26 @@ export const specimenBindingSuccessResponseSchema =
 export const reliabilityExecutionSuccessResponseSchema = createSuccessResponseSchema(
   reliabilityExecutionSchema,
 );
-export const reliabilityExecutionListSuccessResponseSchema = createSuccessResponseSchema(
-  reliabilityExecutionListResultSchema,
+export const reliabilityExecutionPageSuccessResponseSchema = createSuccessResponseSchema(
+  reliabilityExecutionPageSchema,
+);
+export const reliabilityObservationVersionSuccessResponseSchema = createSuccessResponseSchema(
+  reliabilityObservationVersionSchema,
+);
+export const reliabilityObservationVersionListSuccessResponseSchema = createSuccessResponseSchema(
+  reliabilityObservationVersionListSchema,
+);
+export const reliabilityObservationWriteSuccessResponseSchema = createSuccessResponseSchema(
+  reliabilityObservationWriteResultSchema,
+);
+export const reliabilityDatasetVersionSuccessResponseSchema = createSuccessResponseSchema(
+  reliabilityDatasetVersionSchema,
+);
+export const reliabilityDatasetWriteSuccessResponseSchema = createSuccessResponseSchema(
+  reliabilityDatasetWriteResultSchema,
+);
+export const reliabilityDatasetPageSuccessResponseSchema = createSuccessResponseSchema(
+  reliabilityDatasetPageSchema,
 );
 export const workerErrorResponseSchema = responseBaseSchema
   .extend({
@@ -1672,8 +1998,32 @@ const reliabilityExecutionResponseSchema = z.union([
   reliabilityExecutionSuccessResponseSchema,
   workerErrorResponseSchema,
 ]);
-const reliabilityExecutionListResponseSchema = z.union([
-  reliabilityExecutionListSuccessResponseSchema,
+const reliabilityExecutionPageResponseSchema = z.union([
+  reliabilityExecutionPageSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const reliabilityObservationVersionResponseSchema = z.union([
+  reliabilityObservationVersionSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const reliabilityObservationVersionListResponseSchema = z.union([
+  reliabilityObservationVersionListSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const reliabilityObservationWriteResponseSchema = z.union([
+  reliabilityObservationWriteSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const reliabilityDatasetVersionResponseSchema = z.union([
+  reliabilityDatasetVersionSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const reliabilityDatasetWriteResponseSchema = z.union([
+  reliabilityDatasetWriteSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const reliabilityDatasetPageResponseSchema = z.union([
+  reliabilityDatasetPageSuccessResponseSchema,
   workerErrorResponseSchema,
 ]);
 
@@ -1732,8 +2082,21 @@ export interface WorkerResponseMap {
   readonly 'importedRun.bindSpecimen': z.infer<typeof specimenBindingResponseSchema>;
   readonly 'importedRun.applyEnrichmentResolution': z.infer<typeof importedRunDetailResponseSchema>;
   readonly 'reliabilityExecution.materialize': z.infer<typeof reliabilityExecutionResponseSchema>;
-  readonly 'reliabilityExecution.listByWheel': z.infer<
-    typeof reliabilityExecutionListResponseSchema
+  readonly 'reliabilityExecution.listPage': z.infer<typeof reliabilityExecutionPageResponseSchema>;
+  readonly 'reliabilityExecution.getDetail': z.infer<typeof reliabilityExecutionResponseSchema>;
+  readonly 'reliabilityObservation.listVersions': z.infer<
+    typeof reliabilityObservationVersionListResponseSchema
+  >;
+  readonly 'reliabilityObservation.getVersion': z.infer<
+    typeof reliabilityObservationVersionResponseSchema
+  >;
+  readonly 'reliabilityObservation.createVersion': z.infer<
+    typeof reliabilityObservationWriteResponseSchema
+  >;
+  readonly 'reliabilityDataset.listPage': z.infer<typeof reliabilityDatasetPageResponseSchema>;
+  readonly 'reliabilityDataset.getVersion': z.infer<typeof reliabilityDatasetVersionResponseSchema>;
+  readonly 'reliabilityDataset.createVersion': z.infer<
+    typeof reliabilityDatasetWriteResponseSchema
   >;
 }
 
@@ -1857,8 +2220,22 @@ export function parseWorkerResponse(operation: WorkerOperation, input: unknown):
       return specimenBindingResponseSchema.parse(input);
     case 'reliabilityExecution.materialize':
       return reliabilityExecutionResponseSchema.parse(input);
-    case 'reliabilityExecution.listByWheel':
-      return reliabilityExecutionListResponseSchema.parse(input);
+    case 'reliabilityExecution.listPage':
+      return reliabilityExecutionPageResponseSchema.parse(input);
+    case 'reliabilityExecution.getDetail':
+      return reliabilityExecutionResponseSchema.parse(input);
+    case 'reliabilityObservation.listVersions':
+      return reliabilityObservationVersionListResponseSchema.parse(input);
+    case 'reliabilityObservation.getVersion':
+      return reliabilityObservationVersionResponseSchema.parse(input);
+    case 'reliabilityObservation.createVersion':
+      return reliabilityObservationWriteResponseSchema.parse(input);
+    case 'reliabilityDataset.listPage':
+      return reliabilityDatasetPageResponseSchema.parse(input);
+    case 'reliabilityDataset.getVersion':
+      return reliabilityDatasetVersionResponseSchema.parse(input);
+    case 'reliabilityDataset.createVersion':
+      return reliabilityDatasetWriteResponseSchema.parse(input);
   }
 }
 
@@ -2039,6 +2416,31 @@ export interface ImpellerApi {
   };
   readonly reliabilityExecution: {
     materialize(localImportId: string): Promise<DesktopResult<ReliabilityExecution>>;
-    listByWheel(wheelModelId: string): Promise<DesktopResult<readonly ReliabilityExecution[]>>;
+    listPage(
+      wheelModelId: string,
+      cursor?: string | null,
+      limit?: number,
+    ): Promise<DesktopResult<ReliabilityExecutionPage>>;
+    getDetail(executionId: string): Promise<DesktopResult<ReliabilityExecution>>;
+  };
+  readonly reliabilityObservation: {
+    listVersions(
+      executionId: string,
+    ): Promise<DesktopResult<readonly ReliabilityObservationVersion[]>>;
+    getVersion(observationVersionId: string): Promise<DesktopResult<ReliabilityObservationVersion>>;
+    createVersion(
+      command: ReliabilityObservationCreateVersionCommand,
+    ): Promise<DesktopResult<ReliabilityObservationWriteResult>>;
+  };
+  readonly reliabilityDataset: {
+    listPage(
+      wheelModelId: string,
+      cursor?: string | null,
+      limit?: number,
+    ): Promise<DesktopResult<ReliabilityDatasetPage>>;
+    getVersion(datasetVersionId: string): Promise<DesktopResult<ReliabilityDatasetVersion>>;
+    createVersion(
+      command: ReliabilityDatasetCreateVersionCommand,
+    ): Promise<DesktopResult<ReliabilityDatasetWriteResult>>;
   };
 }

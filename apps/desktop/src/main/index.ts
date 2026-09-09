@@ -29,7 +29,12 @@ import {
   importedRunEnrichmentResolutionCommandSchema,
   importedRunIdPayloadSchema,
   importedRunResolutionStatePayloadSchema,
-  reliabilityExecutionListByWheelPayloadSchema,
+  reliabilityDatasetCreateVersionCommandSchema,
+  reliabilityDatasetVersionIdPayloadSchema,
+  reliabilityExecutionIdPayloadSchema,
+  reliabilityObservationCreateVersionCommandSchema,
+  reliabilityObservationVersionIdPayloadSchema,
+  reliabilityPagePayloadSchema,
   runPackageImportJobPayloadSchema,
   runPackageImportStartCommandSchema,
   runPackageValidationJobPayloadSchema,
@@ -629,11 +634,60 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       client.request('reliabilityExecution.materialize', parsed.data),
     );
   });
-  ipcMain.handle(IPC_CHANNELS.reliabilityExecutionListByWheel, (_event, raw: unknown) => {
-    const parsed = reliabilityExecutionListByWheelPayloadSchema.safeParse(raw);
+  ipcMain.handle(IPC_CHANNELS.reliabilityExecutionListPage, (_event, raw: unknown) => {
+    const parsed = reliabilityPagePayloadSchema.safeParse(raw);
     if (!parsed.success) return validationFailure();
     return runProjectOperation(workerClient, async (client) =>
-      client.request('reliabilityExecution.listByWheel', parsed.data),
+      client.request('reliabilityExecution.listPage', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.reliabilityExecutionGetDetail, (_event, raw: unknown) => {
+    const parsed = reliabilityExecutionIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('reliabilityExecution.getDetail', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.reliabilityObservationListVersions, (_event, raw: unknown) => {
+    const parsed = reliabilityExecutionIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('reliabilityObservation.listVersions', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.reliabilityObservationGetVersion, (_event, raw: unknown) => {
+    const parsed = reliabilityObservationVersionIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('reliabilityObservation.getVersion', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.reliabilityObservationCreateVersion, (_event, raw: unknown) => {
+    const parsed = reliabilityObservationCreateVersionCommandSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('reliabilityObservation.createVersion', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.reliabilityDatasetListPage, (_event, raw: unknown) => {
+    const parsed = reliabilityPagePayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('reliabilityDataset.listPage', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.reliabilityDatasetGetVersion, (_event, raw: unknown) => {
+    const parsed = reliabilityDatasetVersionIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('reliabilityDataset.getVersion', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.reliabilityDatasetCreateVersion, (_event, raw: unknown) => {
+    const parsed = reliabilityDatasetCreateVersionCommandSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('reliabilityDataset.createVersion', parsed.data),
     );
   });
 }

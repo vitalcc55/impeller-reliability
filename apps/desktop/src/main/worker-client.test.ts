@@ -293,4 +293,49 @@ describe('worker operation deadlines', () => {
       rmSync(stateDirectory, { recursive: true, force: true });
     }
   });
+
+  it('rejects an oversized UTF-8 JSONL request before writing to the worker', async () => {
+    const stateDirectory = mkdtempSync(join(tmpdir(), 'impeller-worker-request-size-'));
+    const client = new WorkerClient(
+      {
+        command: process.execPath,
+        arguments: ['-e', serialWorkerScript(0)],
+        cwd: stateDirectory,
+        executablePath: null,
+      },
+      stateDirectory,
+      new JsonlLogger(join(stateDirectory, 'request-size-test.jsonl')),
+      () => undefined,
+    );
+    try {
+      await client.start();
+      const decisions = Array.from({ length: 100 }, (_, index) => ({
+        observationVersionId: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+        decision: 'excluded' as const,
+        reason: '\u0000'.repeat(2_000),
+      }));
+      await expect(
+        client.request('reliabilityDataset.createVersion', {
+          datasetId: '00000000-0000-4000-8000-000000000101',
+          datasetVersionId: '00000000-0000-4000-8000-000000000102',
+          wheelModelId: '00000000-0000-4000-8000-000000000103',
+          expectedPreviousVersionId: null,
+          title: 'Oversized request',
+          method: 'rbd',
+          metricKind: 'rbd_steady_rotation_time',
+          metricUnit: 'hours',
+          populationBasis: '\u0000'.repeat(2_000),
+          methodologyBasis: '\u0000'.repeat(2_000),
+          comparabilityBasis: '\u0000'.repeat(2_000),
+          decisions,
+          actor: 'local_user',
+          reason: '\u0000'.repeat(2_000),
+        }),
+      ).rejects.toThrow('worker_request_too_large:reliabilityDataset.createVersion');
+      expect(client.processId).not.toBeNull();
+    } finally {
+      await client.shutdown();
+      rmSync(stateDirectory, { recursive: true, force: true });
+    }
+  });
 });

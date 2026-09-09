@@ -12,7 +12,10 @@
 - **Source specimen binding** — явная optimistic связь upstream `specimen_id` с локальным `Specimen`; marking не является identity и не вызывает auto-merge.
 - **Structural verdict** — итог проверки ZIP-envelope, inventory и заявленных size/CRC/SHA-256; `passed` не означает semantic completeness или production compatibility.
 - **Semantic coverage** — явный перечень замороженных проверяемых областей и upstream gaps; partial coverage допустимо и не является допуском к расчёту.
-- **Analysis eligibility** — будущее предметное решение конкретного расчёта о достаточности источников; не выводится из M03A validation report.
+- **ReliabilityObservation** — неизменяемая versioned статистическая интерпретация одного TestExecution, сохранённая явным действием инженера.
+- **ReliabilityDataset** — неизменяемая versioned выборка exact ReliabilityObservation versions с раздельными eligibility и inclusion decisions.
+- **Life metric** — типизированная наработка с kind, canonical unit, endpoint, scope и frozen provenance; не универсальное поле duration.
+- **Analysis eligibility** — достаточность конкретного observation для именованной версии политики; не выводится из validation report и не является глобальным свойством source.
 - **AnalysisInputSnapshot** — выбранные source/enrichment values конкретного анализа с provenance.
 - **CalculationSnapshot** — зафиксированный результат алгоритма с версией, input hash, evidence и warnings.
 - **TestCampaign** — будущая аналитическая группировка уже импортированных запусков; не является программой стендового испытания.
@@ -21,5 +24,5 @@
 - **Managed document file** — однократно прикреплённая неизменяемая копия внутри `assets/documents` с зарегистрированными size/SHA-256 и project-relative path.
 - **Applicability link** — явная историческая связь документа с WheelModel или Specimen; отсутствие связей означает применимость ко всему делу.
 - **Document integrity status** — локальный результат проверки managed copy: `not_attached`, `verified`, `missing`, `modified` или `verification_error`; не является общей оценкой целостности проекта.
-- **Right-censored** — испытание завершено без наблюдаемого отказа.
+- **Right-censored** — отказ не установлен до доказуемой границы наблюдения; одного технического завершения недостаточно.
 - **SourceReference** — будущая точная привязка значения к источнику/page/clause; не создаётся до реального расчётного сценария.

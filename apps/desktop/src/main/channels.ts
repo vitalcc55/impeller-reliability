@@ -56,5 +56,12 @@ export const IPC_CHANNELS = {
   importedRunBindSpecimen: 'impeller:imported-run:bind-specimen',
   importedRunApplyEnrichmentResolution: 'impeller:imported-run:apply-enrichment-resolution',
   reliabilityExecutionMaterialize: 'impeller:reliability-execution:materialize',
-  reliabilityExecutionListByWheel: 'impeller:reliability-execution:list-by-wheel',
+  reliabilityExecutionListPage: 'impeller:reliability-execution:list-page',
+  reliabilityExecutionGetDetail: 'impeller:reliability-execution:get-detail',
+  reliabilityObservationListVersions: 'impeller:reliability-observation:list-versions',
+  reliabilityObservationGetVersion: 'impeller:reliability-observation:get-version',
+  reliabilityObservationCreateVersion: 'impeller:reliability-observation:create-version',
+  reliabilityDatasetListPage: 'impeller:reliability-dataset:list-page',
+  reliabilityDatasetGetVersion: 'impeller:reliability-dataset:get-version',
+  reliabilityDatasetCreateVersion: 'impeller:reliability-dataset:create-version',
 } as const;

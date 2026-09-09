@@ -17,6 +17,7 @@ from impeller_reliability.integration.r130run.models import RunPackageValidation
 from impeller_reliability.persistence.r130sh_sources import ImportedRunSummary
 from impeller_reliability.persistence.sqlite_health import SCHEMA_VERSION, check_storage
 from impeller_reliability.protocol.envelopes import (
+    AnalystDocumentSnapshotResult,
     CaseDocumentArchiveRequest,
     CaseDocumentAttachFileRequest,
     CaseDocumentCreateRequest,
@@ -58,10 +59,26 @@ from impeller_reliability.protocol.envelopes import (
     ProjectOpenRequest,
     ProjectOverviewResult,
     ProjectUpdateMetadataRequest,
-    ReliabilityExecutionListByWheelRequest,
-    ReliabilityExecutionListResult,
+    ReliabilityDatasetCreateVersionRequest,
+    ReliabilityDatasetGetVersionRequest,
+    ReliabilityDatasetListPageRequest,
+    ReliabilityDatasetMemberResult,
+    ReliabilityDatasetPageResult,
+    ReliabilityDatasetSummaryResult,
+    ReliabilityDatasetVersionResult,
+    ReliabilityDatasetWriteResultModel,
+    ReliabilityExecutionGetDetailRequest,
+    ReliabilityExecutionListPageRequest,
     ReliabilityExecutionMaterializeRequest,
+    ReliabilityExecutionPageResult,
     ReliabilityExecutionResult,
+    ReliabilityExecutionSummaryResult,
+    ReliabilityObservationCreateVersionRequest,
+    ReliabilityObservationGetVersionRequest,
+    ReliabilityObservationListVersionsRequest,
+    ReliabilityObservationVersionListResult,
+    ReliabilityObservationVersionResult,
+    ReliabilityObservationWriteResultModel,
     RequestEnvelope,
     RunPackageImportCancelRequest,
     RunPackageImportDiscardRequest,
@@ -148,7 +165,14 @@ CAPABILITIES: list[Operation] = [
     "importedRun.bindSpecimen",
     "importedRun.applyEnrichmentResolution",
     "reliabilityExecution.materialize",
-    "reliabilityExecution.listByWheel",
+    "reliabilityExecution.listPage",
+    "reliabilityExecution.getDetail",
+    "reliabilityObservation.listVersions",
+    "reliabilityObservation.getVersion",
+    "reliabilityObservation.createVersion",
+    "reliabilityDataset.listPage",
+    "reliabilityDataset.getVersion",
+    "reliabilityDataset.createVersion",
 ]
 
 
@@ -250,7 +274,12 @@ class Dispatcher:
             "importedRun.get",
             "importedRun.verifySource",
             "importedRun.getResolutionState",
-            "reliabilityExecution.listByWheel",
+            "reliabilityExecution.listPage",
+            "reliabilityExecution.getDetail",
+            "reliabilityObservation.listVersions",
+            "reliabilityObservation.getVersion",
+            "reliabilityDataset.listPage",
+            "reliabilityDataset.getVersion",
         }:
             from impeller_reliability.persistence.project_errors import ProjectOperationError
 
@@ -555,18 +584,116 @@ class Dispatcher:
                         ),
                     ),
                 )
-            case ReliabilityExecutionListByWheelRequest():
-                return SuccessResponse[ReliabilityExecutionListResult](
+            case ReliabilityExecutionListPageRequest():
+                page = self._projects.list_reliability_execution_page(
+                    request.payload.wheelModelId,
+                    request.payload.cursor,
+                    request.payload.limit,
+                    active_deadline,
+                )
+                return SuccessResponse[ReliabilityExecutionPageResult](
                     requestId=request.requestId,
                     revision=request.revision,
-                    result=ReliabilityExecutionListResult(
-                        items=[
-                            self._reliability_execution_result(item)
-                            for item in self._projects.list_reliability_executions(
-                                request.payload.wheelModelId,
-                                active_deadline,
-                            )
-                        ],
+                    result=ReliabilityExecutionPageResult(
+                        items=[self._reliability_execution_summary_result(item) for item in page.items],
+                        nextCursor=page.next_cursor,
+                    ),
+                )
+            case ReliabilityExecutionGetDetailRequest():
+                return SuccessResponse[ReliabilityExecutionResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._reliability_execution_result(self._projects.get_reliability_execution(request.payload.executionId, active_deadline)),
+                )
+            case ReliabilityObservationListVersionsRequest():
+                return SuccessResponse[ReliabilityObservationVersionListResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=ReliabilityObservationVersionListResult(
+                        items=[self._reliability_observation_version_result(item) for item in self._projects.list_reliability_observation_versions(request.payload.executionId, active_deadline)]
+                    ),
+                )
+            case ReliabilityObservationGetVersionRequest():
+                return SuccessResponse[ReliabilityObservationVersionResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._reliability_observation_version_result(self._projects.get_reliability_observation_version(request.payload.observationVersionId, active_deadline)),
+                )
+            case ReliabilityObservationCreateVersionRequest():
+                written = self._projects.create_reliability_observation_version(
+                    observation_id=request.payload.observationId,
+                    observation_version_id=request.payload.observationVersionId,
+                    execution_id=request.payload.executionId,
+                    expected_previous_version_id=request.payload.expectedPreviousVersionId,
+                    classification=request.payload.classification,
+                    endpoint_kind=request.payload.endpointKind,
+                    metric_kind=request.payload.metricKind,
+                    metric_unit=request.payload.metricUnit,
+                    metric_origin=request.payload.metricOrigin,
+                    lower_value=request.payload.lowerValue,
+                    upper_value=request.payload.upperValue,
+                    origin_basis=request.payload.originBasis,
+                    endpoint_basis=request.payload.endpointBasis,
+                    document_id=request.payload.documentId,
+                    document_locator=request.payload.documentLocator,
+                    failure_ids=tuple(request.payload.failureIds),
+                    actor=request.payload.actor,
+                    reason=request.payload.reason,
+                    deadline=active_deadline,
+                )
+                return SuccessResponse[ReliabilityObservationWriteResultModel](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=ReliabilityObservationWriteResultModel(
+                        disposition=written.disposition,
+                        version=self._reliability_observation_version_result(written.version),
+                    ),
+                )
+            case ReliabilityDatasetListPageRequest():
+                dataset_page = self._projects.list_reliability_dataset_page(
+                    request.payload.wheelModelId,
+                    request.payload.cursor,
+                    request.payload.limit,
+                    active_deadline,
+                )
+                return SuccessResponse[ReliabilityDatasetPageResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=ReliabilityDatasetPageResult(
+                        items=[self._reliability_dataset_summary_result(item) for item in dataset_page.items],
+                        nextCursor=dataset_page.next_cursor,
+                    ),
+                )
+            case ReliabilityDatasetGetVersionRequest():
+                return SuccessResponse[ReliabilityDatasetVersionResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._reliability_dataset_version_result(self._projects.get_reliability_dataset_version(request.payload.datasetVersionId, active_deadline)),
+                )
+            case ReliabilityDatasetCreateVersionRequest():
+                written_dataset = self._projects.create_reliability_dataset_version(
+                    dataset_id=request.payload.datasetId,
+                    dataset_version_id=request.payload.datasetVersionId,
+                    wheel_model_id=request.payload.wheelModelId,
+                    expected_previous_version_id=request.payload.expectedPreviousVersionId,
+                    title=request.payload.title,
+                    method=request.payload.method,
+                    metric_kind=request.payload.metricKind,
+                    metric_unit=request.payload.metricUnit,
+                    population_basis=request.payload.populationBasis,
+                    methodology_basis=request.payload.methodologyBasis,
+                    comparability_basis=request.payload.comparabilityBasis,
+                    decisions=tuple(item.model_dump() for item in request.payload.decisions),
+                    actor=request.payload.actor,
+                    reason=request.payload.reason,
+                    deadline=active_deadline,
+                )
+                return SuccessResponse[ReliabilityDatasetWriteResultModel](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=ReliabilityDatasetWriteResultModel(
+                        disposition=written_dataset.disposition,
+                        version=self._reliability_dataset_version_result(written_dataset.version),
                     ),
                 )
 
@@ -732,6 +859,130 @@ class Dispatcher:
         )
 
     @staticmethod
+    def _reliability_execution_summary_result(item: object) -> ReliabilityExecutionSummaryResult:
+        from impeller_reliability.persistence.reliability_domain import ReliabilityExecutionSummary
+
+        if not isinstance(item, ReliabilityExecutionSummary):
+            raise AssertionError("invalid_reliability_execution_summary")
+        return ReliabilityExecutionSummaryResult(
+            executionId=item.execution_id,
+            localSpecimenId=item.local_specimen_id,
+            sourceSpecimenId=item.source_specimen_id,
+            sourceRunId=item.source_run_id,
+            exportRevision=item.export_revision,
+            packageKind=item.package_kind,
+            method=item.method,
+            lifecycleStatus=item.lifecycle_status,
+            technicalStatus=item.technical_status,
+            specimenOutcome=item.specimen_outcome,
+            runValidity=item.run_validity,
+            dataCompleteness=item.data_completeness,
+            materializedAtUtc=item.materialized_at_utc,
+            failureObservationCount=item.failure_observation_count,
+            currentObservationVersionId=item.current_observation_version_id,
+            currentObservationVersionNumber=item.current_observation_version_number,
+            currentClassification=item.current_classification,
+        )
+
+    @staticmethod
+    def _reliability_observation_version_result(item: object) -> ReliabilityObservationVersionResult:
+        from impeller_reliability.persistence.reliability_domain import ReliabilityObservationVersion
+
+        if not isinstance(item, ReliabilityObservationVersion):
+            raise AssertionError("invalid_reliability_observation_version")
+        document = item.document_snapshot
+        return ReliabilityObservationVersionResult(
+            observationId=item.observation_id,
+            observationVersionId=item.observation_version_id,
+            executionId=item.execution_id,
+            versionNumber=item.version_number,
+            previousVersionId=item.previous_version_id,
+            classification=item.classification,
+            endpointKind=item.endpoint_kind,
+            metricKind=item.metric_kind,
+            metricUnit=item.metric_unit,
+            metricOrigin=item.metric_origin,
+            lowerValue=item.lower_value,
+            upperValue=item.upper_value,
+            originBasis=item.origin_basis,
+            endpointBasis=item.endpoint_basis,
+            documentSnapshot=AnalystDocumentSnapshotResult(
+                documentId=document.document_id,
+                documentKind=document.document_kind,
+                title=document.title,
+                designation=document.designation,
+                revisionLabel=document.revision_label,
+                recordRevision=document.record_revision,
+                managedFileSha256=document.managed_file_sha256,
+            ),
+            documentLocator=item.document_locator,
+            failureIds=list(item.failure_ids),
+            actor=item.actor,
+            decisionReason=item.decision_reason,
+            createdAtUtc=item.created_at_utc,
+            contentSha256=item.content_sha256,
+        )
+
+    @staticmethod
+    def _reliability_dataset_version_result(item: object) -> ReliabilityDatasetVersionResult:
+        from impeller_reliability.persistence.reliability_domain import ReliabilityDatasetVersion
+
+        if not isinstance(item, ReliabilityDatasetVersion):
+            raise AssertionError("invalid_reliability_dataset_version")
+        return ReliabilityDatasetVersionResult(
+            datasetId=item.dataset_id,
+            datasetVersionId=item.dataset_version_id,
+            wheelModelId=item.wheel_model_id,
+            versionNumber=item.version_number,
+            previousVersionId=item.previous_version_id,
+            policyId=item.policy_id,
+            title=item.title,
+            method=item.method,
+            metricKind=item.metric_kind,
+            metricUnit=item.metric_unit,
+            populationBasis=item.population_basis,
+            methodologyBasis=item.methodology_basis,
+            comparabilityBasis=item.comparability_basis,
+            members=[
+                ReliabilityDatasetMemberResult(
+                    observationVersionId=member.observation_version_id,
+                    executionId=member.execution_id,
+                    localSpecimenId=member.local_specimen_id,
+                    sourceRunId=member.source_run_id,
+                    policyEligibility=member.policy_eligibility,
+                    policyReason=member.policy_reason,
+                    decision=member.decision,
+                    inclusionReason=member.inclusion_reason,
+                )
+                for member in item.members
+            ],
+            actor=item.actor,
+            decisionReason=item.decision_reason,
+            createdAtUtc=item.created_at_utc,
+            contentSha256=item.content_sha256,
+        )
+
+    @staticmethod
+    def _reliability_dataset_summary_result(item: object) -> ReliabilityDatasetSummaryResult:
+        from impeller_reliability.persistence.reliability_domain import ReliabilityDatasetSummary
+
+        if not isinstance(item, ReliabilityDatasetSummary):
+            raise AssertionError("invalid_reliability_dataset_summary")
+        return ReliabilityDatasetSummaryResult(
+            datasetId=item.dataset_id,
+            wheelModelId=item.wheel_model_id,
+            latestVersionId=item.latest_version_id,
+            latestVersionNumber=item.latest_version_number,
+            title=item.title,
+            method=item.method,
+            metricKind=item.metric_kind,
+            metricUnit=item.metric_unit,
+            includedCount=item.included_count,
+            excludedCount=item.excluded_count,
+            createdAtUtc=item.created_at_utc,
+        )
+
+    @staticmethod
     def _reliability_execution_result(execution: object) -> ReliabilityExecutionResult:
         from impeller_reliability.persistence.reliability_domain import TestExecution
 
@@ -741,7 +992,11 @@ class Dispatcher:
             executionId=execution.execution_id,
             localImportId=execution.local_import_id,
             localSpecimenId=execution.local_specimen_id,
+            wheelModelId=execution.wheel_model_id,
             sourceSpecimenId=execution.source_specimen_id,
+            sourceRunId=execution.source_run_id,
+            exportRevision=execution.export_revision,
+            packageKind=execution.package_kind,
             method=execution.method,
             lifecycleStatus=execution.lifecycle_status,
             plannedParametersSnapshot=execution.planned_parameters_snapshot,
@@ -760,6 +1015,7 @@ class Dispatcher:
                     rpm=item.rpm,
                     vibrationSummary=item.vibration_summary,
                     observedAtUtc=item.observed_at_utc,
+                    sourceOuterPackageSha256=item.source_outer_package_sha256,
                 )
                 for item in execution.failure_observations
             ],

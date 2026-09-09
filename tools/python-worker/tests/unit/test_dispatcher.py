@@ -108,7 +108,14 @@ def test_handshake_reports_current_capabilities_and_revision(tmp_path: Path) -> 
         "importedRun.bindSpecimen",
         "importedRun.applyEnrichmentResolution",
         "reliabilityExecution.materialize",
-        "reliabilityExecution.listByWheel",
+        "reliabilityExecution.listPage",
+        "reliabilityExecution.getDetail",
+        "reliabilityObservation.listVersions",
+        "reliabilityObservation.getVersion",
+        "reliabilityObservation.createVersion",
+        "reliabilityDataset.listPage",
+        "reliabilityDataset.getVersion",
+        "reliabilityDataset.createVersion",
     ]
     assert response.result.supportedRunPackageSchemas == ["r130sh.run-package.v1"]
     assert response.result.supportedPlanSchemas == []
@@ -319,12 +326,140 @@ def test_dispatcher_covers_production_import_read_binding_and_resolution_operati
     assert execution["method"] == "rbd"
     listed_executions = _dispatch(
         dispatcher,
-        "reliabilityExecution.listByWheel",
-        {"wheelModelId": wheel["wheelModelId"]},
+        "reliabilityExecution.listPage",
+        {"wheelModelId": wheel["wheelModelId"], "cursor": None, "limit": 25},
         14,
     )
-    assert OBJECT_LIST_ADAPTER.validate_python(listed_executions["items"])[0] == execution
-    assert _dispatch(dispatcher, "runPackageImport.discard", {"jobId": job_id}, 15) == {
+    execution_summary = OBJECT_ADAPTER.validate_python(OBJECT_LIST_ADAPTER.validate_python(listed_executions["items"])[0])
+    assert execution_summary["executionId"] == execution["executionId"]
+    assert listed_executions["nextCursor"] is None
+    execution_detail = _dispatch(
+        dispatcher,
+        "reliabilityExecution.getDetail",
+        {"executionId": execution["executionId"]},
+        15,
+    )
+    assert execution_detail["localImportId"] == local_import_id
+    document_id = str(uuid4())
+    _dispatch(
+        dispatcher,
+        "caseDocument.create",
+        {
+            "caseDocumentId": document_id,
+            "document": {
+                "documentKind": "typical_test_method",
+                "title": "ПМИ Р130У",
+                "designation": "ПМИ Р130У",
+                "revisionLabel": "01",
+                "documentDate": "2024-07-02",
+                "issuer": "ЛИЦ ВВУ",
+                "notes": "",
+            },
+            "wheelModelIds": [wheel["wheelModelId"]],
+            "specimenIds": [specimen["specimenId"]],
+        },
+        16,
+    )
+    observation_id = str(uuid4())
+    observation_version_id = str(uuid4())
+    observation = _dispatch(
+        dispatcher,
+        "reliabilityObservation.createVersion",
+        {
+            "observationId": observation_id,
+            "observationVersionId": observation_version_id,
+            "executionId": execution["executionId"],
+            "expectedPreviousVersionId": None,
+            "classification": "right_censored",
+            "endpointKind": "right_bound",
+            "metricKind": "rbd_steady_rotation_time",
+            "metricUnit": "hours",
+            "metricOrigin": "analyst_provided",
+            "lowerValue": "12.5",
+            "upperValue": None,
+            "originBasis": "Начало установившегося вращения",
+            "endpointBasis": "Граница по журналу",
+            "documentId": document_id,
+            "documentLocator": "Раздел 10",
+            "failureIds": [],
+            "actor": "local_user",
+            "reason": "Отказ не установлен до границы",
+        },
+        17,
+    )
+    assert observation["disposition"] == "created"
+    observation_version = OBJECT_ADAPTER.validate_python(observation["version"])
+    assert (
+        _dispatch(
+            dispatcher,
+            "reliabilityObservation.getVersion",
+            {"observationVersionId": observation_version_id},
+            18,
+        )["contentSha256"]
+        == observation_version["contentSha256"]
+    )
+    assert (
+        len(
+            OBJECT_LIST_ADAPTER.validate_python(
+                _dispatch(
+                    dispatcher,
+                    "reliabilityObservation.listVersions",
+                    {"executionId": execution["executionId"]},
+                    19,
+                )["items"]
+            )
+        )
+        == 1
+    )
+    dataset_version_id = str(uuid4())
+    dataset = _dispatch(
+        dispatcher,
+        "reliabilityDataset.createVersion",
+        {
+            "datasetId": str(uuid4()),
+            "datasetVersionId": dataset_version_id,
+            "wheelModelId": wheel["wheelModelId"],
+            "expectedPreviousVersionId": None,
+            "title": "Выборка РБД",
+            "method": "rbd",
+            "metricKind": "rbd_steady_rotation_time",
+            "metricUnit": "hours",
+            "populationBasis": "Модель M04A wheel",
+            "methodologyBasis": "ПМИ Р130У",
+            "comparabilityBasis": "Сопоставимость подтверждена инженером",
+            "decisions": [
+                {
+                    "observationVersionId": observation_version_id,
+                    "decision": "included",
+                    "reason": "Точная правая граница",
+                }
+            ],
+            "actor": "local_user",
+            "reason": "Первая версия",
+        },
+        20,
+    )
+    dataset_version = OBJECT_ADAPTER.validate_python(dataset["version"])
+    members = OBJECT_LIST_ADAPTER.validate_python(dataset_version["members"])
+    assert OBJECT_ADAPTER.validate_python(members[0])["policyEligibility"] == "eligible"
+    assert (
+        _dispatch(
+            dispatcher,
+            "reliabilityDataset.getVersion",
+            {"datasetVersionId": dataset_version_id},
+            21,
+        )["datasetVersionId"]
+        == dataset_version_id
+    )
+    dataset_page = _dispatch(
+        dispatcher,
+        "reliabilityDataset.listPage",
+        {"wheelModelId": wheel["wheelModelId"], "cursor": None, "limit": 25},
+        22,
+    )
+    dataset_items = OBJECT_LIST_ADAPTER.validate_python(dataset_page["items"])
+    assert OBJECT_ADAPTER.validate_python(dataset_items[0])["latestVersionId"] == dataset_version_id
+    assert _dispatch(dispatcher, "runPackageImport.discard", {"jobId": job_id}, 23) == {
         "jobId": job_id,
         "discarded": True,
     }

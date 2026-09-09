@@ -31,7 +31,15 @@ from impeller_reliability.persistence.r130sh_sources import (
     SourceIntegrityStatus,
     SpecimenBinding,
 )
-from impeller_reliability.persistence.reliability_domain import ReliabilityDataset, TestExecution
+from impeller_reliability.persistence.reliability_domain import (
+    ReliabilityDatasetPage,
+    ReliabilityDatasetVersion,
+    ReliabilityDatasetWriteResult,
+    ReliabilityExecutionPage,
+    ReliabilityObservationVersion,
+    ReliabilityObservationWriteResult,
+    TestExecution,
+)
 from impeller_reliability.persistence.timestamps import utc_now
 from impeller_reliability.worker.deadline import RequestDeadline
 
@@ -365,31 +373,133 @@ class ProjectService:
     ) -> TestExecution:
         return self._require_session().materialize_reliability_execution(local_import_id, deadline)
 
-    def list_reliability_executions(
+    def list_reliability_execution_page(
         self,
         wheel_model_id: str,
+        cursor: str | None,
+        limit: int,
         deadline: RequestDeadline | None,
-    ) -> tuple[TestExecution, ...]:
-        return self._require_session().list_reliability_executions(wheel_model_id, deadline)
+    ) -> ReliabilityExecutionPage:
+        return self._require_session().list_reliability_execution_page(wheel_model_id, cursor, limit, deadline)
 
-    def create_reliability_dataset(
+    def get_reliability_execution(
+        self,
+        execution_id: str,
+        deadline: RequestDeadline | None,
+    ) -> TestExecution:
+        return self._require_session().get_reliability_execution(execution_id, deadline)
+
+    def create_reliability_observation_version(
+        self,
+        *,
+        observation_id: str,
+        observation_version_id: str,
+        execution_id: str,
+        expected_previous_version_id: str | None,
+        classification: str,
+        endpoint_kind: str,
+        metric_kind: str | None,
+        metric_unit: str | None,
+        metric_origin: str | None,
+        lower_value: str | None,
+        upper_value: str | None,
+        origin_basis: str,
+        endpoint_basis: str,
+        document_id: str,
+        document_locator: str,
+        failure_ids: tuple[str, ...],
+        actor: str,
+        reason: str,
+        deadline: RequestDeadline | None,
+    ) -> ReliabilityObservationWriteResult:
+        return self._require_session().create_reliability_observation_version(
+            observation_id=observation_id,
+            observation_version_id=observation_version_id,
+            execution_id=execution_id,
+            expected_previous_version_id=expected_previous_version_id,
+            classification=classification,
+            endpoint_kind=endpoint_kind,
+            metric_kind=metric_kind,
+            metric_unit=metric_unit,
+            metric_origin=metric_origin,
+            lower_value=lower_value,
+            upper_value=upper_value,
+            origin_basis=origin_basis,
+            endpoint_basis=endpoint_basis,
+            document_id=document_id,
+            document_locator=document_locator,
+            failure_ids=failure_ids,
+            actor=actor,
+            reason=reason,
+            deadline=deadline,
+        )
+
+    def list_reliability_observation_versions(
+        self,
+        execution_id: str,
+        deadline: RequestDeadline | None,
+    ) -> tuple[ReliabilityObservationVersion, ...]:
+        return self._require_session().list_reliability_observation_versions(execution_id, deadline)
+
+    def get_reliability_observation_version(
+        self,
+        observation_version_id: str,
+        deadline: RequestDeadline | None,
+    ) -> ReliabilityObservationVersion:
+        return self._require_session().get_reliability_observation_version(observation_version_id, deadline)
+
+    def create_reliability_dataset_version(
         self,
         *,
         dataset_id: str,
-        life_metric_unit: str,
-        censoring_policy: str,
-        execution_ids: tuple[str, ...],
-        failure_ids: tuple[str, ...],
+        dataset_version_id: str,
+        wheel_model_id: str,
+        expected_previous_version_id: str | None,
+        title: str,
+        method: str,
+        metric_kind: str,
+        metric_unit: str,
+        population_basis: str,
+        methodology_basis: str,
+        comparability_basis: str,
+        decisions: tuple[dict[str, object], ...],
+        actor: str,
+        reason: str,
         deadline: RequestDeadline | None,
-    ) -> ReliabilityDataset:
-        return self._require_session().create_reliability_dataset(
+    ) -> ReliabilityDatasetWriteResult:
+        return self._require_session().create_reliability_dataset_version(
             dataset_id=dataset_id,
-            life_metric_unit=life_metric_unit,
-            censoring_policy=censoring_policy,
-            execution_ids=execution_ids,
-            failure_ids=failure_ids,
+            dataset_version_id=dataset_version_id,
+            wheel_model_id=wheel_model_id,
+            expected_previous_version_id=expected_previous_version_id,
+            title=title,
+            method=method,
+            metric_kind=metric_kind,
+            metric_unit=metric_unit,
+            population_basis=population_basis,
+            methodology_basis=methodology_basis,
+            comparability_basis=comparability_basis,
+            decisions=decisions,
+            actor=actor,
+            reason=reason,
             deadline=deadline,
         )
+
+    def get_reliability_dataset_version(
+        self,
+        dataset_version_id: str,
+        deadline: RequestDeadline | None,
+    ) -> ReliabilityDatasetVersion:
+        return self._require_session().get_reliability_dataset_version(dataset_version_id, deadline)
+
+    def list_reliability_dataset_page(
+        self,
+        wheel_model_id: str,
+        cursor: str | None,
+        limit: int,
+        deadline: RequestDeadline | None,
+    ) -> ReliabilityDatasetPage:
+        return self._require_session().list_reliability_dataset_page(wheel_model_id, cursor, limit, deadline)
 
     def close(self, *, deadline: RequestDeadline | None = None) -> bool:
         _check_deadline(deadline, "project_close")

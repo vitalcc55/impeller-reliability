@@ -6,7 +6,7 @@
 direction: down
 
 Persisted: "Project source of truth" {
-  Sqlite: "schema v1: metadata, analyst_enrichment, immutable r130sh_source, binding/resolution, audit" { shape: cylinder }
+  Sqlite: "schema v1: metadata, analyst_enrichment, immutable r130sh_source, versioned derived_analysis, audit" { shape: cylinder }
   Manifest: "project-manifest.json: container identity"
   Backups: "verified SQLite-only backups; future migration backups"
   Assets: "assets/documents: immutable managed copies"
@@ -61,7 +61,7 @@ Persisted.Assets -> Derived.Exports
 RendererRuntime.Preview -> RendererRuntime.QueryCache: "synthetic DEV state only"
 ```
 
-App-level `health.sqlite` остаётся отдельной инфраструктурной диагностикой. Project truth находится только в `.irproj`: clean pre-release schema v1 хранит metadata, dossier/CaseDocument, immutable document registry, M03B `r130sh_source` registry/inventory/projection, optimistic specimen binding, append-only enrichment resolution и audit. `derived_analysis` отсутствует. Невыпущенные промежуточные schema не мигрируются и не получают compatibility layer.
+App-level `health.sqlite` остаётся отдельной инфраструктурной диагностикой. Project truth находится только в `.irproj`: clean pre-release schema v1 хранит metadata, dossier/CaseDocument, immutable document registry, M03B `r130sh_source`, optimistic binding, append-only enrichment resolution, immutable TestExecution/FailureObservation и versioned ReliabilityObservation/ReliabilityDataset с audit. Невыпущенные промежуточные schema не мигрируются и не получают compatibility layer.
 
 Renderer хранит один активный draft-owner и replaceable query cache, Main — разрешённые пути, lifecycle и очередь, Python — активную сериализованную ProjectSession. Dirty draft проходит `validate → save → persisted revision`; validation/conflict/transport failure оставляют его dirty. Попытка navigation/select/attach/archive/close/open/restart/window close требует keep/discard/save решения по существующему общему guard. Потеря worker переводит draft в detached, но не размонтирует форму; permanently detached draft можно удалить локально без изменения project truth или recent list. Recovery checkpoint после crash всего Electron остаётся отдельным будущим уровнем и не является domain autosave.
 
@@ -70,3 +70,5 @@ CaseDocument metadata и applicability меняются одной revision/audi
 M03A `RunPackageValidationJob` живёт только в памяти worker: caller-created UUID связывает retry, terminal result хранится до явного discard или атомарной замены, application restart/window shutdown выполняют bounded cooperative stop. Renderer хранит только transient копию последнего job/report для отображения; active snapshot после worker loss помечается прерванным, а уже terminal report может оставаться видимым до clear/retry и не становится persisted evidence. Report, progress и approved source path не входят в Project truth, recent paths, audit или logs; path существует только внутри Main/worker runtime. Открытый Project может сосуществовать с validation job, но между job и `project.sqlite` нет write edge.
 
 M03B import job также живёт в памяти, но его persisted truth — registry + exact managed archive. Copy/validation выполняются background, registration — последовательным SQLite owner после commit fence. Crash до commit оставляет не более operation-owned orphan точной grammar; reopen удаляет его. Crash после commit определяется registry как завершённый import; повтор exact tuple возвращает existing без audit. Missing/modified archive меняет только вычисляемый integrity status и не переписывает source evidence. Binding/resolution drafts участвуют в общем renderer dirty/pending/detached lifecycle.
+
+M04B сохраняет observation и dataset roots, последовательные immutable versions, evidence/member links и один audit event на версию в той же ProjectSession transaction. TestExecution фиксирует WheelModel владельца при materialization, поэтому последующая правка карточки Specimen не перемещает исторический запуск или dataset. Reopen проверяет chains, hashes, timestamps, document snapshot/FK, failure ownership, policy snapshot и отсутствие orphan roots; silent repair отсутствует. Потерянный transport response сверяется по caller version UUID.

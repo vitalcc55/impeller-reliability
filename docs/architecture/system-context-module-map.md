@@ -23,14 +23,14 @@ TypeScript: "TypeScript packages" {
 
 Worker: "tools/python-worker" {
   Protocol: "operation-specific Pydantic JSONL envelopes"
-  Domain: "analyst enrichment: dossier + case documents; future calculations"
+  Domain: "dossier + case documents + reliability observations/datasets; future calculations"
   Persistence: "sqlite3, migrations, repositories"
   Integration: "R130SH M9a validator + import job/projection"
 }
 
 Project: "*.irproj — schema v1 project container" {
   Manifest: "project-manifest.json: container identity"
-  Database: "project.sqlite schema v1: dossier + immutable R130SH registry/projection + audit" { shape: cylinder }
+  Database: "project.sqlite schema v1: dossier + immutable R130SH source + versioned derived analysis + audit" { shape: cylinder }
   Lock: ".project.lock: OS-held session lock"
   Assets: "assets/documents: immutable managed copies"
   Imports: "imports/r130sh: exact immutable .r130run archives"
@@ -60,4 +60,4 @@ Desktop.Main -> Worker.Protocol: "approved path over typed JSONL"
 Worker.Protocol -> Worker.Integration: "validate/import job; no extraction tree"
 ```
 
-Clean pre-release schema v1 содержит dossier и M03B `r130sh_source` registry/inventory/projection/binding/resolution. Main владеет file dialog; Python единолично владеет validation, managed archive и SQLite. M03A остаётся transient read-only потоком, M03B после staged revalidation публикует exact archive и атомарно регистрирует source/audit. Renderer не получает абсолютный/managed путь. R130SH владеет package schema и первичными фактами; `TestCampaign`, analysis/calculation snapshots и отчётность остаются будущими границами.
+Clean pre-release schema v1 содержит dossier, M03B `r130sh_source` и M04A/M04B `derived_analysis`. Main владеет file dialog; Python единолично владеет validation, classification rules, managed archive и SQLite. Renderer получает compact pages/details и отправляет только typed decisions. R130SH владеет package schema и первичными фактами; `TestCampaign`, `AnalysisInputSnapshot`, `CalculationSnapshot` и отчётность остаются будущими границами.

@@ -36,7 +36,7 @@ M04A.1 исправляет exact measurement acceptance predicate, потоко
 
 ## M04B — Statistical Classification & Life-Metric Foundation
 
-M04B сначала определяет `ReliabilityObservation`, failure/right-censored/withdrawn/invalid classification, life metric contracts и units, source provenance и dataset membership semantics. Weibull и расчётные формулы в этот этап не входят.
+M04B реализован как `TestExecution → явная versioned ReliabilityObservation → immutable versioned ReliabilityDataset`: failure/right-censored/withdrawn/invalid classification, точный/right-bound/interval/unavailable endpoint, узкие RBD/RPT life metrics, frozen document/evidence provenance и раздельные eligibility/include-exclude decisions. Подробный контракт принадлежит `M04B_STATISTICAL_CLASSIFICATION_AND_LIFE_METRICS.md`. Weibull и расчётные формулы в этот этап не входят.
 
 ## M04C и далее — расчёты испытаний
 

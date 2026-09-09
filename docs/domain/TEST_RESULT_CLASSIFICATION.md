@@ -1,3 +1,14 @@
 # Test Result Classification
 
-Классификация разделяет `technicalStatus`, `terminationReason`, `specimenOutcome`, `runValidity`, `dataCompleteness`, `reliabilityObservationType`. Equipment failure не равен specimen failure. Accepted cycle counter сильнее вывода только по времени, но оба значения и расхождение сохраняются. Исходный `.r130run` и SHA-256 неизменяемы.
+`technicalStatus`, `terminationReason`, `specimenOutcome`, `runValidity` и `dataCompleteness` остаются раздельными source facts. Equipment failure, остановка стенда, превышение порога, лабораторное заключение и отказ образца не сводятся в один статус. Импорт и materialization не создают статистическую классификацию.
+
+Сохранённую `ReliabilityObservation` создаёт только явное действие инженера, а Python проверяет словарь и сочетание с endpoint:
+
+| Classification | Допустимый endpoint | Смысл |
+| --- | --- | --- |
+| `failure` | `exact`, `interval`, `unavailable` | отказ образца подтверждён; точная наработка может отсутствовать |
+| `right_censored` | `right_bound` | отказ не установлен до доказуемой границы наблюдения |
+| `withdrawn` | `right_bound`, `unavailable` | наблюдение снято с зафиксированной причиной, но не объявлено censored автоматически |
+| `invalid` | `unavailable` | наблюдение явно недействительно для назначения |
+
+`not_classified` означает отсутствие сохранённого решения и не является пятым исходом. Момент завершения запуска или обнаружения повреждения не становится временем возникновения отказа. При известном интервале сохраняются обе границы без подстановки середины или конца. Исходный `.r130run`, его SHA-256 и source conclusion неизменяемы; расхождение решения инженера сопровождается основанием и evidence references.

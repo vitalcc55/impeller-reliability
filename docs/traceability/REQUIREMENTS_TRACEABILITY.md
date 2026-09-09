@@ -64,3 +64,10 @@
 | Managed archive isolation | missing/modified status does not corrupt project; explicit verify revalidates | pytest damage/reopen + Electron source-status E2E |
 | Import lifecycle | one in-memory job; cancel/drain/commit fence/lost-response reconciliation | pytest + Vitest + Electron crash/close tests |
 | No analysis claim in M03B | supported run-package schema only; plan schemas empty; no eligibility/readiness | contract/source review + negative DTO/UI assertions |
+| Explicit statistical interpretation | Python-owned versioned `ReliabilityObservation`; no import-time classification | semantic unit matrix + production Electron E2E |
+| Life metric meaning and provenance | kind/unit/endpoint/scope + `analyst_provided` + frozen CaseDocument snapshot | numeric/provenance/reopen/tamper pytest |
+| Immutable dataset composition | exact observation versions + separate eligibility and include/exclude decisions | persistence integration + v1/v2 close/reopen E2E |
+| Conservative independence | one considered version per execution; one included Specimen and source run | UNIQUE/index/domain rejection tests |
+| M04B bounded IPC | keyset execution/dataset pages, bounded details, UTF-8 JSONL producer/consumer guards | contract/Vitest/process/pagination tests |
+| M04B recovery | caller UUID exact retry, expected head conflict and authoritative reattach readback | pytest retry/conflict + Electron reopen/restart |
+| No reliability calculation in M04B | no AnalysisInputSnapshot, CalculationSnapshot, algorithm or report result | capability/source review |

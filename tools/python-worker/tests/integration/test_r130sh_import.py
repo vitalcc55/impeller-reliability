@@ -27,9 +27,10 @@ from impeller_reliability.integration.r130run.validator import (
     RunPackageValidator,
     ValidationControl,
 )
-from impeller_reliability.persistence import r130sh_sources as r130sh_sources_module
+from impeller_reliability.persistence import r130sh_sources as r130sh_sources_module, reliability_domain as reliability_domain_module
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.r130sh_sources import ImportedRunDetail, ImportedRunSummary
+from impeller_reliability.persistence.reliability_domain import ReliabilityDomainRepository
 from impeller_reliability.worker.deadline import RequestDeadline
 from support.r130run_builder import build_synthetic_r130run
 
@@ -369,23 +370,26 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(tmp_pat
     )
 
     execution = service.materialize_reliability_execution(imported.local_import_id, None)
+    with pytest.raises(ProjectOperationError) as rebound_after_materialization:
+        service.bind_imported_run_specimen(
+            source_specimen_id=imported.source_specimen_id,
+            local_specimen_id=None,
+            expected_revision=2,
+            actor="local_user",
+            reason="Попытка изменить историческую привязку",
+            deadline=None,
+        )
+    assert rebound_after_materialization.value.code == "entity_in_use"
     repeated = service.materialize_reliability_execution(imported.local_import_id, None)
     assert repeated == execution
     assert execution.local_specimen_id == specimen.specimen_id
     assert execution.method == "rbd"
     assert execution.lifecycle_status == "completed"
     assert execution.failure_observations == ()
-    assert service.list_reliability_executions(wheel.wheel_model_id, None) == (execution,)
-    dataset = service.create_reliability_dataset(
-        dataset_id=str(uuid4()),
-        life_metric_unit="unknown",
-        censoring_policy="not_classified",
-        execution_ids=(execution.execution_id,),
-        failure_ids=(),
-        deadline=None,
-    )
-    assert dataset.execution_ids == (execution.execution_id,)
-
+    page = service.list_reliability_execution_page(wheel.wheel_model_id, None, 25, None)
+    assert [item.execution_id for item in page.items] == [execution.execution_id]
+    assert page.next_cursor is None
+    assert service.get_reliability_execution(execution.execution_id, None) == execution
     archived_source = _import(service, project_path, _package("normal_final_pmn.r130run"))
     service.bind_imported_run_specimen(
         source_specimen_id=archived_source.source_specimen_id,
@@ -404,7 +408,7 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(tmp_pat
     source_before = _source_snapshot(project_path, imported.local_import_id)
     service.close()
     service.open(path=str(project_path), application_instance_id="reopen")
-    assert service.list_reliability_executions(wheel.wheel_model_id, None) == (execution,)
+    assert service.get_reliability_execution(execution.execution_id, None) == execution
     assert _source_snapshot(project_path, imported.local_import_id) == source_before
     service.close()
     with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
@@ -480,7 +484,7 @@ def test_reliability_failure_observation_does_not_turn_technical_stop_into_speci
     assert execution.result_summary["acceptedElapsedS"] == "0"
     assert observation.duration_s is None
     assert observation.vibration_summary["available"] is False
-    assert service.list_reliability_executions(wheel.wheel_model_id, None) == (execution,)
+    assert service.get_reliability_execution(execution.execution_id, None) == execution
 
     partial = _import(service, project_path, _package("diagnostic_partial.r130run"))
     service.bind_imported_run_specimen(
@@ -494,25 +498,6 @@ def test_reliability_failure_observation_does_not_turn_technical_stop_into_speci
     partial_execution = service.materialize_reliability_execution(partial.local_import_id, None)
     assert partial_execution.lifecycle_status == "interrupted"
     assert partial_execution.failure_observations == ()
-    dataset = service.create_reliability_dataset(
-        dataset_id=str(uuid4()),
-        life_metric_unit="unknown",
-        censoring_policy="not_classified",
-        execution_ids=(execution.execution_id,),
-        failure_ids=(observation.failure_id,),
-        deadline=None,
-    )
-    assert dataset.failure_ids == (observation.failure_id,)
-    with pytest.raises(ProjectOperationError) as duplicate_dataset:
-        service.create_reliability_dataset(
-            dataset_id=dataset.dataset_id,
-            life_metric_unit="unknown",
-            censoring_policy="not_classified",
-            execution_ids=(execution.execution_id,),
-            failure_ids=(observation.failure_id,),
-            deadline=None,
-        )
-    assert duplicate_dataset.value.code == "duplicate_entity"
     with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
         for statement in (
             "UPDATE reliability_test_executions SET method='pmn'",
@@ -523,6 +508,719 @@ def test_reliability_failure_observation_does_not_turn_technical_stop_into_speci
             with pytest.raises(sqlite3.IntegrityError):
                 connection.execute(statement)
     service.close()
+
+
+def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, project_path = _project(tmp_path)
+    imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
+    wheel = service.create_wheel(
+        {
+            "wheelModelId": str(uuid4()),
+            "fullName": "Колесо M04B",
+            "designation": "РБД-01",
+            "nominalDiameterMm": None,
+            "nominalSpeedRpm": None,
+            "bladeCount": None,
+            "geometryDescription": "",
+            "compositionDescription": "",
+            "materialDescription": "",
+            "notes": "",
+        },
+        None,
+    )
+    specimen = service.create_specimen(
+        {
+            "specimenId": str(uuid4()),
+            "wheelModelId": wheel.wheel_model_id,
+            "identificationNumber": "M04B-001",
+            "batchNumber": "",
+            "marking": "",
+            "manufacturedOn": None,
+            "receivedOn": None,
+            "workingDiameterMm": None,
+            "initialConditionNotes": "",
+            "notes": "",
+        },
+        None,
+    )
+    service.bind_imported_run_specimen(
+        source_specimen_id=imported.source_specimen_id,
+        local_specimen_id=specimen.specimen_id,
+        expected_revision=1,
+        actor="local_user",
+        reason="Подтверждён образец",
+        deadline=None,
+    )
+    execution = service.materialize_reliability_execution(imported.local_import_id, None)
+    document_id = str(uuid4())
+    document = service.create_case_document(
+        document_id,
+        {
+            "documentKind": "typical_test_method",
+            "title": "ПМИ Р130У",
+            "designation": "ПМИ Р130У",
+            "revisionLabel": "01",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "",
+        },
+        (wheel.wheel_model_id,),
+        (specimen.specimen_id,),
+        None,
+    )
+    observation_id = str(uuid4())
+    version_id = str(uuid4())
+    first = service.create_reliability_observation_version(
+        observation_id=observation_id,
+        observation_version_id=version_id,
+        execution_id=execution.execution_id,
+        expected_previous_version_id=None,
+        classification="right_censored",
+        endpoint_kind="right_bound",
+        metric_kind="rbd_steady_rotation_time",
+        metric_unit="hours",
+        metric_origin="analyst_provided",
+        lower_value="12.5",
+        upper_value=None,
+        origin_basis="Начало зачтённого установившегося вращения по разделу 10",
+        endpoint_basis="Граница наблюдения по записи инженера",
+        document_id=document.case_document_id,
+        document_locator="Раздел 10; журнал испытания, строка 42",
+        failure_ids=(),
+        actor="local_user",
+        reason="Отказ не установлен до документированной границы",
+        deadline=None,
+    )
+    assert first.disposition == "created"
+    assert first.version.classification == "right_censored"
+    assert first.version.lower_value == "12.5"
+    assert first.version.document_snapshot.record_revision == 1
+    audit_before_retry = _audit_count(project_path)
+    repeated = service.create_reliability_observation_version(
+        observation_id=observation_id,
+        observation_version_id=version_id,
+        execution_id=execution.execution_id,
+        expected_previous_version_id=None,
+        classification="right_censored",
+        endpoint_kind="right_bound",
+        metric_kind="rbd_steady_rotation_time",
+        metric_unit="hours",
+        metric_origin="analyst_provided",
+        lower_value="12.5",
+        upper_value=None,
+        origin_basis="Начало зачтённого установившегося вращения по разделу 10",
+        endpoint_basis="Граница наблюдения по записи инженера",
+        document_id=document.case_document_id,
+        document_locator="Раздел 10; журнал испытания, строка 42",
+        failure_ids=(),
+        actor="local_user",
+        reason="Отказ не установлен до документированной границы",
+        deadline=None,
+    )
+    assert repeated.disposition == "existing"
+    assert repeated.version == first.version
+    assert _audit_count(project_path) == audit_before_retry
+    with pytest.raises(ProjectOperationError) as conflicting_retry:
+        service.create_reliability_observation_version(
+            observation_id=observation_id,
+            observation_version_id=version_id,
+            execution_id=execution.execution_id,
+            expected_previous_version_id=None,
+            classification="right_censored",
+            endpoint_kind="right_bound",
+            metric_kind="rbd_steady_rotation_time",
+            metric_unit="hours",
+            metric_origin="analyst_provided",
+            lower_value="13",
+            upper_value=None,
+            origin_basis="Начало зачтённого установившегося вращения по разделу 10",
+            endpoint_basis="Граница наблюдения по записи инженера",
+            document_id=document.case_document_id,
+            document_locator="Раздел 10; журнал испытания, строка 42",
+            failure_ids=(),
+            actor="local_user",
+            reason="Отказ не установлен до документированной границы",
+            deadline=None,
+        )
+    assert conflicting_retry.value.code == "revision_conflict"
+
+    dataset_id = str(uuid4())
+    dataset_version_id = str(uuid4())
+    dataset = service.create_reliability_dataset_version(
+        dataset_id=dataset_id,
+        dataset_version_id=dataset_version_id,
+        wheel_model_id=wheel.wheel_model_id,
+        expected_previous_version_id=None,
+        title="РБД — подтверждённая выборка",
+        method="rbd",
+        metric_kind="rbd_steady_rotation_time",
+        metric_unit="hours",
+        population_basis="Рабочие колёса модели РБД-01",
+        methodology_basis="ПМИ Р130У, редакция 01",
+        comparability_basis="Одинаковый метод РБД; условия отобраны инженером",
+        decisions=(
+            {
+                "observationVersionId": version_id,
+                "decision": "included",
+                "reason": "Документированная правая граница наблюдения",
+            },
+        ),
+        actor="local_user",
+        reason="Первая зафиксированная выборка",
+        deadline=None,
+    )
+    assert dataset.disposition == "created"
+    assert dataset.version.members[0].policy_eligibility == "eligible"
+    assert dataset.version.members[0].decision == "included"
+
+    second = service.create_reliability_observation_version(
+        observation_id=observation_id,
+        observation_version_id=str(uuid4()),
+        execution_id=execution.execution_id,
+        expected_previous_version_id=version_id,
+        classification="invalid",
+        endpoint_kind="unavailable",
+        metric_kind=None,
+        metric_unit=None,
+        metric_origin=None,
+        lower_value=None,
+        upper_value=None,
+        origin_basis="Не установлено",
+        endpoint_basis="Не установлено",
+        document_id=document.case_document_id,
+        document_locator="Заключение инженера",
+        failure_ids=(),
+        actor="local_user",
+        reason="Документированная граница признана неприменимой",
+        deadline=None,
+    )
+    assert second.version.version_number == 2
+    with pytest.raises(ProjectOperationError) as stale_observation:
+        service.create_reliability_observation_version(
+            observation_id=observation_id,
+            observation_version_id=str(uuid4()),
+            execution_id=execution.execution_id,
+            expected_previous_version_id=version_id,
+            classification="invalid",
+            endpoint_kind="unavailable",
+            metric_kind=None,
+            metric_unit=None,
+            metric_origin=None,
+            lower_value=None,
+            upper_value=None,
+            origin_basis="Не установлено",
+            endpoint_basis="Не установлено",
+            document_id=document.case_document_id,
+            document_locator="Заключение инженера",
+            failure_ids=(),
+            actor="local_user",
+            reason="Устаревший черновик",
+            deadline=None,
+        )
+    assert stale_observation.value.code == "revision_conflict"
+    with pytest.raises(ProjectOperationError) as ineligible_inclusion:
+        service.create_reliability_dataset_version(
+            dataset_id=dataset_id,
+            dataset_version_id=str(uuid4()),
+            wheel_model_id=wheel.wheel_model_id,
+            expected_previous_version_id=dataset_version_id,
+            title="РБД — уточнённая выборка",
+            method="rbd",
+            metric_kind="rbd_steady_rotation_time",
+            metric_unit="hours",
+            population_basis="Рабочие колёса модели РБД-01",
+            methodology_basis="ПМИ Р130У, редакция 01",
+            comparability_basis="Одинаковый метод РБД",
+            decisions=(
+                {
+                    "observationVersionId": second.version.observation_version_id,
+                    "decision": "included",
+                    "reason": "Попытка включить invalid",
+                },
+            ),
+            actor="local_user",
+            reason="Проверка политики",
+            deadline=None,
+        )
+    assert ineligible_inclusion.value.code == "validation_error"
+    dataset_second = service.create_reliability_dataset_version(
+        dataset_id=dataset_id,
+        dataset_version_id=str(uuid4()),
+        wheel_model_id=wheel.wheel_model_id,
+        expected_previous_version_id=dataset_version_id,
+        title="РБД — уточнённая выборка",
+        method="rbd",
+        metric_kind="rbd_steady_rotation_time",
+        metric_unit="hours",
+        population_basis="Рабочие колёса модели РБД-01",
+        methodology_basis="ПМИ Р130У, редакция 01",
+        comparability_basis="Одинаковый метод РБД",
+        decisions=(
+            {
+                "observationVersionId": second.version.observation_version_id,
+                "decision": "excluded",
+                "reason": "Наблюдение признано invalid",
+            },
+        ),
+        actor="local_user",
+        reason="Исправлен состав",
+        deadline=None,
+    )
+    assert dataset_second.version.version_number == 2
+    assert dataset_second.version.members[0].policy_eligibility == "ineligible"
+    assert dataset_second.version.members[0].decision == "excluded"
+    history_head = second
+    for expected_version in range(3, 52):
+        history_head = service.create_reliability_observation_version(
+            observation_id=observation_id,
+            observation_version_id=str(uuid4()),
+            execution_id=execution.execution_id,
+            expected_previous_version_id=history_head.version.observation_version_id,
+            classification="invalid",
+            endpoint_kind="unavailable",
+            metric_kind=None,
+            metric_unit=None,
+            metric_origin=None,
+            lower_value=None,
+            upper_value=None,
+            origin_basis="Не установлено",
+            endpoint_basis="Не установлено",
+            document_id=document.case_document_id,
+            document_locator="Заключение инженера",
+            failure_ids=(),
+            actor="local_user",
+            reason=f"Коррекция истории {expected_version}",
+            deadline=None,
+        )
+        assert history_head.version.version_number == expected_version
+    first_history_page = service.list_reliability_observation_versions(
+        execution.execution_id,
+        None,
+    )
+    assert len(first_history_page) == 50
+    assert first_history_page[0] == history_head.version
+    assert first_history_page[-1] == second.version
+    history_cursor = first_history_page[-1].previous_version_id
+    assert history_cursor is not None
+    assert history_cursor == first.version.observation_version_id
+    assert (
+        service.get_reliability_observation_version(
+            history_cursor,
+            None,
+        )
+        == first.version
+    )
+    updated_document = service.update_case_document(
+        document.case_document_id,
+        document.record_revision,
+        {
+            "documentKind": "typical_test_method",
+            "title": "ПМИ Р130У — уточнённая карточка",
+            "designation": "ПМИ Р130У",
+            "revisionLabel": "01",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "Метаданные изменены после интерпретации",
+        },
+        (wheel.wheel_model_id,),
+        (specimen.specimen_id,),
+        None,
+    )
+    assert updated_document.record_revision == 2
+    alternate_document = service.create_case_document(
+        str(uuid4()),
+        {
+            "documentKind": "other",
+            "title": "Альтернативный протокол",
+            "designation": "ПРОТ-02",
+            "revisionLabel": "01",
+            "documentDate": "2026-09-09",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "Не использовался для первой интерпретации",
+        },
+        (wheel.wheel_model_id,),
+        (specimen.specimen_id,),
+        None,
+    )
+    other_wheel = service.create_wheel(
+        {
+            "wheelModelId": str(uuid4()),
+            "fullName": "Другая модель",
+            "designation": "OTHER",
+            "nominalDiameterMm": None,
+            "nominalSpeedRpm": None,
+            "bladeCount": None,
+            "geometryDescription": "",
+            "compositionDescription": "",
+            "materialDescription": "",
+            "notes": "",
+        },
+        None,
+    )
+    service.update_specimen(
+        specimen.specimen_id,
+        specimen.record_revision,
+        {
+            "wheelModelId": other_wheel.wheel_model_id,
+            "identificationNumber": specimen.identification_number,
+            "batchNumber": specimen.batch_number,
+            "marking": specimen.marking,
+            "manufacturedOn": specimen.manufactured_on,
+            "receivedOn": specimen.received_on,
+            "workingDiameterMm": specimen.working_diameter_mm,
+            "initialConditionNotes": specimen.initial_condition_notes,
+            "notes": specimen.notes,
+        },
+        None,
+    )
+    assert service.list_reliability_execution_page(wheel.wheel_model_id, None, 25, None).items[0].execution_id == execution.execution_id
+    assert service.list_reliability_execution_page(other_wheel.wheel_model_id, None, 25, None).items == ()
+    assert service.get_reliability_observation_version(version_id, None).document_snapshot.title == "ПМИ Р130У"
+    assert service.get_reliability_dataset_version(dataset_version_id, None) == dataset.version
+    service.close()
+
+    service.open(path=str(project_path), application_instance_id="m04b-reopen")
+    assert service.get_reliability_observation_version(version_id, None) == first.version
+    assert service.get_reliability_dataset_version(dataset_version_id, None) == dataset.version
+    assert service.get_reliability_dataset_version(dataset_second.version.dataset_version_id, None) == dataset_second.version
+    assert service.list_reliability_dataset_page(wheel.wheel_model_id, None, 25, None).items[0].latest_version_id == dataset_second.version.dataset_version_id
+    assert service.list_reliability_observation_versions(execution.execution_id, None)[0] == history_head.version
+    service.close()
+
+    maximum_json_bytes = 250_000
+    parsed_json_sizes: list[int] = []
+
+    def bounded_json_object(value: str) -> dict[str, object]:
+        encoded_size = len(value.encode("utf-8"))
+        parsed_json_sizes.append(encoded_size)
+        assert encoded_size <= maximum_json_bytes
+        parsed = json.loads(value)
+        assert isinstance(parsed, dict)
+        return OBJECT_ADAPTER.validate_python(parsed)
+
+    monkeypatch.setattr(reliability_domain_module, "_json_object", bounded_json_object)
+    oversized_json = json.dumps({"payload": "x" * maximum_json_bytes})
+    oversized_mutations = (
+        (
+            "execution-snapshot",
+            "reliability_test_executions_no_update",
+            "UPDATE reliability_test_executions SET planned_parameters_snapshot_json=? WHERE execution_id=?",
+            (oversized_json, execution.execution_id),
+        ),
+        (
+            "document-snapshot",
+            "reliability_observation_versions_no_update",
+            "UPDATE reliability_observation_versions SET document_snapshot_json=? WHERE observation_version_id=?",
+            (oversized_json, first.version.observation_version_id),
+        ),
+    )
+    for mutation_name, trigger_name, statement, parameters in oversized_mutations:
+        oversized_path = tmp_path / f"m04b-oversized-{mutation_name}.irproj"
+        shutil.copytree(project_path, oversized_path)
+        with closing(sqlite3.connect(oversized_path / "project.sqlite")) as connection:
+            trigger_sql = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    (trigger_name,),
+                ).fetchone()[0]
+            )
+            connection.execute(f"DROP TRIGGER {trigger_name}")
+            connection.execute(statement, parameters)
+            connection.execute(trigger_sql)
+            connection.commit()
+        with pytest.raises(ProjectOperationError) as oversized_project:
+            ProjectService().open(
+                path=str(oversized_path),
+                application_instance_id=f"m04b-oversized-{mutation_name}",
+            )
+        assert oversized_project.value.code == "corrupt_project"
+
+    oversized_vibration_path = tmp_path / "m04b-oversized-vibration.irproj"
+    shutil.copytree(project_path, oversized_vibration_path)
+    with closing(sqlite3.connect(oversized_vibration_path / "project.sqlite")) as connection:
+        connection.execute(
+            """
+            INSERT INTO failure_observations (
+                failure_id, execution_id, failure_type, subject_kind,
+                source_event_reference, source_field_reference, cycles_at_failure,
+                duration_s, rpm, vibration_summary_json, observed_at_utc,
+                source_outer_package_sha256
+            ) VALUES (?, ?, 'technical_interruption', 'equipment', ?, ?, NULL, NULL, NULL, ?, NULL, ?)
+            """,
+            (
+                str(uuid4()),
+                execution.execution_id,
+                "events/oversized",
+                "events/oversized.json",
+                oversized_json,
+                execution.source_outer_package_sha256,
+            ),
+        )
+        connection.commit()
+    with pytest.raises(ProjectOperationError) as oversized_vibration:
+        ProjectService().open(
+            path=str(oversized_vibration_path),
+            application_instance_id="m04b-oversized-vibration",
+        )
+    assert oversized_vibration.value.code == "corrupt_project"
+
+    oversized_audit_path = tmp_path / "m04b-oversized-audit.irproj"
+    shutil.copytree(project_path, oversized_audit_path)
+    with closing(sqlite3.connect(oversized_audit_path / "project.sqlite")) as connection:
+        audit_trigger_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='project_audit_events_no_update'",
+            ).fetchone()[0]
+        )
+        connection.execute("DROP TRIGGER project_audit_events_no_update")
+        connection.execute(
+            """
+            UPDATE project_audit_events SET payload_json=?
+            WHERE event_type='reliability_execution.materialized'
+            """,
+            (oversized_json,),
+        )
+        connection.execute(audit_trigger_sql)
+        connection.commit()
+        with pytest.raises(ProjectOperationError) as oversized_audit:
+            reliability_domain_module.validate_reliability_evidence(connection)
+        assert oversized_audit.value.code == "corrupt_project"
+    assert max(parsed_json_sizes, default=0) <= maximum_json_bytes
+
+    incompatible_dataset_path = tmp_path / "m04b-incompatible-dataset.irproj"
+    shutil.copytree(project_path, incompatible_dataset_path)
+    tampered_version = dataset_second.version
+    tampered_payload = {
+        "datasetId": tampered_version.dataset_id,
+        "datasetVersionId": tampered_version.dataset_version_id,
+        "wheelModelId": tampered_version.wheel_model_id,
+        "versionNumber": tampered_version.version_number,
+        "previousVersionId": tampered_version.previous_version_id,
+        "policyId": tampered_version.policy_id,
+        "title": tampered_version.title,
+        "method": tampered_version.method,
+        "metricKind": "rpt_start_stop_cycles",
+        "metricUnit": "count",
+        "populationBasis": tampered_version.population_basis,
+        "methodologyBasis": tampered_version.methodology_basis,
+        "comparabilityBasis": tampered_version.comparability_basis,
+        "members": [
+            {
+                "observationVersionId": member.observation_version_id,
+                "executionId": member.execution_id,
+                "localSpecimenId": member.local_specimen_id,
+                "sourceRunId": member.source_run_id,
+                "policyEligibility": member.policy_eligibility,
+                "policyReason": member.policy_reason,
+                "decision": member.decision,
+                "inclusionReason": member.inclusion_reason,
+            }
+            for member in sorted(
+                tampered_version.members,
+                key=lambda item: item.observation_version_id,
+            )
+        ],
+        "actor": tampered_version.actor,
+        "decisionReason": tampered_version.decision_reason,
+        "createdAtUtc": tampered_version.created_at_utc,
+    }
+    tampered_hash = hashlib.sha256(
+        json.dumps(
+            tampered_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    with closing(sqlite3.connect(incompatible_dataset_path / "project.sqlite")) as connection:
+        dataset_trigger_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='reliability_dataset_versions_no_update'",
+            ).fetchone()[0]
+        )
+        audit_trigger_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='project_audit_events_no_update'",
+            ).fetchone()[0]
+        )
+        connection.execute("DROP TRIGGER reliability_dataset_versions_no_update")
+        connection.execute("DROP TRIGGER project_audit_events_no_update")
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            """
+            UPDATE reliability_dataset_versions
+            SET metric_kind='rpt_start_stop_cycles', metric_unit='count', content_sha256=?
+            WHERE dataset_version_id=?
+            """,
+            (tampered_hash, tampered_version.dataset_version_id),
+        )
+        audit_row = connection.execute(
+            """
+            SELECT sequence, payload_json FROM project_audit_events
+            WHERE event_type='reliability_dataset.version_created'
+              AND json_extract(payload_json, '$.datasetVersionId')=?
+            """,
+            (tampered_version.dataset_version_id,),
+        ).fetchone()
+        assert audit_row is not None
+        audit_payload = OBJECT_ADAPTER.validate_json(str(audit_row[1]))
+        audit_payload["contentSha256"] = tampered_hash
+        connection.execute(
+            "UPDATE project_audit_events SET payload_json=? WHERE sequence=?",
+            (
+                json.dumps(audit_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                int(audit_row[0]),
+            ),
+        )
+        connection.execute("PRAGMA ignore_check_constraints=OFF")
+        connection.execute(dataset_trigger_sql)
+        connection.execute(audit_trigger_sql)
+        connection.commit()
+        with pytest.raises(ProjectOperationError) as direct_validation:
+            reliability_domain_module.validate_reliability_evidence(connection)
+        assert direct_validation.value.code == "corrupt_project"
+    with pytest.raises(ProjectOperationError) as incompatible_dataset:
+        ProjectService().open(
+            path=str(incompatible_dataset_path),
+            application_instance_id="m04b-incompatible-dataset",
+        )
+    assert incompatible_dataset.value.code == "corrupt_project"
+
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        trigger_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='reliability_observation_versions_no_update'",
+            ).fetchone()[0]
+        )
+        connection.execute("DROP TRIGGER reliability_observation_versions_no_update")
+        connection.execute(
+            "UPDATE reliability_observation_versions SET endpoint_basis='Подменено' WHERE observation_version_id=?",
+            (version_id,),
+        )
+        connection.execute(trigger_sql)
+        connection.commit()
+    with pytest.raises(ProjectOperationError) as tampered_observation:
+        service.open(path=str(project_path), application_instance_id="m04b-tampered")
+    assert tampered_observation.value.code == "corrupt_project"
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        connection.execute("DROP TRIGGER reliability_observation_versions_no_update")
+        connection.execute(
+            """
+            UPDATE reliability_observation_versions
+            SET endpoint_basis=?, document_id=?
+            WHERE observation_version_id=?
+            """,
+            (first.version.endpoint_basis, alternate_document.case_document_id, version_id),
+        )
+        connection.execute(trigger_sql)
+        connection.commit()
+    with pytest.raises(ProjectOperationError) as mismatched_document:
+        service.open(path=str(project_path), application_instance_id="m04b-document-tampered")
+    assert mismatched_document.value.code == "corrupt_project"
+
+
+def test_m04b_execution_keyset_pages_are_bounded_stable_and_do_not_repeat(
+    tmp_path: Path,
+) -> None:
+    service, project_path = _project(tmp_path)
+    imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
+    wheel = service.create_wheel(
+        {
+            "wheelModelId": str(uuid4()),
+            "fullName": "Колесо pagination",
+            "designation": "PAGE",
+            "nominalDiameterMm": None,
+            "nominalSpeedRpm": None,
+            "bladeCount": None,
+            "geometryDescription": "",
+            "compositionDescription": "",
+            "materialDescription": "",
+            "notes": "",
+        },
+        None,
+    )
+    specimen = service.create_specimen(
+        {
+            "specimenId": str(uuid4()),
+            "wheelModelId": wheel.wheel_model_id,
+            "identificationNumber": "PAGE-001",
+            "batchNumber": "",
+            "marking": "",
+            "manufacturedOn": None,
+            "receivedOn": None,
+            "workingDiameterMm": None,
+            "initialConditionNotes": "",
+            "notes": "",
+        },
+        None,
+    )
+    service.bind_imported_run_specimen(
+        source_specimen_id=imported.source_specimen_id,
+        local_specimen_id=specimen.specimen_id,
+        expected_revision=1,
+        actor="local_user",
+        reason="Pagination fixture",
+        deadline=None,
+    )
+    base_execution = service.materialize_reliability_execution(imported.local_import_id, None)
+    service.close()
+
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        connection.row_factory = sqlite3.Row
+        source = connection.execute("SELECT * FROM r130sh_sources WHERE local_import_id=?", (imported.local_import_id,)).fetchone()
+        projection = connection.execute("SELECT * FROM r130sh_run_projections WHERE local_import_id=?", (imported.local_import_id,)).fetchone()
+        execution = connection.execute("SELECT * FROM reliability_test_executions WHERE execution_id=?", (base_execution.execution_id,)).fetchone()
+        assert source is not None and projection is not None and execution is not None
+
+        def insert_clone(index: int) -> str:
+            local_import_id = str(uuid4())
+            source_values = dict(source)
+            source_values.update(
+                local_import_id=local_import_id,
+                package_id=str(uuid4()),
+                run_id=f"pagination-run-{index}",
+                managed_relative_path=f"imports/r130sh/page-{index}.r130run",
+            )
+            _insert_mapping(connection, "r130sh_sources", source_values)
+            projection_values = dict(projection)
+            projection_values.update(local_import_id=local_import_id, run_id=f"pagination-run-{index}")
+            _insert_mapping(connection, "r130sh_run_projections", projection_values)
+            execution_id = str(uuid4())
+            execution_values = dict(execution)
+            execution_values.update(
+                execution_id=execution_id,
+                local_import_id=local_import_id,
+                materialized_at_utc="2026-09-09T10:00:00.000Z",
+            )
+            _insert_mapping(connection, "reliability_test_executions", execution_values)
+            return execution_id
+
+        original_ids = {base_execution.execution_id, *(insert_clone(index) for index in range(54))}
+        connection.commit()
+        repository = ReliabilityDomainRepository(connection)
+        first = repository.list_execution_page(wheel.wheel_model_id, None, 25, None)
+        assert len(first.items) == 25
+        assert first.next_cursor is not None
+        late_id = insert_clone(999)
+        connection.commit()
+        collected = [item.execution_id for item in first.items]
+        cursor: str | None = first.next_cursor
+        while cursor is not None:
+            page = repository.list_execution_page(wheel.wheel_model_id, cursor, 25, None)
+            collected.extend(item.execution_id for item in page.items)
+            cursor = page.next_cursor
+        assert len(collected) == 55
+        assert len(set(collected)) == 55
+        assert set(collected) == original_ids
+        assert late_id not in collected
+        with pytest.raises(ProjectOperationError) as invalid_cursor:
+            repository.list_execution_page(str(uuid4()), first.next_cursor, 25, None)
+        assert invalid_cursor.value.code == "validation_error"
+        with pytest.raises(ProjectOperationError):
+            repository.list_execution_page(wheel.wheel_model_id, None, 51, None)
 
 
 def test_enrichment_copy_is_whitelisted_empty_only_and_idempotent(tmp_path: Path) -> None:
@@ -1211,6 +1909,15 @@ def _import_via_job(
 def _audit_count(project_path: Path) -> int:
     with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
         return int(connection.execute("SELECT count(*) FROM project_audit_events").fetchone()[0])
+
+
+def _insert_mapping(connection: sqlite3.Connection, table: str, values: dict[str, object]) -> None:
+    columns = tuple(values)
+    placeholders = ",".join("?" for _ in columns)
+    connection.execute(
+        f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})",
+        tuple(values[column] for column in columns),
+    )
 
 
 def _source_snapshot(project_path: Path, local_import_id: str) -> tuple[object, ...]:

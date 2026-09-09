@@ -45,15 +45,22 @@ def _reject_non_finite(value: str) -> object:
     raise ValueError(f"non_finite_number:{value}")
 
 
-def _write_protocol(model: ProtocolResponse | BaseModel | dict[str, object]) -> None:
+def write_protocol(model: ProtocolResponse | BaseModel | dict[str, object]) -> None:
     payload = model.model_dump(mode="json") if isinstance(model, BaseModel) else model
-    line = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
+    encoded = (json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n").encode("utf-8")
+    if len(encoded) > MAX_MESSAGE_BYTES:
+        request_id_value = payload.get("requestId")
+        request_id = request_id_value if isinstance(request_id_value, str) else "unknown"
+        revision_value = payload.get("revision")
+        revision = revision_value if isinstance(revision_value, int) and not isinstance(revision_value, bool) and revision_value >= 0 else 0
+        bounded = _contract_error(request_id, revision, "Ответ превышает допустимый размер.").model_dump(mode="json")
+        encoded = (json.dumps(bounded, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n").encode("utf-8")
     binary_stdout = getattr(sys.stdout, "buffer", None)
     if isinstance(binary_stdout, _BinaryWriter):
-        binary_stdout.write(line.encode("utf-8"))
+        binary_stdout.write(encoded)
         binary_stdout.flush()
     else:
-        sys.stdout.write(line)
+        sys.stdout.write(encoded.decode("utf-8"))
         sys.stdout.flush()
 
 
@@ -80,7 +87,7 @@ def run_worker(state_directory: Path) -> int:
             request_id = "unknown"
             revision = 0
             if len(raw_line) > MAX_MESSAGE_BYTES:
-                _write_protocol(_contract_error(request_id, revision, "Сообщение превышает допустимый размер."))
+                write_protocol(_contract_error(request_id, revision, "Сообщение превышает допустимый размер."))
                 continue
             try:
                 decoded = raw_line.decode("utf-8", errors="strict")
@@ -127,7 +134,7 @@ def run_worker(state_directory: Path) -> int:
                         retryable=False,
                     ),
                 )
-            _write_protocol(response)
+            write_protocol(response)
             if dispatcher.shutdown_requested:
                 return 0
         return 0
@@ -152,7 +159,7 @@ def run_self_test() -> int:
             return 1
         storage = response.result.model_dump(mode="json")
         passed = storage.get("status") == "ok"
-        _write_protocol({"schemaVersion": 1, "passed": passed, "storage": storage})
+        write_protocol({"schemaVersion": 1, "passed": passed, "storage": storage})
         return 0 if passed else 1
 
 

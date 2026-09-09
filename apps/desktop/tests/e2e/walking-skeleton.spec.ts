@@ -3,6 +3,13 @@ import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync }
 import { join, resolve } from 'node:path';
 
 import { _electron as electron, expect, test } from '@playwright/test';
+import type { ImpellerApi } from '@impeller-reliability/contracts';
+
+declare global {
+  interface Window {
+    readonly impeller?: ImpellerApi;
+  }
+}
 
 function workerProcessIds(parentProcessId: number): readonly number[] {
   const command = `$owned = [System.Collections.Generic.HashSet[int]]::new(); $owned.Add(${String(parentProcessId)}) | Out-Null; $snapshot = @(Get-CimInstance Win32_Process); $changed = $true; while ($changed) { $changed = $false; foreach ($item in $snapshot) { if ($owned.Contains([int]$item.ParentProcessId) -and $owned.Add([int]$item.ProcessId)) { $changed = $true } } }; $workers = @($snapshot | Where-Object { $owned.Contains([int]$_.ProcessId) -and $_.CommandLine -match 'impeller_reliability\\.worker\\.main' }); $workerIds = [System.Collections.Generic.HashSet[int]]::new(); foreach ($worker in $workers) { $workerIds.Add([int]$worker.ProcessId) | Out-Null }; @($workers | Where-Object { -not $workerIds.Contains([int]$_.ParentProcessId) } | Select-Object -ExpandProperty ProcessId) | ConvertTo-Json -Compress`;
@@ -53,6 +60,8 @@ test('renderer reflects worker failure and controlled restart through the narrow
       'runPackageImport',
       'importedRun',
       'reliabilityExecution',
+      'reliabilityObservation',
+      'reliabilityDataset',
     ]);
     expect(
       await page.evaluate(() => {
@@ -71,6 +80,22 @@ test('renderer reflects worker failure and controlled restart through the narrow
       'subscribeCloseRequested',
       'subscribeStatus',
     ]);
+    expect(
+      await page.evaluate(() => {
+        const api: unknown = Reflect.get(window, 'impeller');
+        if (typeof api !== 'object' || api === null) return [];
+        const value: unknown = Reflect.get(api, 'reliabilityObservation');
+        return typeof value === 'object' && value !== null ? Reflect.ownKeys(value).sort() : [];
+      }),
+    ).toEqual(['createVersion', 'getVersion', 'listVersions']);
+    expect(
+      await page.evaluate(() => {
+        const api: unknown = Reflect.get(window, 'impeller');
+        if (typeof api !== 'object' || api === null) return [];
+        const value: unknown = Reflect.get(api, 'reliabilityDataset');
+        return typeof value === 'object' && value !== null ? Reflect.ownKeys(value).sort() : [];
+      }),
+    ).toEqual(['createVersion', 'getVersion', 'listPage']);
     expect(
       await page.evaluate(() => {
         const api: unknown = Reflect.get(window, 'impeller');
@@ -957,7 +982,7 @@ test('reconciles a clean document after a committed attachment response is not a
   }
 });
 
-test('imports an M9a result, binds its source specimen and reopens persisted provenance', async () => {
+test('imports, classifies and freezes an M04B dataset through the production worker', async () => {
   const repositoryRoot = resolve(import.meta.dirname, '../../../..');
   const evidenceRoot = resolve(repositoryRoot, '.tmp/.codex/evidence/m03b-import-e2e');
   const projectPath = join(evidenceRoot, 'm03b-import.irproj');
@@ -1000,6 +1025,18 @@ test('imports an M9a result, binds its source specimen and reopens persisted pro
     await page.getByLabel('Идентификационный номер').fill('LOCAL-M03B-001');
     await page.getByRole('button', { name: 'Сохранить образец' }).click();
 
+    await page.getByRole('button', { name: 'Документы дела' }).click();
+    await page.getByRole('button', { name: 'Новый документ' }).click();
+    await page.getByRole('combobox', { name: 'Вид документа' }).click();
+    await page.getByRole('option', { name: 'Типовая ПМИ' }).click();
+    await page.getByLabel('Название').fill('ПМИ Р130У');
+    await page.getByLabel('Обозначение').fill('ПМИ Р130У');
+    await page.getByLabel('Редакция').fill('01');
+    await page.getByRole('checkbox', { name: 'Локальная модель M03B', exact: true }).check();
+    await page.getByRole('checkbox', { name: /LOCAL-M03B-001/u }).check();
+    await page.getByRole('button', { name: 'Создать без файла' }).click();
+    await expect(page.getByText('Документ сохранён. Редакция 1.')).toBeVisible();
+
     await page.getByRole('button', { name: 'Результаты R130SH' }).click();
     await page.getByRole('button', { name: 'Импортировать результат R130SH' }).click();
     await expect(page.getByText('Импорт завершён')).toBeVisible();
@@ -1011,6 +1048,8 @@ test('imports an M9a result, binds its source specimen and reopens persisted pro
     await page.getByLabel('Причина привязки').fill('Идентичность подтверждена инженером');
     await page.getByRole('button', { name: 'Сохранить привязку' }).click();
     await expect(page.getByText(/Привязка source specimen сохранена/u)).toBeVisible();
+    await page.getByRole('button', { name: 'Подготовить исполнение для анализа' }).click();
+    await expect(page.getByText(/Аналитическое исполнение РБД подтверждено/u)).toBeVisible();
 
     await page.getByRole('combobox', { name: 'Существенное поле' }).click();
     await page.getByRole('option', { name: 'Заказчик: полное наименование' }).click();
@@ -1022,13 +1061,136 @@ test('imports an M9a result, binds its source specimen and reopens persisted pro
 
     await page.getByRole('button', { name: 'Импортировать результат R130SH' }).click();
     await expect(page.getByText('Этот пакет уже зарегистрирован.')).toBeVisible();
+    await page.getByRole('button', { name: 'Данные надёжности' }).click();
+    await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
+    await page.getByRole('option', { name: 'Локальная модель M03B' }).click();
+    await page.getByRole('button', { name: /РБД.*normal_final_rbd/u }).click();
+    await page.getByRole('combobox', { name: 'Классификация' }).click();
+    await page.getByRole('option', { name: 'Правое цензурирование' }).click();
+    await page.getByRole('combobox', { name: 'Форма границы' }).click();
+    await page.getByRole('option', { name: 'Правая граница наблюдения' }).click();
+    await page.getByRole('combobox', { name: 'Вид показателя наработки' }).click();
+    await page.getByRole('option', { name: 'Время установившегося вращения РБД' }).click();
+    await page.getByRole('combobox', { name: 'Единица наработки' }).click();
+    await page.getByRole('option', { name: 'часы' }).click();
+    await page.getByLabel('Значение или нижняя граница').fill('12.5');
+    await page.getByLabel('Начало отсчёта').fill('Начало зачтённого установившегося вращения');
+    await page.getByLabel('Основание границы').fill('Граница наблюдения по журналу');
+    await expect(page.getByText('Доступно документов: 1')).toBeVisible();
+    await page.getByRole('combobox', { name: 'Документ-основание' }).click();
+    await page.getByRole('option').filter({ hasText: 'ПМИ Р130У' }).first().click();
+    await page.getByLabel('Раздел или запись документа').fill('Раздел 10, запись 42');
+    await page
+      .getByLabel('Основание решения')
+      .fill('Отказ не установлен до документированной границы');
+    await page.getByRole('button', { name: 'Сохранить новую версию' }).click();
+    await expect(page.getByText('Версия интерпретации 1 сохранена.')).toBeVisible();
+    await expect(page.getByRole('button', { name: /РБД.*normal_final_rbd/u })).toBeEnabled();
+    await page.getByRole('combobox', { name: /РБД.*normal_final_rbd/u }).click();
+    await page.getByRole('option', { name: 'Включить' }).click();
+    await page.getByRole('combobox', { name: 'Метод выборки' }).click();
+    await page.getByRole('option', { name: 'РБД', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Показатель выборки' }).click();
+    await page.getByRole('option', { name: 'Время установившегося вращения' }).click();
+    await page.getByRole('combobox', { name: 'Единица выборки' }).click();
+    await page.getByRole('option', { name: 'часы' }).click();
+    await page.getByLabel('Причина включения').fill('Известна документированная правая граница');
+    expect(consoleErrors).toEqual([]);
+    await expect(page.getByRole('heading', { name: 'Версия выборки' })).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Зафиксировать новую версию выборки' }),
+    ).toBeVisible();
+    await page.getByRole('button', { name: 'Зафиксировать новую версию выборки' }).click();
+    await expect(page.getByText('Версия выборки 1 сохранена.')).toBeVisible();
+    await expect(page.getByText(/Включено.*Наблюдение без отказа/u)).toBeVisible();
+    await page.getByRole('combobox', { name: 'Классификация' }).click();
+    await page.getByRole('option', { name: 'Недействительно для назначения' }).click();
+    await page.getByRole('combobox', { name: 'Форма границы' }).click();
+    await page.getByRole('option', { name: 'Числовая граница неизвестна' }).click();
+    await page
+      .getByLabel('Основание решения')
+      .fill('Граница признана неприменимой после инженерной проверки');
+    await page.getByRole('button', { name: 'Сохранить новую версию' }).click();
+    await expect(page.getByText('Версия интерпретации 2 сохранена.')).toBeVisible();
+    await expect(page.getByRole('button', { name: /РБД.*normal_final_rbd/u })).toBeEnabled();
+    await page.getByRole('combobox', { name: /РБД.*normal_final_rbd/u }).click();
+    await page.getByRole('option', { name: 'Исключить' }).click();
+    await page
+      .getByLabel('Причина исключения')
+      .fill('Новая версия observation недействительна для этой выборки');
+    await page.getByRole('button', { name: 'Зафиксировать новую версию выборки' }).click();
+    await expect(page.getByText('Версия выборки 2 сохранена.')).toBeVisible();
+    await expect(
+      page.getByText(/Исключено.*Новая версия observation недействительна/u),
+    ).toBeVisible();
+    const datasetReadback = await page
+      .locator('.reliability-dataset-readback')
+      .last()
+      .textContent();
+    const executionId = /execution ([0-9a-f-]{36})/u.exec(datasetReadback ?? '')?.[1];
+    if (executionId === undefined) throw new Error('m04b_execution_id_missing');
+    const latestHistoryVersion = await page.evaluate(async (selectedExecutionId) => {
+      const api = window.impeller;
+      if (api === undefined) throw new Error('preload_api_missing');
+      const listed = await api.reliabilityObservation.listVersions(selectedExecutionId);
+      if (!listed.ok || listed.result[0] === undefined)
+        throw new Error('observation_history_missing');
+      let latest = listed.result[0];
+      for (let expectedVersion = 3; expectedVersion <= 51; expectedVersion += 1) {
+        const created = await api.reliabilityObservation.createVersion({
+          observationId: latest.observationId,
+          observationVersionId: crypto.randomUUID(),
+          executionId: selectedExecutionId,
+          expectedPreviousVersionId: latest.observationVersionId,
+          classification: 'invalid',
+          endpointKind: 'unavailable',
+          metricKind: null,
+          metricUnit: null,
+          metricOrigin: null,
+          lowerValue: null,
+          upperValue: null,
+          originBasis: latest.originBasis,
+          endpointBasis: latest.endpointBasis,
+          documentId: latest.documentSnapshot.documentId,
+          documentLocator: latest.documentLocator,
+          failureIds: [],
+          actor: 'local_user',
+          reason: `Коррекция истории ${String(expectedVersion)}`,
+        });
+        if (!created.ok) throw new Error(created.error.code);
+        latest = created.result.version;
+      }
+      return latest.versionNumber;
+    }, executionId);
+    expect(latestHistoryVersion).toBe(51);
     await page.getByRole('button', { name: 'Закрыть проект' }).click();
     await page.getByRole('button', { name: 'Новый проект' }).click();
-    await page.getByRole('button', { name: 'Результаты R130SH' }).click();
-    await expect(page.getByRole('heading', { name: 'normal_final_rbd' })).toBeVisible();
-    await expect(page.getByRole('combobox', { name: 'Local Specimen' })).toHaveValue(
-      'LOCAL-M03B-001 — Локальная модель M03B',
-    );
+    await page.getByRole('button', { name: 'Данные надёжности' }).click();
+    await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
+    await page.getByRole('option', { name: 'Локальная модель M03B' }).click();
+    await page.getByRole('button', { name: /РБД.*normal_final_rbd/u }).click();
+    await expect(
+      page.getByRole('button', { name: /^Версия 51 · Недействительно для назначения$/u }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: /^Версия 2 · Недействительно для назначения$/u }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: /^Версия 1 · Правое цензурирование$/u }),
+    ).toHaveCount(0);
+    await page.getByRole('button', { name: 'Показать предыдущие версии интерпретации' }).click();
+    await expect(
+      page.getByRole('button', { name: /^Версия 1 · Правое цензурирование$/u }),
+    ).toBeVisible();
+    const latestDatasetVersion = page.getByRole('button', {
+      name: /Версия 2.*включено 0.*исключено 1/u,
+    });
+    await expect(latestDatasetVersion).toBeVisible();
+    await latestDatasetVersion.click();
+    await page.getByRole('button', { name: 'Показать предыдущие версии выборки' }).click();
+    await expect(
+      page.getByRole('button', { name: /Версия 1.*включено 1.*исключено 0/u }),
+    ).toBeVisible();
     expect(consoleErrors).toEqual([]);
   } finally {
     await app.close();
