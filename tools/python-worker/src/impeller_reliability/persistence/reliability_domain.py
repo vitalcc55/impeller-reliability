@@ -1422,6 +1422,11 @@ def _validate_reliability_evidence(
         expected_previous = None if previous is None else previous[1]
         if dataset_version.version_number != expected_number or dataset_version.previous_version_id != expected_previous:
             raise _corrupt_evidence()
+        _normalize_dataset_metric(
+            dataset_version.method,
+            dataset_version.metric_kind,
+            dataset_version.metric_unit,
+        )
         _validate_included_uniqueness(dataset_version.members)
         for member in dataset_version.members:
             observation = repository.get_observation_version(member.observation_version_id, deadline)

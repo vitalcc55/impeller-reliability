@@ -1078,6 +1078,7 @@ test('imports, classifies and freezes an M04B dataset through the production wor
       .fill('Отказ не установлен до документированной границы');
     await page.getByRole('button', { name: 'Сохранить новую версию' }).click();
     await expect(page.getByText('Версия интерпретации 1 сохранена.')).toBeVisible();
+    await expect(page.getByRole('button', { name: /РБД.*normal_final_rbd/u })).toBeEnabled();
     await page.getByRole('combobox', { name: /РБД.*normal_final_rbd/u }).click();
     await page.getByRole('option', { name: 'Включить' }).click();
     await page.getByRole('combobox', { name: 'Метод выборки' }).click();
@@ -1104,6 +1105,7 @@ test('imports, classifies and freezes an M04B dataset through the production wor
       .fill('Граница признана неприменимой после инженерной проверки');
     await page.getByRole('button', { name: 'Сохранить новую версию' }).click();
     await expect(page.getByText('Версия интерпретации 2 сохранена.')).toBeVisible();
+    await expect(page.getByRole('button', { name: /РБД.*normal_final_rbd/u })).toBeEnabled();
     await page.getByRole('combobox', { name: /РБД.*normal_final_rbd/u }).click();
     await page.getByRole('option', { name: 'Исключить' }).click();
     await page

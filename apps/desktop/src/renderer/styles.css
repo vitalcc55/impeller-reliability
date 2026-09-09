@@ -1368,6 +1368,13 @@ h3 {
   margin: 18px 0;
 }
 
+.reliability-observation-fields {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
 .reliability-evidence {
   display: grid;
   gap: 10px;

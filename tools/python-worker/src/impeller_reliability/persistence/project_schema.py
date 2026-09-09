@@ -410,7 +410,11 @@ CREATE TABLE reliability_dataset_versions (
     created_at_utc TEXT NOT NULL,
     content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
     UNIQUE (dataset_id, version_number),
-    CHECK ((version_number = 1 AND previous_version_id IS NULL) OR (version_number > 1 AND previous_version_id IS NOT NULL))
+    CHECK ((version_number = 1 AND previous_version_id IS NULL) OR (version_number > 1 AND previous_version_id IS NOT NULL)),
+    CHECK (
+        (method = 'rbd' AND metric_kind = 'rbd_steady_rotation_time' AND metric_unit = 'hours') OR
+        (method = 'rpt' AND metric_kind = 'rpt_start_stop_cycles' AND metric_unit = 'count')
+    )
 )
 """
 RELIABILITY_DATASET_MEMBERS_TABLE_SQL: Final = """

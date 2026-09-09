@@ -257,7 +257,7 @@ export const ReliabilityPreparation = forwardRef<
   };
 
   const selectExecution = async (executionId: string): Promise<void> => {
-    if (dirty) return;
+    if (observationDirty) return;
     const revision = ++selectionRef.current;
     setExecution(null);
     const detail = await desktopApi.reliabilityExecution.getDetail(executionId);
@@ -546,7 +546,7 @@ export const ReliabilityPreparation = forwardRef<
                 type="button"
                 className="reliability-record"
                 aria-pressed={execution?.executionId === item.executionId}
-                disabled={disabled || busy !== null || dirty}
+                disabled={disabled || busy !== null || observationDirty}
                 onClick={() =>
                   void runPending('execution-detail', () => selectExecution(item.executionId))
                 }
@@ -562,7 +562,7 @@ export const ReliabilityPreparation = forwardRef<
           {executionCursor === null || wheelModelId === null ? null : (
             <Button
               variant="subtle"
-              disabled={busy !== null || dirty}
+              disabled={busy !== null || observationDirty}
               onClick={() =>
                 void runPending('more-executions', async () => {
                   const result = await desktopApi.reliabilityExecution.listPage(
@@ -693,168 +693,175 @@ export const ReliabilityPreparation = forwardRef<
                   void saveObservation();
                 }}
               >
-                <div className="reliability-form-grid">
-                  <Select
-                    label="Классификация"
-                    required
-                    data={classificationOptions}
-                    value={observationDraft.classification}
-                    onChange={(value) =>
-                      value === null
-                        ? undefined
-                        : updateObservation({
-                            classification: value as ObservationDraft['classification'],
-                          })
-                    }
-                  />
-                  <Select
-                    label="Форма границы"
-                    required
-                    data={endpointOptions}
-                    value={observationDraft.endpointKind}
-                    onChange={(value) =>
-                      value === null
-                        ? undefined
-                        : updateObservation({
-                            endpointKind: value as ObservationDraft['endpointKind'],
-                            ...(value === 'unavailable'
-                              ? {
-                                  metricKind: null,
-                                  metricUnit: null,
-                                  lowerValue: '',
-                                  upperValue: '',
-                                }
-                              : {}),
-                          })
-                    }
-                  />
-                  <Select
-                    label="Вид показателя наработки"
-                    data={[
-                      {
-                        value: 'rbd_steady_rotation_time',
-                        label: 'Время установившегося вращения РБД',
-                      },
-                      { value: 'rpt_start_stop_cycles', label: 'Циклы «пуск–торможение» РПТ' },
-                    ]}
-                    clearable
-                    value={observationDraft.metricKind}
-                    onChange={(value) =>
-                      updateObservation({
-                        metricKind: value,
-                      })
-                    }
-                  />
-                  <Select
-                    label="Единица наработки"
-                    data={[
-                      { value: 'hours', label: 'часы' },
-                      { value: 'count', label: 'циклы, целое число' },
-                    ]}
-                    clearable
-                    value={observationDraft.metricUnit}
-                    onChange={(value) =>
-                      updateObservation({
-                        metricUnit: value,
-                      })
-                    }
-                  />
-                  <TextInput
-                    label="Значение или нижняя граница"
-                    description="Canonical decimal string; смысл задаётся видом показателя"
-                    value={observationDraft.lowerValue}
-                    maxLength={64}
-                    onChange={(event) =>
-                      updateObservation({ lowerValue: event.currentTarget.value })
-                    }
-                  />
-                  {observationDraft.endpointKind === 'interval' ? (
-                    <TextInput
-                      label="Верхняя граница"
-                      description="Верхняя граница того же показателя"
-                      value={observationDraft.upperValue}
-                      maxLength={64}
-                      onChange={(event) =>
-                        updateObservation({ upperValue: event.currentTarget.value })
+                <fieldset
+                  className="reliability-observation-fields"
+                  disabled={disabled || busy !== null}
+                >
+                  <div className="reliability-form-grid">
+                    <Select
+                      label="Классификация"
+                      required
+                      data={classificationOptions}
+                      value={observationDraft.classification}
+                      onChange={(value) =>
+                        value === null
+                          ? undefined
+                          : updateObservation({
+                              classification: value as ObservationDraft['classification'],
+                            })
                       }
                     />
-                  ) : null}
-                  <Textarea
-                    label="Начало отсчёта"
-                    required
-                    value={observationDraft.originBasis}
-                    maxLength={1000}
-                    onChange={(event) =>
-                      updateObservation({ originBasis: event.currentTarget.value })
-                    }
-                  />
-                  <Textarea
-                    label="Основание границы"
-                    required
-                    value={observationDraft.endpointBasis}
-                    maxLength={1000}
-                    onChange={(event) =>
-                      updateObservation({ endpointBasis: event.currentTarget.value })
-                    }
-                  />
-                  <Select
-                    label="Документ-основание"
-                    required
-                    description={
-                      documents.length === 0
-                        ? 'Сначала зарегистрируйте применимый документ дела.'
-                        : `Доступно документов: ${String(documents.length)}`
-                    }
-                    data={documents.map((item) => ({
-                      value: item.caseDocumentId,
-                      label: `${item.title}${item.designation === '' ? '' : ` · ${item.designation}`}`,
-                    }))}
-                    value={observationDraft.documentId}
-                    onChange={(value) => updateObservation({ documentId: value })}
-                  />
-                  <TextInput
-                    label="Раздел или запись документа"
-                    required
-                    value={observationDraft.documentLocator}
-                    maxLength={1000}
-                    onChange={(event) =>
-                      updateObservation({ documentLocator: event.currentTarget.value })
-                    }
-                  />
-                </div>
-                <Textarea
-                  label="Основание решения"
-                  required
-                  value={observationDraft.reason}
-                  maxLength={2000}
-                  onChange={(event) => updateObservation({ reason: event.currentTarget.value })}
-                />
-                <fieldset className="reliability-evidence">
-                  <legend>Свидетельства, выбранные инженером</legend>
-                  {execution.failureObservations.length === 0 ? (
-                    <Text size="sm">В исполнении нет отдельных FailureObservation.</Text>
-                  ) : (
-                    execution.failureObservations.map((item) => (
-                      <div key={item.failureId}>
-                        <Checkbox
-                          label={`${item.failureType} · ${item.subjectKind} · ${item.sourceFieldReference}`}
-                          checked={observationDraft.failureIds.includes(item.failureId)}
-                          onChange={(event) =>
-                            updateObservation({
-                              failureIds: event.currentTarget.checked
-                                ? [...observationDraft.failureIds, item.failureId]
-                                : observationDraft.failureIds.filter((id) => id !== item.failureId),
+                    <Select
+                      label="Форма границы"
+                      required
+                      data={endpointOptions}
+                      value={observationDraft.endpointKind}
+                      onChange={(value) =>
+                        value === null
+                          ? undefined
+                          : updateObservation({
+                              endpointKind: value as ObservationDraft['endpointKind'],
+                              ...(value === 'unavailable'
+                                ? {
+                                    metricKind: null,
+                                    metricUnit: null,
+                                    lowerValue: '',
+                                    upperValue: '',
+                                  }
+                                : {}),
                             })
-                          }
-                        />
-                        <Text size="xs" c="dimmed">
-                          {item.failureId} · {item.sourceEventReference} · обнаружено:{' '}
-                          {item.observedAtUtc ?? 'не установлено'} · source SHA-256:{' '}
-                          {item.sourceOuterPackageSha256}
-                        </Text>
-                      </div>
-                    ))
-                  )}
+                      }
+                    />
+                    <Select
+                      label="Вид показателя наработки"
+                      data={[
+                        {
+                          value: 'rbd_steady_rotation_time',
+                          label: 'Время установившегося вращения РБД',
+                        },
+                        { value: 'rpt_start_stop_cycles', label: 'Циклы «пуск–торможение» РПТ' },
+                      ]}
+                      clearable
+                      value={observationDraft.metricKind}
+                      onChange={(value) =>
+                        updateObservation({
+                          metricKind: value,
+                        })
+                      }
+                    />
+                    <Select
+                      label="Единица наработки"
+                      data={[
+                        { value: 'hours', label: 'часы' },
+                        { value: 'count', label: 'циклы, целое число' },
+                      ]}
+                      clearable
+                      value={observationDraft.metricUnit}
+                      onChange={(value) =>
+                        updateObservation({
+                          metricUnit: value,
+                        })
+                      }
+                    />
+                    <TextInput
+                      label="Значение или нижняя граница"
+                      description="Canonical decimal string; смысл задаётся видом показателя"
+                      value={observationDraft.lowerValue}
+                      maxLength={64}
+                      onChange={(event) =>
+                        updateObservation({ lowerValue: event.currentTarget.value })
+                      }
+                    />
+                    {observationDraft.endpointKind === 'interval' ? (
+                      <TextInput
+                        label="Верхняя граница"
+                        description="Верхняя граница того же показателя"
+                        value={observationDraft.upperValue}
+                        maxLength={64}
+                        onChange={(event) =>
+                          updateObservation({ upperValue: event.currentTarget.value })
+                        }
+                      />
+                    ) : null}
+                    <Textarea
+                      label="Начало отсчёта"
+                      required
+                      value={observationDraft.originBasis}
+                      maxLength={1000}
+                      onChange={(event) =>
+                        updateObservation({ originBasis: event.currentTarget.value })
+                      }
+                    />
+                    <Textarea
+                      label="Основание границы"
+                      required
+                      value={observationDraft.endpointBasis}
+                      maxLength={1000}
+                      onChange={(event) =>
+                        updateObservation({ endpointBasis: event.currentTarget.value })
+                      }
+                    />
+                    <Select
+                      label="Документ-основание"
+                      required
+                      description={
+                        documents.length === 0
+                          ? 'Сначала зарегистрируйте применимый документ дела.'
+                          : `Доступно документов: ${String(documents.length)}`
+                      }
+                      data={documents.map((item) => ({
+                        value: item.caseDocumentId,
+                        label: `${item.title}${item.designation === '' ? '' : ` · ${item.designation}`}`,
+                      }))}
+                      value={observationDraft.documentId}
+                      onChange={(value) => updateObservation({ documentId: value })}
+                    />
+                    <TextInput
+                      label="Раздел или запись документа"
+                      required
+                      value={observationDraft.documentLocator}
+                      maxLength={1000}
+                      onChange={(event) =>
+                        updateObservation({ documentLocator: event.currentTarget.value })
+                      }
+                    />
+                  </div>
+                  <Textarea
+                    label="Основание решения"
+                    required
+                    value={observationDraft.reason}
+                    maxLength={2000}
+                    onChange={(event) => updateObservation({ reason: event.currentTarget.value })}
+                  />
+                  <fieldset className="reliability-evidence">
+                    <legend>Свидетельства, выбранные инженером</legend>
+                    {execution.failureObservations.length === 0 ? (
+                      <Text size="sm">В исполнении нет отдельных FailureObservation.</Text>
+                    ) : (
+                      execution.failureObservations.map((item) => (
+                        <div key={item.failureId}>
+                          <Checkbox
+                            label={`${item.failureType} · ${item.subjectKind} · ${item.sourceFieldReference}`}
+                            checked={observationDraft.failureIds.includes(item.failureId)}
+                            onChange={(event) =>
+                              updateObservation({
+                                failureIds: event.currentTarget.checked
+                                  ? [...observationDraft.failureIds, item.failureId]
+                                  : observationDraft.failureIds.filter(
+                                      (id) => id !== item.failureId,
+                                    ),
+                              })
+                            }
+                          />
+                          <Text size="xs" c="dimmed">
+                            {item.failureId} · {item.sourceEventReference} · обнаружено:{' '}
+                            {item.observedAtUtc ?? 'не установлено'} · source SHA-256:{' '}
+                            {item.sourceOuterPackageSha256}
+                          </Text>
+                        </div>
+                      ))
+                    )}
+                  </fieldset>
                 </fieldset>
                 <Group className="form-actions">
                   <Button

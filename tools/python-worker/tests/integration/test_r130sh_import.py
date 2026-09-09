@@ -27,7 +27,7 @@ from impeller_reliability.integration.r130run.validator import (
     RunPackageValidator,
     ValidationControl,
 )
-from impeller_reliability.persistence import r130sh_sources as r130sh_sources_module
+from impeller_reliability.persistence import r130sh_sources as r130sh_sources_module, reliability_domain as reliability_domain_module
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.r130sh_sources import ImportedRunDetail, ImportedRunSummary
 from impeller_reliability.persistence.reliability_domain import ReliabilityDomainRepository
@@ -847,6 +847,106 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
     assert service.list_reliability_dataset_page(wheel.wheel_model_id, None, 25, None).items[0].latest_version_id == dataset_second.version.dataset_version_id
     assert service.list_reliability_observation_versions(execution.execution_id, None)[0] == second.version
     service.close()
+
+    incompatible_dataset_path = tmp_path / "m04b-incompatible-dataset.irproj"
+    shutil.copytree(project_path, incompatible_dataset_path)
+    tampered_version = dataset_second.version
+    tampered_payload = {
+        "datasetId": tampered_version.dataset_id,
+        "datasetVersionId": tampered_version.dataset_version_id,
+        "wheelModelId": tampered_version.wheel_model_id,
+        "versionNumber": tampered_version.version_number,
+        "previousVersionId": tampered_version.previous_version_id,
+        "policyId": tampered_version.policy_id,
+        "title": tampered_version.title,
+        "method": tampered_version.method,
+        "metricKind": "rpt_start_stop_cycles",
+        "metricUnit": "count",
+        "populationBasis": tampered_version.population_basis,
+        "methodologyBasis": tampered_version.methodology_basis,
+        "comparabilityBasis": tampered_version.comparability_basis,
+        "members": [
+            {
+                "observationVersionId": member.observation_version_id,
+                "executionId": member.execution_id,
+                "localSpecimenId": member.local_specimen_id,
+                "sourceRunId": member.source_run_id,
+                "policyEligibility": member.policy_eligibility,
+                "policyReason": member.policy_reason,
+                "decision": member.decision,
+                "inclusionReason": member.inclusion_reason,
+            }
+            for member in sorted(
+                tampered_version.members,
+                key=lambda item: item.observation_version_id,
+            )
+        ],
+        "actor": tampered_version.actor,
+        "decisionReason": tampered_version.decision_reason,
+        "createdAtUtc": tampered_version.created_at_utc,
+    }
+    tampered_hash = hashlib.sha256(
+        json.dumps(
+            tampered_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    with closing(sqlite3.connect(incompatible_dataset_path / "project.sqlite")) as connection:
+        dataset_trigger_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='reliability_dataset_versions_no_update'",
+            ).fetchone()[0]
+        )
+        audit_trigger_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='project_audit_events_no_update'",
+            ).fetchone()[0]
+        )
+        connection.execute("DROP TRIGGER reliability_dataset_versions_no_update")
+        connection.execute("DROP TRIGGER project_audit_events_no_update")
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            """
+            UPDATE reliability_dataset_versions
+            SET metric_kind='rpt_start_stop_cycles', metric_unit='count', content_sha256=?
+            WHERE dataset_version_id=?
+            """,
+            (tampered_hash, tampered_version.dataset_version_id),
+        )
+        audit_row = connection.execute(
+            """
+            SELECT sequence, payload_json FROM project_audit_events
+            WHERE event_type='reliability_dataset.version_created'
+              AND json_extract(payload_json, '$.datasetVersionId')=?
+            """,
+            (tampered_version.dataset_version_id,),
+        ).fetchone()
+        assert audit_row is not None
+        audit_payload = OBJECT_ADAPTER.validate_json(str(audit_row[1]))
+        audit_payload["contentSha256"] = tampered_hash
+        connection.execute(
+            "UPDATE project_audit_events SET payload_json=? WHERE sequence=?",
+            (
+                json.dumps(audit_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                int(audit_row[0]),
+            ),
+        )
+        connection.execute("PRAGMA ignore_check_constraints=OFF")
+        connection.execute(dataset_trigger_sql)
+        connection.execute(audit_trigger_sql)
+        connection.commit()
+        with pytest.raises(ProjectOperationError) as direct_validation:
+            reliability_domain_module.validate_reliability_evidence(connection)
+        assert direct_validation.value.code == "corrupt_project"
+    with pytest.raises(ProjectOperationError) as incompatible_dataset:
+        ProjectService().open(
+            path=str(incompatible_dataset_path),
+            application_instance_id="m04b-incompatible-dataset",
+        )
+    assert incompatible_dataset.value.code == "corrupt_project"
+
     with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
         trigger_sql = str(
             connection.execute(

@@ -551,6 +551,36 @@ def test_newer_schema_is_not_modified(tmp_path: Path) -> None:
     assert list((project_path / "backups").iterdir()) == []
 
 
+def test_dataset_schema_rejects_method_metric_mismatch() -> None:
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.execute(project_schema.RELIABILITY_DATASET_VERSIONS_TABLE_SQL)
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO reliability_dataset_versions (
+                    dataset_version_id, dataset_id, version_number, previous_version_id,
+                    policy_id, title, method, metric_kind, metric_unit,
+                    population_basis, methodology_basis, comparability_basis,
+                    actor, decision_reason, created_at_utc, content_sha256
+                ) VALUES (?, ?, 1, NULL, 'life_metric_exact_v1', ?, 'rbd',
+                          'rpt_start_stop_cycles', 'count', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid4()),
+                    str(uuid4()),
+                    "Несовместимая выборка",
+                    "Совокупность",
+                    "Методика",
+                    "Сопоставимость",
+                    "local_user",
+                    "Проверка ограничения схемы",
+                    "2026-09-09T00:00:00.000Z",
+                    "0" * 64,
+                ),
+            )
+
+
 @pytest.mark.parametrize(
     "schema_mutation",
     [
