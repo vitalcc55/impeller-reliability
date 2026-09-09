@@ -707,6 +707,18 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
           return Promise.resolve(success({ disposition: 'existing' as const, version: existing }));
         const document = documents.get(command.documentId);
         if (document === undefined) return Promise.resolve(notFound());
+        if (document.archivedAtUtc !== null)
+          return Promise.resolve(
+            validationError('Архивный документ нельзя выбрать для нового решения.'),
+          );
+        const hasApplicability =
+          document.wheelModelIds.length > 0 || document.specimenIds.length > 0;
+        if (
+          hasApplicability &&
+          !document.wheelModelIds.includes(execution.wheelModelId) &&
+          !document.specimenIds.includes(execution.localSpecimenId)
+        )
+          return Promise.resolve(validationError('Документ не относится к выбранному исполнению.'));
         const versions = reliabilityObservations.filter(
           (item) => item.observationId === command.observationId,
         );
@@ -794,6 +806,17 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
       },
       createVersion: (command) => {
         if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        const expectedMetric =
+          command.method === 'rbd'
+            ? { kind: 'rbd_steady_rotation_time', unit: 'hours' }
+            : { kind: 'rpt_start_stop_cycles', unit: 'count' };
+        if (
+          command.metricKind !== expectedMetric.kind ||
+          command.metricUnit !== expectedMetric.unit
+        )
+          return Promise.resolve(
+            validationError('Показатель и единица наработки не соответствуют методу выборки.'),
+          );
         const existing = reliabilityDatasets.find(
           (item) => item.datasetVersionId === command.datasetVersionId,
         );

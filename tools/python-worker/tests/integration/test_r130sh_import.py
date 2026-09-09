@@ -512,6 +512,7 @@ def test_reliability_failure_observation_does_not_turn_technical_stop_into_speci
 
 def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, project_path = _project(tmp_path)
     imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
@@ -888,6 +889,106 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
     assert service.list_reliability_dataset_page(wheel.wheel_model_id, None, 25, None).items[0].latest_version_id == dataset_second.version.dataset_version_id
     assert service.list_reliability_observation_versions(execution.execution_id, None)[0] == history_head.version
     service.close()
+
+    maximum_json_bytes = 250_000
+    parsed_json_sizes: list[int] = []
+
+    def bounded_json_object(value: str) -> dict[str, object]:
+        encoded_size = len(value.encode("utf-8"))
+        parsed_json_sizes.append(encoded_size)
+        assert encoded_size <= maximum_json_bytes
+        parsed = json.loads(value)
+        assert isinstance(parsed, dict)
+        return OBJECT_ADAPTER.validate_python(parsed)
+
+    monkeypatch.setattr(reliability_domain_module, "_json_object", bounded_json_object)
+    oversized_json = json.dumps({"payload": "x" * maximum_json_bytes})
+    oversized_mutations = (
+        (
+            "execution-snapshot",
+            "reliability_test_executions_no_update",
+            "UPDATE reliability_test_executions SET planned_parameters_snapshot_json=? WHERE execution_id=?",
+            (oversized_json, execution.execution_id),
+        ),
+        (
+            "document-snapshot",
+            "reliability_observation_versions_no_update",
+            "UPDATE reliability_observation_versions SET document_snapshot_json=? WHERE observation_version_id=?",
+            (oversized_json, first.version.observation_version_id),
+        ),
+    )
+    for mutation_name, trigger_name, statement, parameters in oversized_mutations:
+        oversized_path = tmp_path / f"m04b-oversized-{mutation_name}.irproj"
+        shutil.copytree(project_path, oversized_path)
+        with closing(sqlite3.connect(oversized_path / "project.sqlite")) as connection:
+            trigger_sql = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    (trigger_name,),
+                ).fetchone()[0]
+            )
+            connection.execute(f"DROP TRIGGER {trigger_name}")
+            connection.execute(statement, parameters)
+            connection.execute(trigger_sql)
+            connection.commit()
+        with pytest.raises(ProjectOperationError) as oversized_project:
+            ProjectService().open(
+                path=str(oversized_path),
+                application_instance_id=f"m04b-oversized-{mutation_name}",
+            )
+        assert oversized_project.value.code == "corrupt_project"
+
+    oversized_vibration_path = tmp_path / "m04b-oversized-vibration.irproj"
+    shutil.copytree(project_path, oversized_vibration_path)
+    with closing(sqlite3.connect(oversized_vibration_path / "project.sqlite")) as connection:
+        connection.execute(
+            """
+            INSERT INTO failure_observations (
+                failure_id, execution_id, failure_type, subject_kind,
+                source_event_reference, source_field_reference, cycles_at_failure,
+                duration_s, rpm, vibration_summary_json, observed_at_utc,
+                source_outer_package_sha256
+            ) VALUES (?, ?, 'technical_interruption', 'equipment', ?, ?, NULL, NULL, NULL, ?, NULL, ?)
+            """,
+            (
+                str(uuid4()),
+                execution.execution_id,
+                "events/oversized",
+                "events/oversized.json",
+                oversized_json,
+                execution.source_outer_package_sha256,
+            ),
+        )
+        connection.commit()
+    with pytest.raises(ProjectOperationError) as oversized_vibration:
+        ProjectService().open(
+            path=str(oversized_vibration_path),
+            application_instance_id="m04b-oversized-vibration",
+        )
+    assert oversized_vibration.value.code == "corrupt_project"
+
+    oversized_audit_path = tmp_path / "m04b-oversized-audit.irproj"
+    shutil.copytree(project_path, oversized_audit_path)
+    with closing(sqlite3.connect(oversized_audit_path / "project.sqlite")) as connection:
+        audit_trigger_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='project_audit_events_no_update'",
+            ).fetchone()[0]
+        )
+        connection.execute("DROP TRIGGER project_audit_events_no_update")
+        connection.execute(
+            """
+            UPDATE project_audit_events SET payload_json=?
+            WHERE event_type='reliability_execution.materialized'
+            """,
+            (oversized_json,),
+        )
+        connection.execute(audit_trigger_sql)
+        connection.commit()
+        with pytest.raises(ProjectOperationError) as oversized_audit:
+            reliability_domain_module.validate_reliability_evidence(connection)
+        assert oversized_audit.value.code == "corrupt_project"
+    assert max(parsed_json_sizes, default=0) <= maximum_json_bytes
 
     incompatible_dataset_path = tmp_path / "m04b-incompatible-dataset.irproj"
     shutil.copytree(project_path, incompatible_dataset_path)

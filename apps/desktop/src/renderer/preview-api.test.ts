@@ -188,6 +188,56 @@ describe('browser preview api', () => {
       imported.result[0].localImportId,
     );
     if (!materialized.ok) throw new Error('materialize failed');
+    const unrelatedWheelId = '9f7b2db3-b750-476c-9ee0-2d3e03e75219';
+    const unrelatedDocumentId = '9b38f4c8-455d-4a87-8768-a93b2a2f85a8';
+    await api.wheelModel.create({
+      wheelModelId: unrelatedWheelId,
+      fullName: 'Другая модель',
+      designation: 'OTHER',
+      nominalDiameterMm: null,
+      nominalSpeedRpm: null,
+      bladeCount: null,
+      geometryDescription: '',
+      compositionDescription: '',
+      materialDescription: '',
+      notes: '',
+    });
+    await api.caseDocument.create({
+      caseDocumentId: unrelatedDocumentId,
+      document: {
+        documentKind: 'other',
+        title: 'Чужой документ',
+        designation: 'OTHER',
+        revisionLabel: '01',
+        documentDate: '2026-09-09',
+        issuer: 'ЛИЦ ВВУ',
+        notes: '',
+      },
+      wheelModelIds: [unrelatedWheelId],
+      specimenIds: [],
+    });
+    await expect(
+      api.reliabilityObservation.createVersion({
+        observationId: '31ea81e4-7b65-4410-aa8b-c83d593a0d7f',
+        observationVersionId: '19575593-643e-4cf5-988c-fb04fb7ad226',
+        executionId: materialized.result.executionId,
+        expectedPreviousVersionId: null,
+        classification: 'invalid',
+        endpointKind: 'unavailable',
+        metricKind: null,
+        metricUnit: null,
+        metricOrigin: null,
+        lowerValue: null,
+        upperValue: null,
+        originBasis: 'Не установлено',
+        endpointBasis: 'Не установлено',
+        documentId: unrelatedDocumentId,
+        documentLocator: 'Раздел 1',
+        failureIds: [],
+        actor: 'local_user',
+        reason: 'Проверка применимости документа',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'validation_error' } });
     const observationId = '8ab377f2-cfd8-4983-86ea-25f5d0171bd7';
     const observationVersionId = '40f4acbf-5f06-4d75-a65c-382141d785aa';
     const observation = await api.reliabilityObservation.createVersion({
@@ -237,6 +287,26 @@ describe('browser preview api', () => {
     await expect(api.reliabilityDataset.getVersion(datasetVersionId)).resolves.toEqual(
       dataset.ok ? { ok: true, result: dataset.result.version } : dataset,
     );
+    await expect(
+      api.reliabilityDataset.createVersion({
+        datasetId: '75e8d197-448c-410c-a21f-d957508a34b4',
+        datasetVersionId: 'f93052cf-ee7a-4435-bdbd-431290a4b4d1',
+        wheelModelId: wheelId,
+        expectedPreviousVersionId: null,
+        title: 'Несовместимая выборка preview',
+        method: 'rbd',
+        metricKind: 'rpt_start_stop_cycles',
+        metricUnit: 'count',
+        populationBasis: 'Колёса одной модели',
+        methodologyBasis: 'ПМИ Р130У',
+        comparabilityBasis: 'Условия подтверждены инженером',
+        decisions: [
+          { observationVersionId, decision: 'excluded', reason: 'Проверка preview parity' },
+        ],
+        actor: 'local_user',
+        reason: 'Несовместимая тройка должна быть отклонена',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'validation_error' } });
     await expect(api.reliabilityExecution.listPage(wheelId)).resolves.toMatchObject({
       ok: true,
       result: { items: [{ currentClassification: 'right_censored' }] },
