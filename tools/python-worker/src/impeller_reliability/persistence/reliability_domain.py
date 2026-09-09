@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import re
 import sqlite3
 from typing import Literal, cast
 from uuid import UUID, uuid4
@@ -17,6 +18,7 @@ from impeller_reliability.persistence.r130sh_sources import ImportedRunDetail, I
 from impeller_reliability.worker.deadline import RequestDeadline
 
 LifecycleStatus = Literal["completed", "interrupted", "failed"]
+_CANONICAL_METRIC_VALUE = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1973,7 +1975,7 @@ def normalize_observation_values(
 
 
 def canonical_metric_value(value: str, metric_kind: str) -> str:
-    if len(value) > 64:
+    if len(value) > 64 or _CANONICAL_METRIC_VALUE.fullmatch(value) is None:
         raise ProjectOperationError("validation_error", "Значение наработки имеет неверный формат.")
     try:
         parsed = Decimal(value)

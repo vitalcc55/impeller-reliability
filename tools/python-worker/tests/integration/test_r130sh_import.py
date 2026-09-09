@@ -771,6 +771,47 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
     assert dataset_second.version.version_number == 2
     assert dataset_second.version.members[0].policy_eligibility == "ineligible"
     assert dataset_second.version.members[0].decision == "excluded"
+    history_head = second
+    for expected_version in range(3, 52):
+        history_head = service.create_reliability_observation_version(
+            observation_id=observation_id,
+            observation_version_id=str(uuid4()),
+            execution_id=execution.execution_id,
+            expected_previous_version_id=history_head.version.observation_version_id,
+            classification="invalid",
+            endpoint_kind="unavailable",
+            metric_kind=None,
+            metric_unit=None,
+            metric_origin=None,
+            lower_value=None,
+            upper_value=None,
+            origin_basis="Не установлено",
+            endpoint_basis="Не установлено",
+            document_id=document.case_document_id,
+            document_locator="Заключение инженера",
+            failure_ids=(),
+            actor="local_user",
+            reason=f"Коррекция истории {expected_version}",
+            deadline=None,
+        )
+        assert history_head.version.version_number == expected_version
+    first_history_page = service.list_reliability_observation_versions(
+        execution.execution_id,
+        None,
+    )
+    assert len(first_history_page) == 50
+    assert first_history_page[0] == history_head.version
+    assert first_history_page[-1] == second.version
+    history_cursor = first_history_page[-1].previous_version_id
+    assert history_cursor is not None
+    assert history_cursor == first.version.observation_version_id
+    assert (
+        service.get_reliability_observation_version(
+            history_cursor,
+            None,
+        )
+        == first.version
+    )
     updated_document = service.update_case_document(
         document.case_document_id,
         document.record_revision,
@@ -845,7 +886,7 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
     assert service.get_reliability_dataset_version(dataset_version_id, None) == dataset.version
     assert service.get_reliability_dataset_version(dataset_second.version.dataset_version_id, None) == dataset_second.version
     assert service.list_reliability_dataset_page(wheel.wheel_model_id, None, 25, None).items[0].latest_version_id == dataset_second.version.dataset_version_id
-    assert service.list_reliability_observation_versions(execution.execution_id, None)[0] == second.version
+    assert service.list_reliability_observation_versions(execution.execution_id, None)[0] == history_head.version
     service.close()
 
     incompatible_dataset_path = tmp_path / "m04b-incompatible-dataset.irproj"

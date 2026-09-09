@@ -142,7 +142,7 @@ binding, marking или package id. Excluded alternatives остаются в с
 | --- | --- |
 | `reliabilityExecution.listPage` | compact keyset page, default 25/max 50, stable `materializedAtUtc DESC, executionId ASC` |
 | `reliabilityExecution.getDetail` | один bounded execution, source identity, outcome/validity/completeness, evidence и ограничения |
-| `reliabilityObservation.listVersions` | не более 50 bounded immutable versions одного execution |
+| `reliabilityObservation.listVersions` | не более 50 новейших immutable versions одного execution; предыдущие порции доступны через `getVersion` по `previousVersionId` |
 | `reliabilityObservation.getVersion` | одна exact immutable version со всеми provenance snapshots |
 | `reliabilityObservation.createVersion` | явное решение инженера, caller UUID, expected head, exact retry/conflict |
 | `reliabilityDataset.listPage` | compact dataset heads выбранной WheelModel, default 25/max 50 |

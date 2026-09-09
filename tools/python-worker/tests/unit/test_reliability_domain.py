@@ -5,6 +5,7 @@ from collections.abc import Callable
 from pydantic import ValidationError
 import pytest
 
+from impeller_reliability.persistence import reliability_domain as reliability_domain_module
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.reliability_domain import (
     FailureObservation,
@@ -161,6 +162,9 @@ def test_execution_page_contract_rejects_more_than_fifty_summaries() -> None:
         ("1.5", "rpt_start_stop_cycles"),
         ("1.0", "rbd_steady_rotation_time"),
         ("1e3", "rbd_steady_rotation_time"),
+        ("+1", "rbd_steady_rotation_time"),
+        ("01", "rbd_steady_rotation_time"),
+        ("1.", "rbd_steady_rotation_time"),
         ("1000000000001", "rpt_start_stop_cycles"),
     ],
 )
@@ -176,7 +180,36 @@ def test_life_metric_numeric_contract_rejects_invalid_or_noncanonical_values(
 def test_life_metric_numeric_contract_preserves_zero_and_exact_decimal() -> None:
     assert canonical_metric_value("0", "rbd_steady_rotation_time") == "0"
     assert canonical_metric_value("12.5", "rbd_steady_rotation_time") == "12.5"
+    assert canonical_metric_value("1000000000", "rbd_steady_rotation_time") == "1000000000"
+    sixty_four_characters = "0." + ("0" * 61) + "1"
+    assert len(sixty_four_characters) == 64
+    assert canonical_metric_value(sixty_four_characters, "rbd_steady_rotation_time") == sixty_four_characters
     assert canonical_metric_value("12", "rpt_start_stop_cycles") == "12"
+    assert canonical_metric_value("1000000000000", "rpt_start_stop_cycles") == "1000000000000"
+
+
+@pytest.mark.parametrize(
+    ("value", "metric_kind"),
+    [
+        ("1e-999999999", "rbd_steady_rotation_time"),
+        ("0e-999999999", "rbd_steady_rotation_time"),
+        ("0e-999999999", "rpt_start_stop_cycles"),
+        ("-0e-999999999", "rpt_start_stop_cycles"),
+    ],
+)
+def test_life_metric_rejects_exponent_before_decimal_materialization(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+    metric_kind: str,
+) -> None:
+    def fail_decimal_materialization(_value: str) -> None:
+        pytest.fail("exponent input reached Decimal materialization")
+
+    monkeypatch.setattr(reliability_domain_module, "Decimal", fail_decimal_materialization)
+
+    with pytest.raises(ProjectOperationError) as raised:
+        canonical_metric_value(value, metric_kind)
+    assert raised.value.code == "validation_error"
 
 
 def test_life_metric_origin_is_explicit_and_matches_value_presence() -> None:

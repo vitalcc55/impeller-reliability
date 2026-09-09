@@ -483,6 +483,7 @@ export const ReliabilityPreparation = forwardRef<
           .filter((item) => item.datasetId === selectedDataset.datasetId)
           .sort((left, right) => left.versionNumber - right.versionNumber)[0]?.previousVersionId ??
         null);
+  const observationHistoryCursor = versions.at(-1)?.previousVersionId ?? null;
 
   return (
     <section
@@ -899,6 +900,37 @@ export const ReliabilityPreparation = forwardRef<
                     </button>
                   ))}
                 </div>
+              )}
+              {observationHistoryCursor === null ? null : (
+                <Button
+                  variant="subtle"
+                  disabled={dirty || busy !== null}
+                  onClick={() =>
+                    void runPending('observation-history', async () => {
+                      const older: ReliabilityObservationVersion[] = [];
+                      let versionId: string | null = observationHistoryCursor;
+                      while (versionId !== null && older.length < 50) {
+                        const detail =
+                          await desktopApi.reliabilityObservation.getVersion(versionId);
+                        if (!detail.ok) return setError(detail.error);
+                        older.push(detail.result);
+                        versionId = detail.result.previousVersionId;
+                      }
+                      setVersions((current) => [
+                        ...current,
+                        ...older.filter(
+                          (candidate) =>
+                            !current.some(
+                              (item) =>
+                                item.observationVersionId === candidate.observationVersionId,
+                            ),
+                        ),
+                      ]);
+                    })
+                  }
+                >
+                  Показать предыдущие версии интерпретации
+                </Button>
               )}
               {selectedVersion === null ? null : (
                 <div className="reliability-dataset-readback">
