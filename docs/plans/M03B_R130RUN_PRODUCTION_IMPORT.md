@@ -9,7 +9,8 @@ M03B добавляет первую изменяющую аналитическ
 ## Exact baselines и release boundary
 
 - downstream: `vitalcc55/impeller-reliability@d0708924e8c9f19ac64668571846bccb1d6e21fa`, `main == origin/main`, GitHub Quality run `33306128933` — `success`;
-- upstream producer contract: `vitalcc55/R130SH`, branch только как справочная provenance `codex/data-and-protocol-improvements`, exact commit `01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63`;
+- frozen producer package provenance: `vitalcc55/R130SH@01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63`; этот SHA относится только к неизменяемым 21 M9a packages и их package-index;
+- текущий downstream acceptance contract: `vitalcc55/R130SH@09097561a6a58b1663a6912357a3c8d1daf7f28c`; validator `m03b.2` и новые registry/audit rows сохраняют его как `validation_contract_commit`;
 - upstream M9a завершён: опубликованы 21 producer-generated package files для 18 сценариев с реальными outer SHA-256; M9b выполняется downstream в Impeller Reliability;
 - GitHub releases и tags Impeller Reliability отсутствуют, `CHANGELOG.md` сохраняет `Unreleased`, подтверждённых пользовательских `.irproj` нет;
 - поэтому единая clean pre-release project schema остаётся `PROJECT_SCHEMA_VERSION = 1`, а M03B расширяет её exact published DDL и единственную запись ledger `0001 create_project_database`; migration v1→v2, compatibility views, dual-write и legacy adapters не создаются;
@@ -32,6 +33,8 @@ Python worker остаётся единственным владельцем val
 `package_id` — canonical RFC UUID producer-а; downstream принимает UUIDv4 и UUIDv7 и не смешивает его с локальными entity UUIDv4. Реальные M9a `run_id`, `plan_id` и `specimen_id` являются bounded upstream identities и в published goldens представлены slug identifiers; contract принимает их как отдельный nominal type и также допускает canonical UUIDv7. Marking/label никогда не заменяют identity.
 
 M03A synthetic fixtures сохраняются для unit/negative/safety validation и не являются producer compatibility proof. Новый offline snapshot `fixtures/contracts/r130run/v1/m9a` хранит exact M9a index, 21 archive и `UPSTREAM_SOURCE.json`; CI не обращается к сети или соседнему checkout R130SH. Snapshot обновляется только отдельным осознанным change set, не автоматически.
+
+M04A.1 завершает семантическую часть M03B без изменения wire schema. Для каждой строки `measurements.csv` validator требует точное равенство `accepted` предикату `attempt_disposition in {active, accepted} AND segment_disposition == included`. Он потоково пересчитывает `accepted_elapsed_s` как накопленную сумму промежутков между соседними accepted samples одного included segment и сверяет каждую строку, итог и `accepted_measurement_count`. Это поле не является duration, censor endpoint, resource exposure или life metric. `diagnostic_partial` допускает и неизменно сохраняет оба значения `resume_available`; импорт по-прежнему требует отдельного подтверждения и не создаёт calculation eligibility.
 
 После полного M9b gate handshake объявляет `supportedRunPackageSchemas = ["r130sh.run-package.v1"]`. `supportedPlanSchemas` остаётся пустым. Ни validation, ни import DTO не содержат `calculationEligible` или `readyForCalculation`.
 
@@ -258,3 +261,5 @@ M9a fixture -> authored expected assertions -> importer result
 9. Owner docs и четыре architecture maps синхронизированы; отдельный status/report/ADR не создан.
 10. `pnpm verify -- --IncludePackaging` и `git diff --check` зелёные; ветка опубликована, PR в `main` открыт, GitHub Quality успешен, подтверждённые P1/P2 review закрыты.
 11. PR не сливается без отдельного решения владельца.
+
+M04A.1 дополняет этот gate adversarial truth-table/streaming matrix, synthetic `diagnostic_partial + resume_available=true`, повторную проверку idempotency/conflict и отдельный byte/hash gate frozen M9a. Trial run, vibration baseline и относительный критерий `×1,5` отсутствуют в `.r130run` v1 и не реконструируются downstream.

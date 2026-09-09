@@ -543,7 +543,6 @@ def _observations(
     result: dict[str, object],
     source_outer_package_sha256: str,
 ) -> tuple[FailureObservation, ...]:
-    duration_s = _nullable_text(result["acceptedElapsedS"])
     observed_at_utc = _nullable_text(result["finishedAtUtc"])
     vibration_summary: dict[str, object] = {
         "sourcePayloadPath": "measurements.csv",
@@ -560,7 +559,7 @@ def _observations(
                 source_event_reference="run-summary.json#/laboratory_conclusion",
                 source_field_reference="#/specimen_outcome",
                 cycles_at_failure=None,
-                duration_s=duration_s,
+                duration_s=None,
                 rpm=None,
                 vibration_summary=vibration_summary,
                 observed_at_utc=observed_at_utc,
@@ -576,7 +575,7 @@ def _observations(
                 source_event_reference="run-summary.json#/termination_reason",
                 source_field_reference="#/technical_status",
                 cycles_at_failure=None,
-                duration_s=duration_s,
+                duration_s=None,
                 rpm=None,
                 vibration_summary=vibration_summary,
                 observed_at_utc=observed_at_utc,

@@ -88,6 +88,8 @@ def test_imports_all_m9a_packages_and_reopens_persisted_sources(tmp_path: Path) 
         assert imported.outer_package_sha256 == entry["sha256"]
         assert imported.outer_size_bytes == entry["size"]
         assert imported.source_integrity == "verified"
+        assert imported.validator_version == "m03b.2"
+        assert imported.validation_contract_commit == "09097561a6a58b1663a6912357a3c8d1daf7f28c"
         case_name = str(entry["case_name"])
         detail = service.get_imported_run(imported.local_import_id)
         _assert_m9b_case(case_name, detail)
@@ -120,6 +122,49 @@ def test_imports_all_m9a_packages_and_reopens_persisted_sources(tmp_path: Path) 
     details_after = {item_id: imported_run_detail_model(service.get_imported_run(item_id)).model_dump(mode="json") for item_id in imported_ids}
     assert details_after == details_before
     assert len(service.list_imported_runs()) == 21
+    service.close()
+
+
+def test_diagnostic_partial_resume_available_true_survives_production_import_and_reopen(
+    tmp_path: Path,
+) -> None:
+    service, project_path = _project(tmp_path)
+    base = build_synthetic_r130run(tmp_path / "partial-base.r130run")
+    with ZipFile(base) as archive:
+        summary = OBJECT_ADAPTER.validate_json(archive.read("run-summary.json"))
+    summary["package_kind"] = "diagnostic_partial"
+    summary["partial_reasons"] = ["run_can_continue_on_stand"]
+    summary["resume_available"] = True
+    summary["finished_at_utc"] = None
+    package = build_synthetic_r130run(
+        tmp_path / "resume-available-partial.r130run",
+        payload_overrides={
+            "run-summary.json": (json.dumps(summary, ensure_ascii=False) + "\n").encode("utf-8"),
+        },
+        manifest_mutator=lambda manifest: manifest.update(
+            package_kind="diagnostic_partial",
+        ),
+    )
+
+    imported = _import_via_job(
+        service,
+        project_path,
+        package,
+        allow_diagnostic_partial=True,
+    )
+    before = service.get_imported_run(imported.local_import_id)
+    assert before.summary.package_kind == "diagnostic_partial"
+    assert before.projection["resume_available"] is True
+    assert before.projection["partial_reasons"] == ["run_can_continue_on_stand"]
+    assert before.summary.technical_status == summary["technical_status"]
+    assert before.summary.run_validity == summary["run_validity"]
+    assert before.summary.data_completeness == summary["data_completeness"]
+    service.close()
+
+    service.open(path=str(project_path), application_instance_id="resume-available-reopen")
+    after = service.get_imported_run(imported.local_import_id)
+    assert after == before
+    assert after.projection["resume_available"] is True
     service.close()
 
 
@@ -432,6 +477,8 @@ def test_reliability_failure_observation_does_not_turn_technical_stop_into_speci
     assert observation.failure_type == "technical_interruption"
     assert observation.subject_kind == "unknown"
     assert observation.cycles_at_failure is None
+    assert execution.result_summary["acceptedElapsedS"] == "0"
+    assert observation.duration_s is None
     assert observation.vibration_summary["available"] is False
     assert service.list_reliability_executions(wheel.wheel_model_id, None) == (execution,)
 

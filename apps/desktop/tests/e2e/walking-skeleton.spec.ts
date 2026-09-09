@@ -1178,7 +1178,7 @@ test('validates a synthetic R130SH package without importing or mutating the pro
     await expect(page.getByText('Пройдена', { exact: true })).toBeVisible();
     await expect(page.getByText('Полное в доступном профиле', { exact: true })).toBeVisible();
     await expect(page.getByText('synthetic.r130run')).toBeVisible();
-    await expect(page.getByText('01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63')).toBeVisible();
+    await expect(page.getByText('09097561a6a58b1663a6912357a3c8d1daf7f28c')).toBeVisible();
     await expect(page.getByRole('button', { name: /Импорт/u })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Повторить проверку' })).toBeFocused();
     await page.setViewportSize({ width: 640, height: 900 });

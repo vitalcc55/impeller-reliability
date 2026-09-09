@@ -51,6 +51,13 @@ Equipment interruption, accepted measurement и planned target не преобр
 в отказ образца, completed cycles или ресурс. Неизвестное сохраняется как
 `NULL`, а не как zero.
 
+M04A.1 закрепляет эту границу для финального R130SH 0.9.45 contract:
+`acceptedElapsedS` остаётся в source projection и `TestExecution.resultSummary`
+как неизменяемое свидетельство накопленных sample spans, но не переносится в
+`FailureObservation.durationS`. Пока отдельного source field с требуемой
+семантикой duration нет, `durationS` всегда остаётся `NULL`; вычисление через
+`finished-started`, длительности сегментов или другой fallback запрещено.
+
 `ReliabilityDataset` — persistence owner будущего явного отбора: local
 `dataset_id`, единица life metric, bounded censoring policy и append-only
 membership execution/observation с inclusion decision/reason. В M04A нет
@@ -95,5 +102,7 @@ M04A завершён, когда unit, persistence and reopen tests доказ�
 4. reopen restores the same execution/dataset state and rejects tampered derived evidence;
 5. UI displays executions by local wheel identity without calculation claim.
 
-Следующий этап определяет расчётный input/output contract, units, rounding,
-classification policy и golden fixtures before adding any formula.
+Следующий этап M04B определяет `ReliabilityObservation`, классификацию
+failure/right-censored/withdrawn/invalid, life metric contracts, units,
+source provenance и dataset membership semantics. Первый расчётный vertical
+slice РБД относится только к M04C; формулы не входят в M04B и M04A.1.

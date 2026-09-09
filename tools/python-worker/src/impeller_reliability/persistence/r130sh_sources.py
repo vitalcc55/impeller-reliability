@@ -18,7 +18,7 @@ from impeller_reliability.integration.r130run.m9a import (
     canonical_json,
 )
 from impeller_reliability.integration.r130run.models import (
-    UPSTREAM_COMMIT,
+    UPSTREAM_ACCEPTANCE_COMMIT,
     VALIDATOR_VERSION,
     RunPackageValidationReport,
 )
@@ -310,7 +310,7 @@ class R130shSourceRepository:
                             "buildId": facts.producer_build_id,
                             "gitCommit": facts.producer_git_commit,
                         },
-                        "validationContractCommit": UPSTREAM_COMMIT,
+                        "validationContractCommit": UPSTREAM_ACCEPTANCE_COMMIT,
                     },
                 )
                 _check_deadline(deadline, "r130sh_import_commit")
@@ -484,7 +484,7 @@ class R130shSourceRepository:
                             _ignore_validation_progress,
                         ),
                     )
-                    status = "verified" if report.structuralVerdict == "passed" else "verification_error"
+                    status = "verified" if report.structuralVerdict == "passed" and report.semanticVerdict == "passed" else "verification_error"
         except SourceChangedError:
             status = "modified"
         except ValidationTimeoutError as error:
@@ -1051,7 +1051,7 @@ class R130shSourceRepository:
                 facts.outer_size_bytes,
                 now,
                 VALIDATOR_VERSION,
-                UPSTREAM_COMMIT,
+                UPSTREAM_ACCEPTANCE_COMMIT,
                 report.structuralVerdict,
                 report.semanticVerdict,
                 canonical_json(
@@ -1559,7 +1559,7 @@ def _created_summary(
         outer_size_bytes=facts.outer_size_bytes,
         imported_at_utc=imported_at_utc,
         validator_version=VALIDATOR_VERSION,
-        validation_contract_commit=UPSTREAM_COMMIT,
+        validation_contract_commit=UPSTREAM_ACCEPTANCE_COMMIT,
         structural_verdict="passed",
         semantic_verdict=semantic_verdict,
         source_integrity="verified",

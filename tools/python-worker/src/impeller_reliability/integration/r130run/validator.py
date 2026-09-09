@@ -29,7 +29,9 @@ from pydantic import TypeAdapter, ValidationError
 from impeller_reliability.integration.r130run.m9a import (
     MEASUREMENT_COLUMNS,
     M9aContractError,
-    validate_measurement_row,
+    MeasurementStreamSummary,
+    MeasurementStreamValidator,
+    parse_bounded_decimal as _bounded_decimal,
 )
 from impeller_reliability.integration.r130run.models import (
     CONTRACT_SCHEMA,
@@ -64,9 +66,6 @@ MAX_DECOMPRESSED_BYTES = 32 * GIB
 MAX_FINDINGS = 200
 MAX_REPORT_BYTES = 900 * 1024
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
-MAX_DECIMAL_TEXT_CHARS = 128
-MAX_DECIMAL_DIGITS = 64
-MAX_DECIMAL_ABS_EXPONENT = 1_024
 csv.field_size_limit(MAX_CSV_FIELD_CHARS)
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 ALLOWED_ZIP_FLAGS = 0x0800 | 0x0008
@@ -404,6 +403,7 @@ class RunPackageValidator:
             semantic_findings = _FindingAccumulator.empty()
             validated_bytes = 0
             parsed_json: dict[str, JsonValue] = {}
+            measurement_summary: MeasurementStreamSummary | None = None
             for index, item in enumerate(manifest.files, start=1):
                 control.check("payload_integrity")
                 entry = entries_by_name[item.path]
@@ -424,15 +424,23 @@ class RunPackageValidator:
                     raise _invalid("row_count_mismatch", item.path, "Количество JSONL записей не совпадает с manifest.", "manifest-inventory")
                 if payload.json_value is not None and item.path in SEMANTIC_JSON_PATHS:
                     parsed_json[item.path] = payload.json_value
+                if item.path == "measurements.csv" and payload.measurement_summary is not None:
+                    measurement_summary = payload.measurement_summary
                 control.progress("payload_integrity", validated_bytes, sum(value.size for value in manifest.files), index, len(manifest.files))
 
             control.check("semantic_validation")
             control.progress("semantic_validation", validated_bytes, validated_bytes, len(manifest.files), len(manifest.files))
-            _semantic_validate(manifest, parsed_json, semantic_findings, control)
+            _semantic_validate(
+                manifest,
+                parsed_json,
+                measurement_summary,
+                semantic_findings,
+                control,
+            )
             coverage = _semantic_coverage()
             semantic_verdict: SemanticVerdict = "failed" if semantic_findings.error > 0 else "passed"
-            if manifest.package_kind == "final" and not CORE_PATHS.issubset(declared):
-                semantic_findings.add(_finding("final_core_missing", "error", "manifest.files", "Final package не содержит полный frozen core.", "r130run-v1-target"))
+            if not CORE_PATHS.issubset(declared):
+                semantic_findings.add(_finding("core_missing", "error", "manifest.files", "Package не содержит полный frozen core.", "r130run-v1-target"))
                 semantic_verdict = "failed"
             control.check("finalizing")
             control.progress("finalizing", validated_bytes, validated_bytes, len(manifest.files), len(manifest.files))
@@ -456,6 +464,7 @@ class _PayloadRead:
     sha256: str
     size: int
     json_value: JsonValue | None
+    measurement_summary: MeasurementStreamSummary | None
 
 
 def _read_payload(
@@ -527,9 +536,16 @@ def _read_payload(
         )
         row_count += 1
     json_value = _parse_json(bytes(collected), item.path, control) if item.path.endswith(".json") else None
+    measurement_summary = None
     if csv_validator is not None:
         row_count = csv_validator.finish(control)
-    return _PayloadRead(digest.hexdigest(), completed, json_value), row_count
+        measurement_summary = csv_validator.summary
+    return _PayloadRead(
+        digest.hexdigest(),
+        completed,
+        json_value,
+        measurement_summary,
+    ), row_count
 
 
 class _CsvStreamValidator:
@@ -546,7 +562,14 @@ class _CsvStreamValidator:
         self._pending = ""
         self._rows = 0
         self._header_valid = False
-        self._previous_sequence = -1
+        self._semantic_valid = True
+        self._stream = MeasurementStreamValidator(run_id)
+
+    @property
+    def summary(self) -> MeasurementStreamSummary | None:
+        if not self._header_valid or not self._semantic_valid:
+            return None
+        return self._stream.summary()
 
     def feed(self, content: bytes, control: ValidationControl) -> None:
         try:
@@ -596,12 +619,11 @@ class _CsvStreamValidator:
                 _semantic_shape_finding(self._semantic_findings, self._location)
             else:
                 try:
-                    self._previous_sequence = validate_measurement_row(
+                    self._stream.consume(
                         dict(zip(MEASUREMENT_COLUMNS, fields, strict=True)),
-                        self._run_id,
-                        self._previous_sequence,
                     )
                 except M9aContractError:
+                    self._semantic_valid = False
                     _semantic_value_finding(self._semantic_findings, self._location)
         self._rows += 1
 
@@ -1039,6 +1061,7 @@ def _validate_json_shape(
 def _semantic_validate(
     manifest: _Manifest,
     json_payloads: dict[str, JsonValue],
+    measurement_summary: MeasurementStreamSummary | None,
     findings: _FindingAccumulator,
     control: ValidationControl,
 ) -> None:
@@ -1198,9 +1221,9 @@ def _semantic_validate(
                 summary.get("run_validity"),
                 summary.get("data_completeness"),
             )
-            if any(not isinstance(value, str) or value == "" for value in terminal_values) or not _valid_source_utc(summary.get("finished_at_utc")):
+            if any(not isinstance(value, str) or value == "" for value in terminal_values) or not _valid_source_utc(summary.get("finished_at_utc")) or partial_reasons or resume_available:
                 _semantic_value_finding(findings, "run-summary.json")
-        elif not partial_reasons or resume_available or (summary.get("finished_at_utc") is not None and not _valid_source_utc(summary.get("finished_at_utc"))):
+        elif not partial_reasons or (summary.get("finished_at_utc") is not None and not _valid_source_utc(summary.get("finished_at_utc"))):
             _semantic_value_finding(findings, "run-summary.json")
     if accepted is not None:
         count = accepted.get("accepted_measurement_count")
@@ -1210,6 +1233,14 @@ def _semantic_validate(
             elapsed = Decimal(-1)
         if not isinstance(count, int) or isinstance(count, bool) or count < 0 or elapsed < 0 or (plan is not None and accepted.get("mode") != plan.get("mode")):
             _semantic_value_finding(findings, "accepted-summary.json")
+        elif measurement_summary is not None:
+            try:
+                measurement_summary.verify(
+                    count,
+                    accepted.get("accepted_elapsed_s"),
+                )
+            except M9aContractError:
+                _semantic_value_finding(findings, "accepted-summary.json")
     if provenance is not None:
         provenance_value = provenance.get("provenance")
         if not isinstance(provenance_value, dict):
@@ -1539,19 +1570,6 @@ def _valid_source_identity(value: JsonValue) -> bool:
         and value == unicodedata.normalize("NFC", value)
         and not any(ord(character) < 32 or ord(character) == 127 for character in value)
     )
-
-
-def _bounded_decimal(value: JsonValue) -> Decimal:
-    if not isinstance(value, str) or not value or len(value) > MAX_DECIMAL_TEXT_CHARS:
-        raise ValueError("decimal_text_invalid")
-    parsed = Decimal(value)
-    if not parsed.is_finite():
-        raise ValueError("decimal_not_finite")
-    decimal_tuple = parsed.as_tuple()
-    exponent = decimal_tuple.exponent
-    if not isinstance(exponent, int) or len(decimal_tuple.digits) > MAX_DECIMAL_DIGITS or abs(exponent) > MAX_DECIMAL_ABS_EXPONENT or abs(parsed.adjusted()) > MAX_DECIMAL_ABS_EXPONENT:
-        raise ValueError("decimal_out_of_bounds")
-    return parsed
 
 
 def _valid_sha(value: JsonValue) -> bool:
