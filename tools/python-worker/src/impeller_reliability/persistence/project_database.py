@@ -83,6 +83,12 @@ def probe_project_database_identity(
         validate_dossier_evidence(connection, manifest.projectId, deadline)
         validate_case_document_evidence(connection, deadline)
         validate_r130sh_source_evidence(connection, deadline)
+        validate_reliability_evidence(connection, deadline)
+        with sqlite_deadline_guard(connection, deadline, "project_read_only_integrity"):
+            quick_check = str(connection.execute("PRAGMA quick_check").fetchone()[0])
+            has_foreign_key_error = connection.execute("PRAGMA foreign_key_check").fetchone() is not None
+        if quick_check != "ok" or has_foreign_key_error:
+            raise ProjectOperationError("corrupt_project", "Проверка целостности project.sqlite завершилась ошибкой.")
         return ProjectDatabaseIdentity(
             application_id=application_id,
             schema_version=schema_version,

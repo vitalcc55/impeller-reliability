@@ -7,7 +7,9 @@ import type {
   ImpellerApi,
   ImportedRunDetail,
   ImportedRunSummary,
+  ReliabilityDatasetVersion,
   ReliabilityExecution,
+  ReliabilityObservationVersion,
   ProjectOverview,
   RecentProject,
   RunPackageValidationJob,
@@ -23,7 +25,9 @@ import type {
 } from '@impeller-reliability/contracts';
 import {
   importedRunDetailSchema,
+  reliabilityDatasetVersionSchema,
   reliabilityExecutionSchema,
+  reliabilityObservationVersionSchema,
   planIdSchema,
   runPackageImportJobSchema,
   runPackageValidationJobSchema,
@@ -68,6 +72,8 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
   let importPolls = 0;
   let importedRun = previewImportedRunDetail();
   let reliabilityExecutions: readonly ReliabilityExecution[] = [];
+  let reliabilityObservations: readonly ReliabilityObservationVersion[] = [];
+  let reliabilityDatasets: readonly ReliabilityDatasetVersion[] = [];
   const recentProject: RecentProject = {
     path: 'C:\\Проекты\\Надёжность рабочего колеса.irproj',
     name: 'Надёжность рабочего колеса',
@@ -543,6 +549,7 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
     },
     reliabilityExecution: {
       materialize: (localImportId) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
         if (localImportId !== importedRun.summary.localImportId) return Promise.resolve(notFound());
         if (importedRun.summary.localSpecimenId === null)
           return Promise.resolve({
@@ -560,7 +567,13 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
           executionId: '4c7462d8-2222-4d19-8b8c-222222222222',
           localImportId,
           localSpecimenId: importedRun.summary.localSpecimenId,
+          wheelModelId:
+            specimens.get(importedRun.summary.localSpecimenId)?.wheelModelId ??
+            '00000000-0000-4000-8000-000000000001',
           sourceSpecimenId: importedRun.summary.sourceSpecimenId,
+          sourceRunId: importedRun.summary.runId,
+          exportRevision: importedRun.summary.exportRevision,
+          packageKind: importedRun.summary.packageKind,
           method: importedRun.summary.mode,
           lifecycleStatus: 'completed',
           plannedParametersSnapshot: {},
@@ -572,15 +585,287 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
         reliabilityExecutions = [execution];
         return Promise.resolve(success(execution));
       },
-      listByWheel: (wheelModelId) =>
-        Promise.resolve(
+      listPage: (wheelModelId, cursor, limit) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        const pageLimit = limit ?? 25;
+        if (!Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > 50)
+          return Promise.resolve(validationError('Размер страницы должен быть от 1 до 50.'));
+        const items = reliabilityExecutions
+          .filter((execution) => execution.wheelModelId === wheelModelId)
+          .map((execution) => {
+            const current = reliabilityObservations
+              .filter((item) => item.executionId === execution.executionId)
+              .sort((left, right) => right.versionNumber - left.versionNumber)[0];
+            return {
+              executionId: execution.executionId,
+              localSpecimenId: execution.localSpecimenId,
+              sourceSpecimenId: execution.sourceSpecimenId,
+              sourceRunId: importedRun.summary.runId,
+              exportRevision: importedRun.summary.exportRevision,
+              packageKind: importedRun.summary.packageKind,
+              method: execution.method,
+              lifecycleStatus: execution.lifecycleStatus,
+              technicalStatus: importedRun.summary.technicalStatus,
+              specimenOutcome: importedRun.summary.specimenOutcome,
+              runValidity: importedRun.summary.runValidity,
+              dataCompleteness: importedRun.summary.dataCompleteness,
+              materializedAtUtc: execution.materializedAtUtc,
+              failureObservationCount: execution.failureObservations.length,
+              currentObservationVersionId: current?.observationVersionId ?? null,
+              currentObservationVersionNumber: current?.versionNumber ?? null,
+              currentClassification: current?.classification ?? null,
+            };
+          });
+        const offset = cursor === null || cursor === undefined ? 0 : Number.parseInt(cursor, 10);
+        if (!Number.isInteger(offset) || offset < 0 || String(offset) !== (cursor ?? '0'))
+          return Promise.resolve(validationError('Cursor списка повреждён.'));
+        const page = items.slice(offset, offset + pageLimit);
+        return Promise.resolve(
+          success({
+            items: page,
+            nextCursor: offset + pageLimit < items.length ? String(offset + pageLimit) : null,
+          }),
+        );
+      },
+      getDetail: (executionId) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        const execution = reliabilityExecutions.find((item) => item.executionId === executionId);
+        return Promise.resolve(execution === undefined ? notFound() : success(execution));
+      },
+    },
+    reliabilityObservation: {
+      listVersions: (executionId) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        return Promise.resolve(
           success(
-            reliabilityExecutions.filter(
-              (execution) =>
-                specimens.get(execution.localSpecimenId)?.wheelModelId === wheelModelId,
-            ),
+            reliabilityObservations
+              .filter((item) => item.executionId === executionId)
+              .sort((left, right) => right.versionNumber - left.versionNumber)
+              .slice(0, 50),
           ),
-        ),
+        );
+      },
+      getVersion: (observationVersionId) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        const version = reliabilityObservations.find(
+          (item) => item.observationVersionId === observationVersionId,
+        );
+        return Promise.resolve(version === undefined ? notFound() : success(version));
+      },
+      createVersion: (command) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        const allowed =
+          command.classification === 'failure'
+            ? ['exact', 'interval', 'unavailable']
+            : command.classification === 'right_censored'
+              ? ['right_bound']
+              : command.classification === 'withdrawn'
+                ? ['right_bound', 'unavailable']
+                : ['unavailable'];
+        if (!allowed.includes(command.endpointKind))
+          return Promise.resolve(validationError('Классификация и граница несовместимы.'));
+        if (
+          (command.metricKind === null) !== (command.metricUnit === null) ||
+          (command.metricKind === null) !== (command.metricOrigin === null) ||
+          (command.metricKind === null) !== (command.lowerValue === null)
+        )
+          return Promise.resolve(
+            validationError('Для числовой наработки требуется происхождение.'),
+          );
+        if (
+          (command.endpointKind === 'unavailable' &&
+            (command.metricKind !== null || command.upperValue !== null)) ||
+          (command.endpointKind === 'interval' &&
+            (command.lowerValue === null || command.upperValue === null)) ||
+          (!['interval', 'unavailable'].includes(command.endpointKind) &&
+            (command.lowerValue === null || command.upperValue !== null))
+        )
+          return Promise.resolve(
+            validationError('Числовые границы не соответствуют форме endpoint.'),
+          );
+        const execution = reliabilityExecutions.find(
+          (item) => item.executionId === command.executionId,
+        );
+        if (execution === undefined) return Promise.resolve(notFound());
+        const expectedMetric =
+          execution.method === 'rbd'
+            ? ['rbd_steady_rotation_time', 'hours']
+            : execution.method === 'rpt'
+              ? ['rpt_start_stop_cycles', 'count']
+              : null;
+        if (
+          command.metricKind !== null &&
+          (expectedMetric === null ||
+            command.metricKind !== expectedMetric[0] ||
+            command.metricUnit !== expectedMetric[1])
+        )
+          return Promise.resolve(validationError('Наработка не соответствует методу исполнения.'));
+        const existing = reliabilityObservations.find(
+          (item) => item.observationVersionId === command.observationVersionId,
+        );
+        if (existing !== undefined)
+          return Promise.resolve(success({ disposition: 'existing' as const, version: existing }));
+        const document = documents.get(command.documentId);
+        if (document === undefined) return Promise.resolve(notFound());
+        const versions = reliabilityObservations.filter(
+          (item) => item.observationId === command.observationId,
+        );
+        const head = versions.sort((left, right) => right.versionNumber - left.versionNumber)[0];
+        if ((head?.observationVersionId ?? null) !== command.expectedPreviousVersionId)
+          return Promise.resolve(revisionConflict(head?.observationVersionId ?? null));
+        const version = reliabilityObservationVersionSchema.parse({
+          observationId: command.observationId,
+          observationVersionId: command.observationVersionId,
+          executionId: command.executionId,
+          versionNumber: versions.length + 1,
+          previousVersionId: command.expectedPreviousVersionId,
+          classification: command.classification,
+          endpointKind: command.endpointKind,
+          metricKind: command.metricKind,
+          metricUnit: command.metricUnit,
+          metricOrigin: command.metricOrigin,
+          lowerValue: command.lowerValue,
+          upperValue: command.upperValue,
+          originBasis: command.originBasis,
+          endpointBasis: command.endpointBasis,
+          documentSnapshot: {
+            documentId: document.caseDocumentId,
+            documentKind: document.documentKind,
+            title: document.title,
+            designation: document.designation,
+            revisionLabel: document.revisionLabel,
+            recordRevision: document.recordRevision,
+            managedFileSha256: document.file?.sha256 ?? null,
+          },
+          documentLocator: command.documentLocator,
+          failureIds: command.failureIds,
+          actor: command.actor,
+          decisionReason: command.reason,
+          createdAtUtc: '2026-09-09T12:00:00.000Z',
+          contentSha256: 'b'.repeat(64),
+        });
+        reliabilityObservations = [...reliabilityObservations, version];
+        return Promise.resolve(success({ disposition: 'created' as const, version }));
+      },
+    },
+    reliabilityDataset: {
+      listPage: (wheelModelId, cursor, limit) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        const pageLimit = limit ?? 25;
+        if (!Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > 50)
+          return Promise.resolve(validationError('Размер страницы должен быть от 1 до 50.'));
+        const latest = new Map<string, ReliabilityDatasetVersion>();
+        for (const item of reliabilityDatasets.filter(
+          (entry) => entry.wheelModelId === wheelModelId,
+        )) {
+          const current = latest.get(item.datasetId);
+          if (current === undefined || item.versionNumber > current.versionNumber)
+            latest.set(item.datasetId, item);
+        }
+        const items = [...latest.values()].map((item) => ({
+          datasetId: item.datasetId,
+          wheelModelId: item.wheelModelId,
+          latestVersionId: item.datasetVersionId,
+          latestVersionNumber: item.versionNumber,
+          title: item.title,
+          method: item.method,
+          metricKind: item.metricKind,
+          metricUnit: item.metricUnit,
+          includedCount: item.members.filter((member) => member.decision === 'included').length,
+          excludedCount: item.members.filter((member) => member.decision === 'excluded').length,
+          createdAtUtc: item.createdAtUtc,
+        }));
+        const offset = cursor === null || cursor === undefined ? 0 : Number.parseInt(cursor, 10);
+        if (!Number.isInteger(offset) || offset < 0 || String(offset) !== (cursor ?? '0'))
+          return Promise.resolve(validationError('Cursor списка повреждён.'));
+        return Promise.resolve(
+          success({
+            items: items.slice(offset, offset + pageLimit),
+            nextCursor: offset + pageLimit < items.length ? String(offset + pageLimit) : null,
+          }),
+        );
+      },
+      getVersion: (datasetVersionId) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        const version = reliabilityDatasets.find(
+          (item) => item.datasetVersionId === datasetVersionId,
+        );
+        return Promise.resolve(version === undefined ? notFound() : success(version));
+      },
+      createVersion: (command) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        const existing = reliabilityDatasets.find(
+          (item) => item.datasetVersionId === command.datasetVersionId,
+        );
+        if (existing !== undefined)
+          return Promise.resolve(success({ disposition: 'existing' as const, version: existing }));
+        const previous = reliabilityDatasets.filter((item) => item.datasetId === command.datasetId);
+        const head = previous.sort((left, right) => right.versionNumber - left.versionNumber)[0];
+        if ((head?.datasetVersionId ?? null) !== command.expectedPreviousVersionId)
+          return Promise.resolve(revisionConflict(head?.datasetVersionId ?? null));
+        const members = command.decisions.flatMap((decision) => {
+          const observation = reliabilityObservations.find(
+            (item) => item.observationVersionId === decision.observationVersionId,
+          );
+          const execution = reliabilityExecutions.find(
+            (item) => item.executionId === observation?.executionId,
+          );
+          if (observation === undefined || execution === undefined) return [];
+          const eligible =
+            importedRun.summary.packageKind === 'final' &&
+            execution.method === command.method &&
+            observation.metricKind === command.metricKind &&
+            observation.metricUnit === command.metricUnit &&
+            ((observation.classification === 'failure' && observation.endpointKind === 'exact') ||
+              (observation.classification === 'right_censored' &&
+                observation.endpointKind === 'right_bound'));
+          return [
+            {
+              observationVersionId: observation.observationVersionId,
+              executionId: execution.executionId,
+              localSpecimenId: execution.localSpecimenId,
+              sourceRunId: importedRun.summary.runId,
+              policyEligibility: eligible ? ('eligible' as const) : ('ineligible' as const),
+              policyReason: eligible
+                ? 'Наблюдение соответствует политике life_metric_exact_v1.'
+                : 'Наблюдение не имеет совместимой точной границы.',
+              decision: decision.decision,
+              inclusionReason: decision.reason,
+            },
+          ];
+        });
+        if (members.length !== command.decisions.length) return Promise.resolve(notFound());
+        if (
+          members.some(
+            (item) => item.decision === 'included' && item.policyEligibility === 'ineligible',
+          )
+        )
+          return Promise.resolve(
+            validationError('Непригодное наблюдение нельзя включить в эту выборку.'),
+          );
+        const version = reliabilityDatasetVersionSchema.parse({
+          datasetId: command.datasetId,
+          datasetVersionId: command.datasetVersionId,
+          wheelModelId: command.wheelModelId,
+          versionNumber: previous.length + 1,
+          previousVersionId: command.expectedPreviousVersionId,
+          policyId: 'life_metric_exact_v1',
+          title: command.title,
+          method: command.method,
+          metricKind: command.metricKind,
+          metricUnit: command.metricUnit,
+          populationBasis: command.populationBasis,
+          methodologyBasis: command.methodologyBasis,
+          comparabilityBasis: command.comparabilityBasis,
+          members,
+          actor: command.actor,
+          decisionReason: command.reason,
+          createdAtUtc: '2026-09-09T12:05:00.000Z',
+          contentSha256: 'c'.repeat(64),
+        });
+        reliabilityDatasets = [...reliabilityDatasets, version];
+        return Promise.resolve(success({ disposition: 'created' as const, version }));
+      },
     },
   };
 }
@@ -1009,6 +1294,30 @@ function workerUnavailable<TResult>(): DesktopResult<TResult> {
       message: 'Синтетический worker недоступен.',
       details: {},
       retryable: true,
+    },
+  };
+}
+
+function validationError<TResult>(message: string): DesktopResult<TResult> {
+  return {
+    ok: false,
+    error: {
+      code: 'validation_error',
+      message,
+      details: {},
+      retryable: false,
+    },
+  };
+}
+
+function revisionConflict<TResult>(actualVersionId: string | null): DesktopResult<TResult> {
+  return {
+    ok: false,
+    error: {
+      code: 'revision_conflict',
+      message: 'Сохранённая версия изменилась; черновик не применён.',
+      details: { actualVersionId },
+      retryable: false,
     },
   };
 }

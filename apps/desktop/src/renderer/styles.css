@@ -1270,6 +1270,150 @@ h3 {
   }
 }
 
+.reliability-preparation {
+  display: grid;
+  gap: 28px;
+}
+
+.reliability-master-detail {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.55fr);
+  gap: 28px;
+  align-items: start;
+}
+
+.reliability-master-detail > section,
+.reliability-dataset {
+  min-width: 0;
+}
+
+.reliability-record-list,
+.reliability-version-strip,
+.reliability-candidates,
+.reliability-dataset-readback {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.reliability-record,
+.reliability-version-strip button {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--ir-color-border);
+  background: var(--ir-color-surface-subtle);
+  color: var(--ir-color-text);
+  padding: 12px 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.reliability-record {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.reliability-record > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.reliability-record[aria-pressed='true'],
+.reliability-version-strip button[aria-pressed='true'] {
+  background: rgba(95, 179, 198, 0.14);
+  box-shadow: inset 3px 0 0 var(--ir-color-accent-cool);
+}
+
+.reliability-record:focus-visible,
+.reliability-version-strip button:focus-visible {
+  outline: 3px solid var(--ir-color-focus);
+  outline-offset: 2px;
+}
+
+.reliability-record:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.reliability-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 14px 0;
+  background: var(--ir-color-border);
+}
+
+.reliability-facts > div {
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--ir-color-surface-subtle);
+}
+
+.reliability-facts dt {
+  color: var(--ir-color-text-muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.reliability-facts dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.reliability-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin: 18px 0;
+}
+
+.reliability-evidence {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0;
+  padding: 14px;
+  border: 1px solid var(--ir-color-border);
+}
+
+.reliability-evidence legend {
+  padding: 0 6px;
+  color: var(--ir-color-text-muted);
+  font-weight: 650;
+}
+
+.reliability-dataset {
+  border-top: 1px solid var(--ir-color-border);
+  padding-top: 26px;
+}
+
+.reliability-candidate {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.4fr);
+  gap: 16px;
+  align-items: end;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--ir-color-border);
+}
+
+.reliability-dataset-readback {
+  padding: 16px;
+  background: var(--ir-color-surface-subtle);
+}
+
+.reliability-dataset-readback span {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1279px) {
+  .reliability-master-detail,
+  .reliability-form-grid,
+  .reliability-candidate,
+  .reliability-facts {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .shell-content > section:not([hidden]) {
     animation: none;

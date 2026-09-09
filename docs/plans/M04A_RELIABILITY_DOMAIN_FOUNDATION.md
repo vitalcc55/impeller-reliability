@@ -7,7 +7,8 @@ M04A переводит принятый R130SH запуск из состоян
 `ReliabilityCase`; существующий analyst-owned `Specimen` остаётся единственным
 локальным объектом рабочего колеса. Python materializes неизменяемый
 `TestExecution` для связанного с ним импортированного запуска, его
-`FailureObservation` и пустой до явного отбора `ReliabilityDataset`.
+`FailureObservation` и временную предрелизную заготовку dataset, заменённую
+целевой моделью M04B.
 
 Этап не рассчитывает Weibull, Markov, Monte-Carlo, FMEA/FMECA, РБД/РПТ/ПМН,
 не строит графики и не формирует отчёты. Он не создаёт executable TestPlan,
@@ -20,7 +21,7 @@ M04A переводит принятый R130SH запуск из состоян
 | --- | --- | --- | --- |
 | `r130sh_source` | R130SH producer, принятый Python importer | immutable | archive, inventory, package/run identity, original/effective plan, producer outcomes, measurements/events/inspections evidence |
 | `analyst_enrichment` | инженер в Impeller Reliability | mutable и audited | CustomerProfile, WheelModel, Specimen, документы и явная specimen binding |
-| `derived_analysis` M04A | Python worker | immutable materialized snapshots | TestExecution, FailureObservation и membership ReliabilityDataset |
+| `derived_analysis` M04A | Python worker | immutable materialized snapshots | TestExecution и FailureObservation; целевой dataset принадлежит M04B |
 
 Materialization разрешена только для `local_import_id` с verified source integrity
 и явной binding исходного specimen к неархивному local `Specimen`. Она никогда
@@ -58,10 +59,9 @@ M04A.1 закрепляет эту границу для финального R1
 семантикой duration нет, `durationS` всегда остаётся `NULL`; вычисление через
 `finished-started`, длительности сегментов или другой fallback запрещено.
 
-`ReliabilityDataset` — persistence owner будущего явного отбора: local
-`dataset_id`, единица life metric, bounded censoring policy и append-only
-membership execution/observation с inclusion decision/reason. В M04A нет
-calculator, automatic eligibility и UI редактирования dataset.
+Предрелизная M04A-заготовка `ReliabilityDataset` с `explicit`,
+`not_classified` и `unknown` заменена M04B: membership теперь ссылается на exact
+version явной `ReliabilityObservation` и не хранит вторую classification.
 
 Для каждой derived строки обязательны `source_import_id`, outer package SHA-256,
 `source_payload_path`, bounded record key и field reference. Absolute path,
@@ -99,10 +99,9 @@ M04A завершён, когда unit, persistence and reopen tests доказ�
 1. новая clean v1 schema содержит M04A owners, а source evidence is unchanged;
 2. only explicitly bound, verified imports materialize exactly one immutable execution;
 3. failures preserve subject/provenance and nullable unavailable source facts;
-4. reopen restores the same execution/dataset state and rejects tampered derived evidence;
+4. reopen restores the same execution state and rejects tampered derived evidence;
 5. UI displays executions by local wheel identity without calculation claim.
 
-Следующий этап M04B определяет `ReliabilityObservation`, классификацию
-failure/right-censored/withdrawn/invalid, life metric contracts, units,
-source provenance и dataset membership semantics. Первый расчётный vertical
+M04B определил `ReliabilityObservation`, classification/life-metric contracts,
+frozen provenance и dataset membership semantics. Первый расчётный vertical
 slice РБД относится только к M04C; формулы не входят в M04B и M04A.1.

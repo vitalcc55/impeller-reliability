@@ -26,9 +26,20 @@ import {
   importedRunListResultSchema,
   importedRunResolutionStatePayloadSchema,
   importedRunVerifyResultSchema,
-  reliabilityExecutionListByWheelPayloadSchema,
-  reliabilityExecutionListResultSchema,
+  reliabilityDatasetCreateVersionCommandSchema,
+  reliabilityDatasetPageSchema,
+  reliabilityDatasetVersionIdPayloadSchema,
+  reliabilityDatasetVersionSchema,
+  reliabilityDatasetWriteResultSchema,
+  reliabilityExecutionIdPayloadSchema,
+  reliabilityExecutionPageSchema,
   reliabilityExecutionSchema,
+  reliabilityObservationCreateVersionCommandSchema,
+  reliabilityObservationVersionIdPayloadSchema,
+  reliabilityObservationVersionListSchema,
+  reliabilityObservationVersionSchema,
+  reliabilityObservationWriteResultSchema,
+  reliabilityPagePayloadSchema,
   recentProjectsSchema,
   runtimeStatusSchema,
   runPackageValidationDiscardResultSchema,
@@ -433,15 +444,68 @@ const api: ImpellerApi = {
         { localImportId },
         createDesktopResultSchema(reliabilityExecutionSchema),
       ),
-    listByWheel: async (wheelModelId) => {
+    listPage: async (wheelModelId, cursor = null, limit = 25) =>
+      invokeValidated(
+        IPC_CHANNELS.reliabilityExecutionListPage,
+        reliabilityPagePayloadSchema,
+        { wheelModelId, cursor, limit },
+        createDesktopResultSchema(reliabilityExecutionPageSchema),
+      ),
+    getDetail: async (executionId) =>
+      invokeValidated(
+        IPC_CHANNELS.reliabilityExecutionGetDetail,
+        reliabilityExecutionIdPayloadSchema,
+        { executionId },
+        createDesktopResultSchema(reliabilityExecutionSchema),
+      ),
+  },
+  reliabilityObservation: {
+    listVersions: async (executionId) => {
       const result = await invokeValidated(
-        IPC_CHANNELS.reliabilityExecutionListByWheel,
-        reliabilityExecutionListByWheelPayloadSchema,
-        { wheelModelId },
-        createDesktopResultSchema(reliabilityExecutionListResultSchema),
+        IPC_CHANNELS.reliabilityObservationListVersions,
+        reliabilityExecutionIdPayloadSchema,
+        { executionId },
+        createDesktopResultSchema(reliabilityObservationVersionListSchema),
       );
       return result.ok ? { ok: true, result: result.result.items } : result;
     },
+    getVersion: async (observationVersionId) =>
+      invokeValidated(
+        IPC_CHANNELS.reliabilityObservationGetVersion,
+        reliabilityObservationVersionIdPayloadSchema,
+        { observationVersionId },
+        createDesktopResultSchema(reliabilityObservationVersionSchema),
+      ),
+    createVersion: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.reliabilityObservationCreateVersion,
+        reliabilityObservationCreateVersionCommandSchema,
+        command,
+        createDesktopResultSchema(reliabilityObservationWriteResultSchema),
+      ),
+  },
+  reliabilityDataset: {
+    listPage: async (wheelModelId, cursor = null, limit = 25) =>
+      invokeValidated(
+        IPC_CHANNELS.reliabilityDatasetListPage,
+        reliabilityPagePayloadSchema,
+        { wheelModelId, cursor, limit },
+        createDesktopResultSchema(reliabilityDatasetPageSchema),
+      ),
+    getVersion: async (datasetVersionId) =>
+      invokeValidated(
+        IPC_CHANNELS.reliabilityDatasetGetVersion,
+        reliabilityDatasetVersionIdPayloadSchema,
+        { datasetVersionId },
+        createDesktopResultSchema(reliabilityDatasetVersionSchema),
+      ),
+    createVersion: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.reliabilityDatasetCreateVersion,
+        reliabilityDatasetCreateVersionCommandSchema,
+        command,
+        createDesktopResultSchema(reliabilityDatasetWriteResultSchema),
+      ),
   },
 };
 

@@ -73,7 +73,14 @@ Operation = Literal[
     "importedRun.bindSpecimen",
     "importedRun.applyEnrichmentResolution",
     "reliabilityExecution.materialize",
-    "reliabilityExecution.listByWheel",
+    "reliabilityExecution.listPage",
+    "reliabilityExecution.getDetail",
+    "reliabilityObservation.listVersions",
+    "reliabilityObservation.getVersion",
+    "reliabilityObservation.createVersion",
+    "reliabilityDataset.listPage",
+    "reliabilityDataset.getVersion",
+    "reliabilityDataset.createVersion",
 ]
 
 ProjectStatus = Literal["draft", "active", "completed", "archived"]
@@ -464,10 +471,74 @@ class ImportedRunEnrichmentResolutionPayload(ImportedRunIdPayload):
     expectedTargetRevision: int | None = Field(ge=1, le=9_007_199_254_740_991)
 
 
-class ReliabilityExecutionListByWheelPayload(BaseModel):
+class ReliabilityExecutionListPagePayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     wheelModelId: EntityId
+    cursor: str | None = Field(default=None, min_length=1, max_length=512)
+    limit: int = Field(default=25, ge=1, le=50)
+
+
+class ReliabilityExecutionIdPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    executionId: EntityId
+
+
+class ReliabilityObservationVersionIdPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    observationVersionId: EntityId
+
+
+class ReliabilityObservationCreateVersionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    observationId: EntityId
+    observationVersionId: EntityId
+    executionId: EntityId
+    expectedPreviousVersionId: EntityId | None
+    classification: Literal["failure", "right_censored", "withdrawn", "invalid"]
+    endpointKind: Literal["exact", "right_bound", "interval", "unavailable"]
+    metricKind: Literal["rbd_steady_rotation_time", "rpt_start_stop_cycles"] | None
+    metricUnit: Literal["hours", "count"] | None
+    metricOrigin: Literal["analyst_provided"] | None
+    lowerValue: str | None = Field(max_length=64)
+    upperValue: str | None = Field(max_length=64)
+    originBasis: str = Field(min_length=1, max_length=1_000)
+    endpointBasis: str = Field(min_length=1, max_length=1_000)
+    documentId: EntityId
+    documentLocator: str = Field(min_length=1, max_length=1_000)
+    failureIds: list[EntityId] = Field(max_length=64)
+    actor: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=2_000)
+
+
+class ReliabilityDatasetVersionIdPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    datasetVersionId: EntityId
+
+
+class ReliabilityDatasetDecisionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    observationVersionId: EntityId
+    decision: Literal["included", "excluded"]
+    reason: str = Field(min_length=1, max_length=2_000)
+
+
+class ReliabilityDatasetCreateVersionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    datasetId: EntityId
+    datasetVersionId: EntityId
+    wheelModelId: EntityId
+    expectedPreviousVersionId: EntityId | None
+    title: str = Field(min_length=1, max_length=200)
+    method: Literal["rbd", "rpt"]
+    metricKind: Literal["rbd_steady_rotation_time", "rpt_start_stop_cycles"]
+    metricUnit: Literal["hours", "count"]
+    populationBasis: str = Field(min_length=1, max_length=2_000)
+    methodologyBasis: str = Field(min_length=1, max_length=2_000)
+    comparabilityBasis: str = Field(min_length=1, max_length=2_000)
+    decisions: list[ReliabilityDatasetDecisionPayload] = Field(min_length=1, max_length=100)
+    actor: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=2_000)
 
 
 class CustomerGetRequest(RequestBase):
@@ -665,9 +736,44 @@ class ReliabilityExecutionMaterializeRequest(RequestBase):
     payload: ImportedRunIdPayload
 
 
-class ReliabilityExecutionListByWheelRequest(RequestBase):
-    operation: Literal["reliabilityExecution.listByWheel"]
-    payload: ReliabilityExecutionListByWheelPayload
+class ReliabilityExecutionListPageRequest(RequestBase):
+    operation: Literal["reliabilityExecution.listPage"]
+    payload: ReliabilityExecutionListPagePayload
+
+
+class ReliabilityExecutionGetDetailRequest(RequestBase):
+    operation: Literal["reliabilityExecution.getDetail"]
+    payload: ReliabilityExecutionIdPayload
+
+
+class ReliabilityObservationListVersionsRequest(RequestBase):
+    operation: Literal["reliabilityObservation.listVersions"]
+    payload: ReliabilityExecutionIdPayload
+
+
+class ReliabilityObservationGetVersionRequest(RequestBase):
+    operation: Literal["reliabilityObservation.getVersion"]
+    payload: ReliabilityObservationVersionIdPayload
+
+
+class ReliabilityObservationCreateVersionRequest(RequestBase):
+    operation: Literal["reliabilityObservation.createVersion"]
+    payload: ReliabilityObservationCreateVersionPayload
+
+
+class ReliabilityDatasetListPageRequest(RequestBase):
+    operation: Literal["reliabilityDataset.listPage"]
+    payload: ReliabilityExecutionListPagePayload
+
+
+class ReliabilityDatasetGetVersionRequest(RequestBase):
+    operation: Literal["reliabilityDataset.getVersion"]
+    payload: ReliabilityDatasetVersionIdPayload
+
+
+class ReliabilityDatasetCreateVersionRequest(RequestBase):
+    operation: Literal["reliabilityDataset.createVersion"]
+    payload: ReliabilityDatasetCreateVersionPayload
 
 
 type RequestEnvelope = Annotated[
@@ -720,7 +826,14 @@ type RequestEnvelope = Annotated[
     | ImportedRunBindSpecimenRequest
     | ImportedRunApplyEnrichmentResolutionRequest
     | ReliabilityExecutionMaterializeRequest
-    | ReliabilityExecutionListByWheelRequest,
+    | ReliabilityExecutionListPageRequest
+    | ReliabilityExecutionGetDetailRequest
+    | ReliabilityObservationListVersionsRequest
+    | ReliabilityObservationGetVersionRequest
+    | ReliabilityObservationCreateVersionRequest
+    | ReliabilityDatasetListPageRequest
+    | ReliabilityDatasetGetVersionRequest
+    | ReliabilityDatasetCreateVersionRequest,
     Field(discriminator="operation"),
 ]
 REQUEST_ENVELOPE_ADAPTER: TypeAdapter[RequestEnvelope] = TypeAdapter(RequestEnvelope)
@@ -972,7 +1085,8 @@ class FailureObservationResult(BaseModel):
     durationS: str | None = Field(default=None, max_length=64)
     rpm: str | None = Field(default=None, max_length=64)
     vibrationSummary: dict[str, object]
-    observedAtUtc: str | None
+    observedAtUtc: CanonicalUtcTimestamp | None
+    sourceOuterPackageSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ReliabilityExecutionResult(BaseModel):
@@ -981,20 +1095,153 @@ class ReliabilityExecutionResult(BaseModel):
     executionId: EntityId
     localImportId: EntityId
     localSpecimenId: EntityId
+    wheelModelId: EntityId
     sourceSpecimenId: str = Field(min_length=1, max_length=200)
+    sourceRunId: str = Field(min_length=1, max_length=200)
+    exportRevision: int = Field(ge=1)
+    packageKind: Literal["final", "diagnostic_partial"]
     method: Literal["rbd", "rpt", "pmn"]
     lifecycleStatus: Literal["completed", "interrupted", "failed"]
     plannedParametersSnapshot: dict[str, object]
     resultSummary: dict[str, object]
     sourceOuterPackageSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    materializedAtUtc: str
+    materializedAtUtc: CanonicalUtcTimestamp
     failureObservations: list[FailureObservationResult] = Field(max_length=64)
 
 
-class ReliabilityExecutionListResult(BaseModel):
+class ReliabilityExecutionSummaryResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    executionId: EntityId
+    localSpecimenId: EntityId
+    sourceSpecimenId: str = Field(min_length=1, max_length=200)
+    sourceRunId: str = Field(min_length=1, max_length=200)
+    exportRevision: int = Field(ge=1)
+    packageKind: Literal["final", "diagnostic_partial"]
+    method: Literal["rbd", "rpt", "pmn"]
+    lifecycleStatus: Literal["completed", "interrupted", "failed"]
+    technicalStatus: str | None
+    specimenOutcome: str | None
+    runValidity: str | None
+    dataCompleteness: str | None
+    materializedAtUtc: CanonicalUtcTimestamp
+    failureObservationCount: int = Field(ge=0, le=64)
+    currentObservationVersionId: EntityId | None
+    currentObservationVersionNumber: int | None = Field(default=None, ge=1)
+    currentClassification: Literal["failure", "right_censored", "withdrawn", "invalid"] | None
 
-    items: list[ReliabilityExecutionResult]
+
+class ReliabilityExecutionPageResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    items: list[ReliabilityExecutionSummaryResult] = Field(max_length=50)
+    nextCursor: str | None = Field(default=None, max_length=512)
+
+
+class AnalystDocumentSnapshotResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    documentId: EntityId
+    documentKind: str = Field(min_length=1, max_length=100)
+    title: str = Field(min_length=1, max_length=300)
+    designation: str = Field(max_length=200)
+    revisionLabel: str = Field(max_length=200)
+    recordRevision: int = Field(ge=1)
+    managedFileSha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class ReliabilityObservationVersionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    observationId: EntityId
+    observationVersionId: EntityId
+    executionId: EntityId
+    versionNumber: int = Field(ge=1)
+    previousVersionId: EntityId | None
+    classification: Literal["failure", "right_censored", "withdrawn", "invalid"]
+    endpointKind: Literal["exact", "right_bound", "interval", "unavailable"]
+    metricKind: Literal["rbd_steady_rotation_time", "rpt_start_stop_cycles"] | None
+    metricUnit: Literal["hours", "count"] | None
+    metricOrigin: Literal["analyst_provided"] | None
+    lowerValue: str | None = Field(max_length=64)
+    upperValue: str | None = Field(max_length=64)
+    originBasis: str = Field(min_length=1, max_length=1_000)
+    endpointBasis: str = Field(min_length=1, max_length=1_000)
+    documentSnapshot: AnalystDocumentSnapshotResult
+    documentLocator: str = Field(min_length=1, max_length=1_000)
+    failureIds: list[EntityId] = Field(max_length=64)
+    actor: str = Field(min_length=1, max_length=200)
+    decisionReason: str = Field(min_length=1, max_length=2_000)
+    createdAtUtc: CanonicalUtcTimestamp
+    contentSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ReliabilityObservationVersionListResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    items: list[ReliabilityObservationVersionResult] = Field(max_length=50)
+
+
+class ReliabilityObservationWriteResultModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    disposition: Literal["created", "existing"]
+    version: ReliabilityObservationVersionResult
+
+
+class ReliabilityDatasetMemberResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    observationVersionId: EntityId
+    executionId: EntityId
+    localSpecimenId: EntityId
+    sourceRunId: str = Field(min_length=1, max_length=200)
+    policyEligibility: Literal["eligible", "ineligible"]
+    policyReason: str = Field(min_length=1, max_length=1_000)
+    decision: Literal["included", "excluded"]
+    inclusionReason: str = Field(min_length=1, max_length=2_000)
+
+
+class ReliabilityDatasetVersionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    datasetId: EntityId
+    datasetVersionId: EntityId
+    wheelModelId: EntityId
+    versionNumber: int = Field(ge=1)
+    previousVersionId: EntityId | None
+    policyId: Literal["life_metric_exact_v1"]
+    title: str = Field(min_length=1, max_length=200)
+    method: Literal["rbd", "rpt"]
+    metricKind: Literal["rbd_steady_rotation_time", "rpt_start_stop_cycles"]
+    metricUnit: Literal["hours", "count"]
+    populationBasis: str = Field(min_length=1, max_length=2_000)
+    methodologyBasis: str = Field(min_length=1, max_length=2_000)
+    comparabilityBasis: str = Field(min_length=1, max_length=2_000)
+    members: list[ReliabilityDatasetMemberResult] = Field(max_length=100)
+    actor: str = Field(min_length=1, max_length=200)
+    decisionReason: str = Field(min_length=1, max_length=2_000)
+    createdAtUtc: CanonicalUtcTimestamp
+    contentSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ReliabilityDatasetWriteResultModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    disposition: Literal["created", "existing"]
+    version: ReliabilityDatasetVersionResult
+
+
+class ReliabilityDatasetSummaryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    datasetId: EntityId
+    wheelModelId: EntityId
+    latestVersionId: EntityId
+    latestVersionNumber: int = Field(ge=1)
+    title: str = Field(min_length=1, max_length=200)
+    method: Literal["rbd", "rpt"]
+    metricKind: Literal["rbd_steady_rotation_time", "rpt_start_stop_cycles"]
+    metricUnit: Literal["hours", "count"]
+    includedCount: int = Field(ge=0, le=100)
+    excludedCount: int = Field(ge=0, le=100)
+    createdAtUtc: CanonicalUtcTimestamp
+
+
+class ReliabilityDatasetPageResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    items: list[ReliabilityDatasetSummaryResult] = Field(max_length=50)
+    nextCursor: str | None = Field(default=None, max_length=512)
 
 
 class ErrorPayload(BaseModel):
@@ -1072,7 +1319,13 @@ type SuccessResponseType = (
     | SuccessResponse[ImportedRunVerifyResult]
     | SuccessResponse[SpecimenBindingModel]
     | SuccessResponse[ReliabilityExecutionResult]
-    | SuccessResponse[ReliabilityExecutionListResult]
+    | SuccessResponse[ReliabilityExecutionPageResult]
+    | SuccessResponse[ReliabilityObservationVersionResult]
+    | SuccessResponse[ReliabilityObservationVersionListResult]
+    | SuccessResponse[ReliabilityObservationWriteResultModel]
+    | SuccessResponse[ReliabilityDatasetVersionResult]
+    | SuccessResponse[ReliabilityDatasetWriteResultModel]
+    | SuccessResponse[ReliabilityDatasetPageResult]
 )
 
 

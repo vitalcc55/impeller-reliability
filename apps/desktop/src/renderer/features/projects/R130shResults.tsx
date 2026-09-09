@@ -391,7 +391,7 @@ export const R130shResults = forwardRef<R130shResultsHandle, R130shResultsProps>
           if (!result.ok) return handleError(result.error);
           setError(null);
           setMessage(
-            `Аналитическое исполнение ${result.result.method.toUpperCase()} подтверждено для связанного образца.`,
+            `Аналитическое исполнение ${reliabilityMethodLabel(result.result.method)} подтверждено для связанного образца.`,
           );
         })
         .catch(() => handleError(unavailableError()));
@@ -732,6 +732,10 @@ function ImportProgress({
   );
 }
 
+function reliabilityMethodLabel(method: 'rbd' | 'rpt' | 'pmn'): string {
+  return method === 'rbd' ? 'РБД' : method === 'rpt' ? 'РПТ' : 'ПМН';
+}
+
 interface RunDetailProps {
   readonly detail: ImportedRunDetail;
   readonly specimens: readonly SpecimenSummary[];
@@ -790,7 +794,7 @@ function RunDetail(props: RunDetailProps): React.JSX.Element {
             }
             onClick={props.onMaterializeReliabilityExecution}
           >
-            Создать исполнение M04A
+            Подготовить исполнение для анализа
           </Button>
         </div>
       </header>

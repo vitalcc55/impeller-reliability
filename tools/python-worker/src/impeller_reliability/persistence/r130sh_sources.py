@@ -553,6 +553,21 @@ class R130shSourceRepository:
         reason = _required_text(reason, 2000, "reason")
         if current.local_specimen_id == normalized_local_id:
             return current
+        materialized = self._connection.execute(
+            """
+            SELECT 1
+            FROM reliability_test_executions e
+            JOIN r130sh_run_projections p ON p.local_import_id=e.local_import_id
+            WHERE p.source_specimen_id=?
+            LIMIT 1
+            """,
+            (current.source_specimen_id,),
+        ).fetchone()
+        if materialized is not None:
+            raise ProjectOperationError(
+                "entity_in_use",
+                "Привязку нельзя изменить после создания TestExecution; исходный снимок остаётся неизменным.",
+            )
         if normalized_local_id is not None:
             row = self._connection.execute(
                 "SELECT archived_at_utc FROM specimens WHERE specimen_id=?",

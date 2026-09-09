@@ -50,6 +50,23 @@ def test_worker_rejects_oversized_non_finite_and_invalid_utf8(tmp_path: Path, mo
     assert all('"ok":false' in response for response in responses)
 
 
+def test_worker_replaces_oversized_utf8_response_with_correlated_bounded_error() -> None:
+    output = StringIO()
+    with redirect_stdout(output):
+        worker_main.write_protocol(
+            {
+                "requestId": "oversized-response",
+                "revision": 17,
+                "payload": "я" * worker_main.MAX_MESSAGE_BYTES,
+            }
+        )
+    encoded = output.getvalue().encode("utf-8")
+    assert len(encoded) <= worker_main.MAX_MESSAGE_BYTES
+    assert '"requestId":"oversized-response"' in output.getvalue()
+    assert '"revision":17' in output.getvalue()
+    assert '"code":"contract_error"' in output.getvalue()
+
+
 def test_worker_converts_unexpected_storage_failure_to_typed_storage_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

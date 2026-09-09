@@ -282,10 +282,45 @@ export const WORKER_OPERATION_POLICIES = {
     transportTimeoutMs: 35_000,
     terminateWorkerOnTimeout: true,
   },
-  'reliabilityExecution.listByWheel': {
+  'reliabilityExecution.listPage': {
     domainDeadlineMs: 5_000,
     transportTimeoutMs: 7_000,
     terminateWorkerOnTimeout: false,
+  },
+  'reliabilityExecution.getDetail': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'reliabilityObservation.listVersions': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'reliabilityObservation.getVersion': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'reliabilityObservation.createVersion': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'reliabilityDataset.listPage': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'reliabilityDataset.getVersion': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'reliabilityDataset.createVersion': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: true,
   },
 } as const satisfies Readonly<Record<WorkerOperation, WorkerOperationPolicy>>;
 
@@ -440,6 +475,10 @@ export class WorkerClient {
       deadlineMs: policy.domainDeadlineMs,
       payload,
     });
+    const serializedRequest = `${JSON.stringify(request)}\n`;
+    if (Buffer.byteLength(serializedRequest, 'utf8') > MAX_MESSAGE_BYTES) {
+      return Promise.reject(new Error(`worker_request_too_large:${operation}`));
+    }
     return new Promise<WorkerResponse>((resolve, reject) => {
       const timeout = setTimeout(() => {
         const pending = this.#removePending(requestId);
@@ -449,7 +488,7 @@ export class WorkerClient {
         if (policy.terminateWorkerOnTimeout) this.#terminateAfterTimeout(child, error);
       }, policy.transportTimeoutMs);
       this.#pending.set(requestId, { operation, revision, resolve, reject, timeout });
-      child.stdin.write(`${JSON.stringify(request)}\n`, 'utf8', (error) => {
+      child.stdin.write(serializedRequest, 'utf8', (error) => {
         if (error === null || error === undefined) return;
         const pending = this.#removePending(requestId);
         if (pending === undefined) return;
@@ -573,7 +612,7 @@ export class WorkerClient {
   }
 
   #handleLine(line: string): void {
-    if (Buffer.byteLength(line, 'utf8') > MAX_MESSAGE_BYTES) {
+    if (Buffer.byteLength(`${line}\n`, 'utf8') > MAX_MESSAGE_BYTES) {
       this.#failProtocol(new Error('worker_message_too_large'));
       return;
     }
