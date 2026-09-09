@@ -2,7 +2,7 @@
 
 ## Closure note
 
-M03A завершён и слит как read-only validation foundation. Его exact synthetic snapshot baseline `f02f6d954246a5ab6f57d33dac724ce03d7fb841` сохраняется только как историческая provenance созданных тогда unit/negative fixtures. Текущий production contract и M03B/M9b acceptance принадлежат exact R130SH M9a commit `01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63` и отдельному snapshot `fixtures/contracts/r130run/v1/m9a`; M03A больше не описывает текущий upstream status.
+M03A завершён и слит как read-only validation foundation. Его exact synthetic snapshot baseline `f02f6d954246a5ab6f57d33dac724ce03d7fb841` сохраняется только как историческая provenance созданных тогда unit/negative fixtures. Frozen compatibility proof принадлежит R130SH M9a commit `01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63` и snapshot `fixtures/contracts/r130run/v1/m9a`; текущий semantic acceptance contract validator `m03b.2` принадлежит R130SH 0.9.45 commit `09097561a6a58b1663a6912357a3c8d1daf7f28c`. M03A больше не описывает текущий upstream status.
 
 ## Наблюдаемый результат и граница
 

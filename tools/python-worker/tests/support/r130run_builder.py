@@ -22,11 +22,14 @@ def build_synthetic_r130run(
     manifest_mutator: ManifestMutator | None = None,
     extra_entries: Iterable[tuple[str, bytes]] = (),
     payload_overrides: Mapping[str, bytes] | None = None,
+    payload_removals: Iterable[str] = (),
     compression: int = ZIP_STORED,
 ) -> Path:
     payloads = _payloads()
     if payload_overrides is not None:
         payloads.update(payload_overrides)
+    for path in payload_removals:
+        payloads.pop(path, None)
     files: list[dict[str, JsonValue]] = []
     for path, content in payloads.items():
         item: dict[str, JsonValue] = {
@@ -38,7 +41,7 @@ def build_synthetic_r130run(
         if path.endswith(".jsonl"):
             item["row_count"] = 0 if content == b"" else len(content.rstrip(b"\n").splitlines())
         if path == "measurements.csv":
-            item["row_count"] = 1
+            item["row_count"] = max(0, len(content.splitlines()) - 1)
         files.append(item)
     sorted_files: list[dict[str, JsonValue]] = sorted(files, key=_manifest_path)
     files_value: list[JsonValue] = [item for item in sorted_files]

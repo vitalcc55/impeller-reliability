@@ -4,6 +4,8 @@
 
 `ImportedTestRun` — принятая immutable export revision R130SH; её `r130sh_source` владеет exact managed archive, inventory и узкой projection. `ImportedRunPlanSnapshot` — неизменяемый original/effective plan внутри source projection; его владельцем остаётся R130SH. M04A `TestExecution` и `FailureObservation` — immutable derived snapshots с source-import and field provenance; `ReliabilityDataset` хранит явное inclusion/censoring решение без calculation. `AnalysisInputSnapshot` и `CalculationSnapshot` отсутствуют до следующего расчётного этапа.
 
+`acceptedElapsedS` принадлежит source/result evidence и означает только накопленную длину промежутков между соседними accepted samples внутри included segments. Он не является длительностью испытания, censor endpoint или life metric и поэтому не заполняет `FailureObservation.durationS`. M04B должен ввести отдельный `ReliabilityObservation` и явную classification/life-metric semantics до появления расчётов.
+
 M03A contract validation не создаёт новую domain entity: её transient job/report не являются `ImportedTestRun`, `ImportedRunPlanSnapshot`, project entity, audit event, import receipt, analysis input или признаком готовности к расчёту. Точная runtime-модель принадлежит Integration/IPC и карте состояния.
 
 Первый публикуемый `Project` представлен контейнером `.irproj` и clean pre-release schema v1: dossier tables дополнены `r130sh_sources`, `r130sh_source_inventory`, `r130sh_run_projections`, `r130sh_specimen_bindings`, `r130sh_enrichment_resolutions` и append-only audit. Source registry/inventory/projection неизменяемы; binding optimistic, resolution append-only, exact import retry не создаёт revision/event.

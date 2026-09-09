@@ -87,8 +87,8 @@ describe('worker contracts', () => {
       producerGitCommit: 'm9a-commit',
       outerSizeBytes: 9_111,
       importedAtUtc: '2026-08-31T10:00:00.000Z',
-      validatorVersion: 'm03b.1',
-      validationContractCommit: '01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63',
+      validatorVersion: 'm03b.2',
+      validationContractCommit: '09097561a6a58b1663a6912357a3c8d1daf7f28c',
       structuralVerdict: 'passed',
       semanticVerdict: 'passed',
       sourceIntegrity: 'verified',
@@ -233,10 +233,10 @@ describe('worker contracts', () => {
 
   it('validates terminal job invariants and rejects path or import claims in reports', () => {
     const report = {
-      validatorVersion: 'm03b.1',
+      validatorVersion: 'm03b.2',
       validationLevel: 'producer_m9a_contract',
       upstreamRepository: 'https://github.com/vitalcc55/R130SH',
-      upstreamCommit: '01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63',
+      upstreamCommit: '09097561a6a58b1663a6912357a3c8d1daf7f28c',
       contractSchema: 'r130sh.run-package.v1',
       sourceFileName: 'candidate.r130run',
       outerPackageSha256: 'a'.repeat(64),

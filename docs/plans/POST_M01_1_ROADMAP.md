@@ -14,7 +14,7 @@ M02.2B одновременно закрепил UX-фундамент: общи
 
 ## R130SH baseline и M9a goldens
 
-Проверенный baseline `vitalcc55/R130SH@01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63`: M9a завершён, опубликован 21 producer-generated package file для 18 сценариев с реальными outer SHA-256. Exact offline snapshot принадлежит M03B acceptance; ветка upstream указана только как provenance, runtime/CI связи между репозиториями нет.
+Frozen package provenance `vitalcc55/R130SH@01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63` закрепляет 21 producer-generated M9a package file для 18 сценариев с реальными outer SHA-256. Текущий semantic acceptance baseline — `vitalcc55/R130SH@09097561a6a58b1663a6912357a3c8d1daf7f28c` (R130SH 0.9.45). Эти роли не смешиваются: первый SHA доказывает происхождение frozen bytes, второй — правила downstream validator/import registry. Runtime/CI связи между репозиториями нет.
 
 ## M03A/M03B — входной результат R130SH
 
@@ -30,9 +30,17 @@ materializes старые imports автоматически и не добав�
 FMEA, charts или reports. Точный контракт принадлежит
 `M04A_RELIABILITY_DOMAIN_FOUNDATION.md`.
 
-## M04B и далее — расчёты испытаний
+## M04A.1 — R130SH 0.9.45 downstream acceptance closure
 
-Сначала один полный РБД vertical slice на импортированных и дополненных данных: `ImportedRunPlanSnapshot` + explicit source/enrichment selection → `AnalysisInputSnapshot` → Python validation/calculation → `CalculationSnapshot`. Только после утверждённого математического контракта и golden fixtures добавляются РПТ и ПМН. Расчёты не формируют задание для R130SH.
+M04A.1 исправляет exact measurement acceptance predicate, потоково перепроверяет sample-span `accepted_elapsed_s`, сохраняет `diagnostic_partial + resume_available=true`, разделяет golden/acceptance provenance и прекращает вывод `FailureObservation.durationS` из accepted aggregate. Wire schema `.r130run` v1, frozen packages и project schema v1 не меняются. Trial run, vibration baseline и критерий `×1,5` остаются unavailable source evidence.
+
+## M04B — Statistical Classification & Life-Metric Foundation
+
+M04B сначала определяет `ReliabilityObservation`, failure/right-censored/withdrawn/invalid classification, life metric contracts и units, source provenance и dataset membership semantics. Weibull и расчётные формулы в этот этап не входят.
+
+## M04C и далее — расчёты испытаний
+
+M04C реализует первый полный РБД vertical slice: `ImportedRunPlanSnapshot` + explicit source/enrichment selection → `AnalysisInputSnapshot` → Python validation/calculation → `CalculationSnapshot`. После утверждённого математического контракта и golden fixtures отдельными этапами следуют РПТ, затем ПМН. Расчёты не формируют задание для R130SH.
 
 До первого расчётного экрана фиксируются command availability, неблокирующий job feedback и chart/data-alternative contract. DataGrid не появляется до реального редактируемого табличного сценария FMEA; navigation history и command/shortcut layer вводятся перед несколькими повторяемыми рабочими командами, а не как M02.2B-заготовка.
 
@@ -57,6 +65,10 @@ TypeScript 7/Vite 8 переходят только цельной совмес�
 3. M03A run-package contract validation foundation после frozen R130SH examples
 4. M03B production importer + immutable `r130sh_source` + M9b acceptance по 21 M9a packages
 5. M04A reliability domain foundation
-6. M04B RBD/RPT/PMN analysis
+6. M04A.1 R130SH 0.9.45 downstream acceptance closure
+7. M04B Statistical Classification & Life-Metric Foundation
+8. M04C first RBD calculation vertical slice
+9. RPT calculation
+10. PMN calculation
 
 Каждая ветка заканчивается наблюдаемым вертикальным результатом и собственным verification gate; M02 не начинается из M01.1 автоматически.

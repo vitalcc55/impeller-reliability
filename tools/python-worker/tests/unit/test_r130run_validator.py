@@ -16,6 +16,7 @@ from pydantic import TypeAdapter
 import pytest
 
 from impeller_reliability.integration.r130run.m9a import (
+    MEASUREMENT_COLUMNS,
     M9aContractError,
     validate_measurement_row,
 )
@@ -40,6 +41,8 @@ def test_validates_downstream_synthetic_package_without_extraction(tmp_path: Pat
     assert report.semanticVerdict == "passed"
     assert report.packageId == "019d3c80-3d21-7a65-8e5a-111111111111"
     assert report.runId == RUN_ID
+    assert report.validatorVersion == "m03b.2"
+    assert report.upstreamCommit == "09097561a6a58b1663a6912357a3c8d1daf7f28c"
     assert report.outerPackageSha256 == hashlib.sha256(package.read_bytes()).hexdigest()
     assert report.findingCounts.error == 0
     assert {item.status for item in report.semanticCoverage} == {"covered"}
@@ -489,9 +492,18 @@ def test_large_measurement_csv_is_streamed_with_bounded_syntax_validation(tmp_pa
         row[measurement_id_index] = f"measurement-{sequence}"
         writer.writerow(row)
     csv_payload = output.getvalue().encode("utf-8")
+    accepted_summary = _m9a_json_object("accepted-summary.json")
+    accepted_summary["accepted_measurement_count"] = 20_000
+    accepted_summary["accepted_elapsed_s"] = "0"
     package = build_synthetic_r130run(
         tmp_path / "large-csv.r130run",
-        payload_overrides={"measurements.csv": csv_payload},
+        payload_overrides={
+            "measurements.csv": csv_payload,
+            "accepted-summary.json": json.dumps(
+                accepted_summary,
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        },
     )
 
     report = RunPackageValidator().validate(package, _control())
@@ -520,6 +532,165 @@ def test_measurement_row_contract_preserves_accepted_and_rejected_physical_strea
     assert fallback_rows
     assert all(row["axis_synchrony"] == "non_synchronous" for row in fallback_rows)
     assert any(row["rpm_fallback_active"] == "true" for row in fallback_rows)
+
+
+@pytest.mark.parametrize(
+    ("attempt_disposition", "segment_disposition"),
+    [
+        ("active", "excluded"),
+        ("accepted", "excluded"),
+        ("rejected", "included"),
+    ],
+)
+def test_production_validator_accepts_noncredited_physical_measurement_rows(
+    tmp_path: Path,
+    attempt_disposition: str,
+    segment_disposition: str,
+) -> None:
+    row = _measurement_row(
+        sequence=1,
+        attempt_disposition=attempt_disposition,
+        segment_disposition=segment_disposition,
+        accepted="false",
+        accepted_elapsed_s="",
+    )
+    package = build_synthetic_r130run(
+        tmp_path / "valid-noncredited-measurement.r130run",
+        payload_overrides={
+            "measurements.csv": _measurement_csv((row,)),
+            "accepted-summary.json": _accepted_summary(0, "0"),
+        },
+    )
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert report.semanticVerdict == "passed"
+    assert report.findingCounts.error == 0
+
+
+@pytest.mark.parametrize(
+    ("attempt_disposition", "segment_disposition", "accepted", "accepted_elapsed_s"),
+    [
+        ("active", "included", "false", ""),
+        ("accepted", "included", "false", ""),
+        ("rejected", "included", "true", "0"),
+        ("rejected", "excluded", "true", "0"),
+        ("unknown", "included", "false", ""),
+        ("active", "unknown", "false", ""),
+        ("active", "excluded", "false", "1"),
+        ("active", "included", "true", ""),
+    ],
+)
+def test_production_validator_rejects_adversarial_acceptance_rows_after_hash_recalculation(
+    tmp_path: Path,
+    attempt_disposition: str,
+    segment_disposition: str,
+    accepted: str,
+    accepted_elapsed_s: str,
+) -> None:
+    row = _measurement_row(
+        sequence=1,
+        attempt_disposition=attempt_disposition,
+        segment_disposition=segment_disposition,
+        accepted=accepted,
+        accepted_elapsed_s=accepted_elapsed_s,
+    )
+    package = build_synthetic_r130run(
+        tmp_path / "invalid-acceptance-row.r130run",
+        payload_overrides={
+            "measurements.csv": _measurement_csv((row,)),
+            "accepted-summary.json": _accepted_summary(
+                1 if accepted == "true" else 0,
+                "0",
+            ),
+        },
+    )
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert report.semanticVerdict == "failed"
+    assert {finding.code for finding in report.findings} == {"semantic_value_mismatch"}
+
+
+def test_production_validator_recomputes_every_accepted_sample_and_summary(
+    tmp_path: Path,
+) -> None:
+    rows = (
+        _measurement_row(sequence=1, segment_id="a", segment_elapsed_s="1", accepted_elapsed_s="0"),
+        _measurement_row(sequence=2, segment_id="a", segment_elapsed_s="3", accepted_elapsed_s="2"),
+        _measurement_row(sequence=3, segment_id="b", segment_elapsed_s="8", accepted_elapsed_s="2"),
+        _measurement_row(sequence=4, segment_id="b", segment_elapsed_s="13", accepted_elapsed_s="7"),
+    )
+    package = build_synthetic_r130run(
+        tmp_path / "valid-accepted-stream.r130run",
+        payload_overrides={
+            "measurements.csv": _measurement_csv(rows),
+            "accepted-summary.json": _accepted_summary(4, "7"),
+        },
+    )
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert report.semanticVerdict == "passed"
+
+
+def test_accepted_summary_cannot_be_correlated_to_an_additional_csv(
+    tmp_path: Path,
+) -> None:
+    package = build_synthetic_r130run(
+        tmp_path / "additional-csv.r130run",
+        payload_overrides={
+            "zzz.csv": _measurement_csv(()),
+            "accepted-summary.json": _accepted_summary(0, "0"),
+        },
+    )
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert report.semanticVerdict == "failed"
+    assert any(finding.location == "accepted-summary.json" for finding in report.findings)
+
+
+@pytest.mark.parametrize("mutation", ["intermediate_elapsed", "summary_count", "summary_elapsed", "decimal"])
+def test_production_validator_rejects_semantic_mutations_after_hash_recalculation(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    rows = [
+        _measurement_row(sequence=1, segment_id="a", segment_elapsed_s="1", accepted_elapsed_s="0"),
+        _measurement_row(sequence=2, segment_id="a", segment_elapsed_s="3", accepted_elapsed_s="2"),
+    ]
+    accepted_count = 2
+    accepted_elapsed_s = "2"
+    if mutation == "intermediate_elapsed":
+        rows[1]["accepted_elapsed_s"] = "3"
+        accepted_elapsed_s = "3"
+    elif mutation == "summary_count":
+        accepted_count = 1
+    elif mutation == "summary_elapsed":
+        accepted_elapsed_s = "3"
+    else:
+        rows[0]["accepted_elapsed_s"] = "0.00"
+    package = build_synthetic_r130run(
+        tmp_path / f"invalid-{mutation}.r130run",
+        payload_overrides={
+            "measurements.csv": _measurement_csv(rows),
+            "accepted-summary.json": _accepted_summary(
+                accepted_count,
+                accepted_elapsed_s,
+            ),
+        },
+    )
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert report.semanticVerdict == "failed"
+    assert {finding.code for finding in report.findings} == {"semantic_value_mismatch"}
 
 
 def test_csv_field_within_published_one_mib_bound_is_accepted(tmp_path: Path) -> None:
@@ -848,6 +1019,81 @@ def test_diagnostic_partial_package_kind_is_reported_without_import_claim() -> N
     assert report.packageKind == "diagnostic_partial"
 
 
+def test_diagnostic_partial_allows_resume_available_true(tmp_path: Path) -> None:
+    summary = _m9a_json_object("run-summary.json")
+    summary["package_kind"] = "diagnostic_partial"
+    summary["partial_reasons"] = ["run_can_continue_on_stand"]
+    summary["resume_available"] = True
+    summary["finished_at_utc"] = None
+    package = build_synthetic_r130run(
+        tmp_path / "resume-available-partial.r130run",
+        payload_overrides={
+            "run-summary.json": (json.dumps(summary, ensure_ascii=False) + "\n").encode("utf-8"),
+        },
+        manifest_mutator=lambda manifest: manifest.update(
+            package_kind="diagnostic_partial",
+        ),
+    )
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert report.semanticVerdict == "passed"
+    assert report.packageKind == "diagnostic_partial"
+
+
+def test_diagnostic_partial_requires_the_same_core_payloads_as_final(
+    tmp_path: Path,
+) -> None:
+    summary = _m9a_json_object("run-summary.json")
+    summary["package_kind"] = "diagnostic_partial"
+    summary["partial_reasons"] = ["diagnostic"]
+    summary["resume_available"] = True
+    summary["finished_at_utc"] = None
+    package = build_synthetic_r130run(
+        tmp_path / "partial-without-measurements.r130run",
+        payload_overrides={
+            "run-summary.json": (json.dumps(summary, ensure_ascii=False) + "\n").encode("utf-8"),
+        },
+        payload_removals=("measurements.csv",),
+        manifest_mutator=lambda manifest: manifest.update(
+            package_kind="diagnostic_partial",
+        ),
+    )
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert report.semanticVerdict == "failed"
+    assert any(finding.code == "core_missing" for finding in report.findings)
+
+
+@pytest.mark.parametrize(
+    ("partial_reasons", "resume_available"),
+    [(["not_final"], False), ([], True)],
+)
+def test_final_summary_rejects_partial_or_resumable_state(
+    tmp_path: Path,
+    partial_reasons: list[JsonValue],
+    resume_available: bool,
+) -> None:
+    summary = _m9a_json_object("run-summary.json")
+    summary["partial_reasons"] = partial_reasons
+    summary["resume_available"] = resume_available
+    package = build_synthetic_r130run(
+        tmp_path / "invalid-final-state.r130run",
+        payload_overrides={
+            "run-summary.json": (json.dumps(summary, ensure_ascii=False) + "\n").encode("utf-8"),
+        },
+    )
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert report.semanticVerdict == "failed"
+    assert any(finding.location == "run-summary.json" for finding in report.findings)
+
+
 def test_diagnostic_partial_rejects_malformed_optional_finished_timestamp(tmp_path: Path) -> None:
     base = build_synthetic_r130run(tmp_path / "base-partial.r130run")
     with ZipFile(base) as archive:
@@ -991,6 +1237,46 @@ def _m9a_measurement_rows(package_name: str) -> list[dict[str, str]]:
         io.TextIOWrapper(raw, encoding="utf-8") as text,
     ):
         return list(csv.DictReader(text))
+
+
+def _measurement_row(
+    *,
+    sequence: int,
+    attempt_disposition: str = "accepted",
+    segment_disposition: str = "included",
+    accepted: str = "true",
+    accepted_elapsed_s: str = "0",
+    segment_id: str = "segment-a",
+    segment_elapsed_s: str = "0",
+) -> dict[str, str]:
+    row = _m9a_measurement_rows("normal_final_rbd.r130run")[0]
+    row.update(
+        measurement_id=f"measurement-{sequence}",
+        measurement_sequence=str(sequence),
+        attempt_disposition=attempt_disposition,
+        segment_disposition=segment_disposition,
+        accepted=accepted,
+        accepted_elapsed_s=accepted_elapsed_s,
+        segment_id=segment_id,
+        segment_elapsed_s=segment_elapsed_s,
+    )
+    return row
+
+
+def _measurement_csv(rows: tuple[dict[str, str], ...] | list[dict[str, str]]) -> bytes:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(MEASUREMENT_COLUMNS)
+    for row in rows:
+        writer.writerow([row[column] for column in MEASUREMENT_COLUMNS])
+    return output.getvalue().encode("utf-8")
+
+
+def _accepted_summary(count: int, elapsed_s: str) -> bytes:
+    value = _m9a_json_object("accepted-summary.json")
+    value["accepted_measurement_count"] = count
+    value["accepted_elapsed_s"] = elapsed_s
+    return (json.dumps(value, ensure_ascii=False) + "\n").encode("utf-8")
 
 
 def _set_nested_value(root: dict[str, JsonValue], dotted_path: str, value: JsonValue) -> None:

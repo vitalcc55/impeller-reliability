@@ -5,10 +5,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 UPSTREAM_REPOSITORY = "https://github.com/vitalcc55/R130SH"
-UPSTREAM_COMMIT = "01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63"
+UPSTREAM_GOLDEN_COMMIT = "01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63"
+UPSTREAM_ACCEPTANCE_COMMIT = "09097561a6a58b1663a6912357a3c8d1daf7f28c"
 CONTRACT_SCHEMA = "r130sh.run-package.v1"
 VALIDATION_LEVEL = "producer_m9a_contract"
-VALIDATOR_VERSION = "m03b.1"
+VALIDATOR_VERSION = "m03b.2"
 
 StructuralVerdict = Literal["passed", "failed"]
 SemanticVerdict = Literal["passed", "partial", "failed", "not_available"]
@@ -56,10 +57,10 @@ class RunPackageFindingCounts(BaseModel):
 class RunPackageValidationReport(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    validatorVersion: Literal["m03b.1"] = "m03b.1"
+    validatorVersion: Literal["m03b.2"] = "m03b.2"
     validationLevel: Literal["producer_m9a_contract"] = "producer_m9a_contract"
     upstreamRepository: Literal["https://github.com/vitalcc55/R130SH"] = "https://github.com/vitalcc55/R130SH"
-    upstreamCommit: Literal["01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63"] = "01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63"
+    upstreamCommit: Literal["09097561a6a58b1663a6912357a3c8d1daf7f28c"] = "09097561a6a58b1663a6912357a3c8d1daf7f28c"
     contractSchema: Literal["r130sh.run-package.v1"] = "r130sh.run-package.v1"
     sourceFileName: str = Field(min_length=1, max_length=255)
     outerPackageSha256: str = Field(pattern=r"^[0-9a-f]{64}$")

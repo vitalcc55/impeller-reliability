@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from io import TextIOWrapper
 import json
+import math
 from pathlib import Path
 from typing import Final, cast
 from zipfile import ZipFile
@@ -56,10 +57,108 @@ MEASUREMENT_COLUMNS: Final = (
     "active_vibration_criterion_role",
     "active_threshold_mm_s",
 )
+MAX_DECIMAL_TEXT_CHARS: Final = 128
+MAX_DECIMAL_DIGITS: Final = 64
+MAX_DECIMAL_ABS_EXPONENT: Final = 1_024
+MAX_ACCEPTED_SEGMENTS: Final = 100_000
+PACKAGE_NUMBER_FORMAT: Final = ".15g"
 
 
 class M9aContractError(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class MeasurementStreamSummary:
+    measurement_count: int
+    accepted_measurement_count: int
+    accepted_elapsed_s: str
+
+    def verify(self, accepted_count: object, accepted_elapsed_s: object) -> None:
+        if not isinstance(accepted_count, int) or isinstance(accepted_count, bool) or accepted_count < 0:
+            raise M9aContractError("accepted_summary_mismatch")
+        try:
+            elapsed = parse_bounded_decimal(accepted_elapsed_s)
+            canonical_elapsed = canonical_package_number_text(elapsed)
+        except (InvalidOperation, OverflowError, TypeError, ValueError) as error:
+            raise M9aContractError("accepted_summary_mismatch") from error
+        if not isinstance(accepted_elapsed_s, str) or accepted_elapsed_s != canonical_elapsed or accepted_count != self.accepted_measurement_count or elapsed != Decimal(self.accepted_elapsed_s):
+            raise M9aContractError("accepted_summary_mismatch")
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedMeasurementRow:
+    sequence: int
+    accepted: bool
+    accepted_elapsed: Decimal | None
+    segment_elapsed: Decimal | None
+
+
+class MeasurementStreamValidator:
+    def __init__(
+        self,
+        expected_run_id: str,
+        *,
+        max_segments: int = MAX_ACCEPTED_SEGMENTS,
+    ) -> None:
+        self._expected_run_id = expected_run_id
+        self._max_segments = max_segments
+        self._previous_sequence = -1
+        self._measurement_count = 0
+        self._accepted_count = 0
+        self._expected_accepted_elapsed = Decimal(0)
+        self._last_accepted_elapsed = Decimal(0)
+        self._previous_segment_elapsed: dict[str, Decimal] = {}
+
+    def consume(self, row: Mapping[str, str]) -> None:
+        value = _validated_measurement_row(
+            row,
+            self._expected_run_id,
+            self._previous_sequence,
+        )
+        if value.accepted:
+            assert value.accepted_elapsed is not None
+            assert value.segment_elapsed is not None
+            segment_id = row["segment_id"]
+            previous = self._previous_segment_elapsed.get(segment_id)
+            if previous is None and len(self._previous_segment_elapsed) >= self._max_segments:
+                raise M9aContractError("measurement_segment_limit")
+            candidate_elapsed = self._expected_accepted_elapsed
+            if previous is not None:
+                candidate_elapsed += max(
+                    Decimal(0),
+                    value.segment_elapsed - previous,
+                )
+            try:
+                expected = canonical_package_number_decimal(candidate_elapsed)
+            except (OverflowError, ValueError) as error:
+                raise M9aContractError("accepted_elapsed_invalid") from error
+            if value.accepted_elapsed < self._last_accepted_elapsed:
+                raise M9aContractError("accepted_elapsed_not_monotonic")
+            if value.accepted_elapsed != expected:
+                raise M9aContractError("accepted_elapsed_mismatch")
+            self._expected_accepted_elapsed = candidate_elapsed
+            self._previous_segment_elapsed[segment_id] = value.segment_elapsed
+            self._last_accepted_elapsed = value.accepted_elapsed
+            self._accepted_count += 1
+        self._previous_sequence = value.sequence
+        self._measurement_count += 1
+
+    def summary(self) -> MeasurementStreamSummary:
+        try:
+            accepted_elapsed_s = canonical_package_number_text(
+                self._expected_accepted_elapsed,
+            )
+        except (OverflowError, ValueError) as error:
+            raise M9aContractError("accepted_elapsed_invalid") from error
+        return MeasurementStreamSummary(
+            measurement_count=self._measurement_count,
+            accepted_measurement_count=self._accepted_count,
+            accepted_elapsed_s=accepted_elapsed_s,
+        )
+
+    def verify_summary(self, accepted_count: object, accepted_elapsed_s: object) -> None:
+        self.summary().verify(accepted_count, accepted_elapsed_s)
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +260,7 @@ def read_m9a_package_facts(
         )
         inventory = _inventory(manifest)
         inventory_by_path = {item.path: item for item in inventory}
-        measurement_count, accepted_count, accepted_elapsed = _measurement_summary(
+        measurement_summary = _measurement_summary(
             archive,
             _text(manifest.get("run_id"), "manifest.run_id"),
             checkpoint,
@@ -181,16 +280,12 @@ def read_m9a_package_facts(
     inspection_values = _list(inspections.get("inspections"), "inspections.json.inspections")
     attachment_values = _list(attachments.get("attachments"), "attachments/index.json.attachments")
 
-    accepted_measurement_count = _non_negative_int(
+    measurement_summary.verify_summary(
         accepted.get("accepted_measurement_count"),
-        "accepted-summary.json.accepted_measurement_count",
-    )
-    accepted_elapsed_s = _decimal_text(
         accepted.get("accepted_elapsed_s"),
-        "accepted-summary.json.accepted_elapsed_s",
     )
-    if accepted_measurement_count != accepted_count or accepted_elapsed_s != accepted_elapsed:
-        raise M9aContractError("accepted_summary_mismatch")
+    accepted_measurement_count = measurement_summary.summary().accepted_measurement_count
+    accepted_elapsed_s = measurement_summary.summary().accepted_elapsed_s
 
     package_id = _text(manifest.get("package_id"), "manifest.package_id")
     export_revision = _positive_int(manifest.get("export_revision"), "manifest.export_revision")
@@ -248,7 +343,7 @@ def read_m9a_package_facts(
         environment_status=_optional_text(decision.get("status"), "environment.decision.status"),
         environment_summary=_environment_summary(decision),
         provenance_summary=_provenance_summary(provenance_value),
-        measurement_count=measurement_count,
+        measurement_count=measurement_summary.summary().measurement_count,
         accepted_measurement_count=accepted_measurement_count,
         event_count=_row_count(event_file),
         inspection_count=len(inspection_values),
@@ -334,26 +429,16 @@ def _measurement_summary(
     archive: ZipFile,
     expected_run_id: str,
     checkpoint: Callable[[], None] | None,
-) -> tuple[int, int, str]:
-    count = 0
-    accepted_count = 0
-    last_accepted = Decimal(0)
+) -> MeasurementStreamValidator:
+    stream = MeasurementStreamValidator(expected_run_id)
     with archive.open("measurements.csv", mode="r") as raw, TextIOWrapper(raw, encoding="utf-8", errors="strict", newline="") as text:
         reader = csv.DictReader(text)
         if tuple(reader.fieldnames or ()) != MEASUREMENT_COLUMNS:
             raise M9aContractError("measurement_header_mismatch")
-        previous_sequence = -1
         for row in reader:
             _checkpoint(checkpoint)
-            count += 1
-            previous_sequence = validate_measurement_row(row, expected_run_id, previous_sequence)
-            if row["accepted"] == "true":
-                accepted_count += 1
-                try:
-                    last_accepted = Decimal(row["accepted_elapsed_s"])
-                except InvalidOperation as error:
-                    raise M9aContractError("accepted_elapsed_invalid") from error
-    return count, accepted_count, _canonical_decimal(last_accepted)
+            stream.consume(row)
+    return stream
 
 
 def validate_measurement_row(
@@ -361,7 +446,18 @@ def validate_measurement_row(
     expected_run_id: str,
     previous_sequence: int,
 ) -> int:
+    return _validated_measurement_row(row, expected_run_id, previous_sequence).sequence
+
+
+def _validated_measurement_row(
+    row: Mapping[str, str],
+    expected_run_id: str,
+    previous_sequence: int,
+) -> _ValidatedMeasurementRow:
     if row["run_id"] != expected_run_id or not row["measurement_id"]:
+        raise M9aContractError("measurement_identity_invalid")
+    segment_id = row["segment_id"]
+    if not segment_id or len(segment_id.encode("utf-8")) > 200:
         raise M9aContractError("measurement_identity_invalid")
     try:
         sequence = int(row["measurement_sequence"])
@@ -373,18 +469,67 @@ def validate_measurement_row(
         raise M9aContractError("measurement_axis_synchrony_invalid")
     if row["rpm_fallback_active"] not in {"true", "false"}:
         raise M9aContractError("measurement_rpm_fallback_invalid")
-    if row["accepted"] == "true":
-        if row["attempt_disposition"] not in {"active", "accepted"} or row["segment_disposition"] != "included":
-            raise M9aContractError("measurement_acceptance_invalid")
-        try:
-            accepted_elapsed = Decimal(row["accepted_elapsed_s"])
-        except InvalidOperation as error:
-            raise M9aContractError("accepted_elapsed_invalid") from error
-        if not accepted_elapsed.is_finite() or accepted_elapsed < 0:
-            raise M9aContractError("accepted_elapsed_invalid")
-    elif row["accepted"] != "false" or row["accepted_elapsed_s"] != "" or row["attempt_disposition"] != "rejected" or row["segment_disposition"] != "excluded":
+    attempt_disposition = row["attempt_disposition"]
+    segment_disposition = row["segment_disposition"]
+    if attempt_disposition not in {"active", "accepted", "rejected"} or segment_disposition not in {"included", "excluded"}:
         raise M9aContractError("measurement_acceptance_invalid")
-    return sequence
+    expected_accepted = attempt_disposition in {"active", "accepted"} and segment_disposition == "included"
+    if row["accepted"] not in {"true", "false"} or (row["accepted"] == "true") != expected_accepted:
+        raise M9aContractError("measurement_acceptance_invalid")
+    if expected_accepted:
+        try:
+            accepted_elapsed = parse_bounded_decimal(row["accepted_elapsed_s"])
+            segment_elapsed = canonical_package_number_decimal(
+                parse_bounded_decimal(row["segment_elapsed_s"]),
+            )
+            canonical_accepted_elapsed = canonical_package_number_text(
+                accepted_elapsed,
+            )
+            canonical_segment_elapsed = canonical_package_number_text(
+                segment_elapsed,
+            )
+        except (InvalidOperation, OverflowError, TypeError, ValueError) as error:
+            raise M9aContractError("accepted_elapsed_invalid") from error
+        if accepted_elapsed < 0 or segment_elapsed < 0 or row["accepted_elapsed_s"] != canonical_accepted_elapsed or row["segment_elapsed_s"] != canonical_segment_elapsed:
+            raise M9aContractError("accepted_elapsed_invalid")
+    elif row["accepted_elapsed_s"] != "":
+        raise M9aContractError("measurement_acceptance_invalid")
+    else:
+        accepted_elapsed = None
+        segment_elapsed = None
+    return _ValidatedMeasurementRow(
+        sequence=sequence,
+        accepted=expected_accepted,
+        accepted_elapsed=accepted_elapsed,
+        segment_elapsed=segment_elapsed,
+    )
+
+
+def parse_bounded_decimal(value: object) -> Decimal:
+    if not isinstance(value, str) or not value or len(value) > MAX_DECIMAL_TEXT_CHARS:
+        raise ValueError("decimal_text_invalid")
+    parsed = Decimal(value)
+    if not parsed.is_finite():
+        raise ValueError("decimal_not_finite")
+    decimal_tuple = parsed.as_tuple()
+    exponent = decimal_tuple.exponent
+    if not isinstance(exponent, int) or len(decimal_tuple.digits) > MAX_DECIMAL_DIGITS or abs(exponent) > MAX_DECIMAL_ABS_EXPONENT or abs(parsed.adjusted()) > MAX_DECIMAL_ABS_EXPONENT:
+        raise ValueError("decimal_out_of_bounds")
+    return parsed
+
+
+def canonical_package_number_decimal(value: Decimal) -> Decimal:
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ValueError("package_number_not_finite")
+    return Decimal(format(numeric, PACKAGE_NUMBER_FORMAT))
+
+
+def canonical_package_number_text(value: Decimal) -> str:
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ValueError("package_number_not_finite")
+    return format(numeric, PACKAGE_NUMBER_FORMAT)
 
 
 def _plan_summary(value: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -541,25 +686,6 @@ def _non_negative_int(value: object, location: str) -> int:
     return value
 
 
-def _decimal_text(value: object, location: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise M9aContractError(f"decimal_required:{location}")
-    try:
-        decimal_value = Decimal(value)
-    except InvalidOperation as error:
-        raise M9aContractError(f"decimal_required:{location}") from error
-    if not decimal_value.is_finite() or decimal_value < 0:
-        raise M9aContractError(f"decimal_required:{location}")
-    return _canonical_decimal(decimal_value)
-
-
-def _canonical_decimal(value: Decimal) -> str:
-    rendered = format(value, "f")
-    if "." in rendered:
-        rendered = rendered.rstrip("0").rstrip(".")
-    return rendered or "0"
-
-
 def _row_count(item: M9aInventoryItem) -> int:
     if item.row_count is None:
         raise M9aContractError(f"row_count_missing:{item.path}")
@@ -581,7 +707,12 @@ __all__ = [
     "M9aInventoryItem",
     "M9aPackageFacts",
     "M9aProjection",
+    "MeasurementStreamSummary",
+    "MeasurementStreamValidator",
     "canonical_json",
+    "canonical_package_number_decimal",
+    "canonical_package_number_text",
+    "parse_bounded_decimal",
     "read_m9a_package_facts",
     "validate_measurement_row",
 ]
