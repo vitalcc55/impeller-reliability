@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "algorithmId": "rbd_reference",
+  "algorithmVersion": "1.0.0",
+  "numericPolicy": "exact_fraction_v1",
+  "source": {
+    "document": "ПМИ Р130У, редакция 01, 2024",
+    "upstreamRepository": "vitalcc55/R130SH",
+    "upstreamCommit": "935972f47d399dcef418fd686c3d050facfb7c1c",
+    "repositoryPath": "docs/Подготовленная документация и исходники/PDF_исходники/ПМИ Ресурс.pdf",
+    "sha256": "4849AA3C6BCF0A1B32D654286F1A2D0465576F10DEEF6617AF9EBE32199D84C4",
+    "sections": [
+      "Раздел 5",
+      "Раздел 6",
+      "9.3.1",
+      "Таблица 2",
+      "Таблица 3",
+      "Формулы 1-3",
+      "Раздел 10",
+      "Раздел 11"
+    ],
+    "reviewer": "user_supplied_acceptance_and_visual_pmi_review",
+    "review": "Оригинальные страницы 10-17 визуально проверены для M04C"
+  },
+  "units": {
+    "nominalRpm": "rpm",
+    "baseCycles": "cycle",
+    "reserveFactor": "1",
+    "accelerationDurationS": "s",
+    "decelerationDurationS": "s",
+    "failureDurationS": "s",
+    "requiredCyclesExact": "cycle",
+    "steadyDurationSExact": "s",
+    "cycleDurationSExact": "s",
+    "totalDurationSExact": "s",
+    "failureCycles": "cycle"
+  },
+  "roundingPolicy": "Exact Fraction arithmetic; N_OTK uses mathematical floor only after the exact rational expression is evaluated.",
+  "tolerance": "exact; no tolerance",
+  "cases": [
+    {
+      "id": "example-a",
+      "input": {
+        "nominalRpm": "1500",
+        "baseCycles": "2000000",
+        "reserveFactor": "1.5",
+        "accelerationDurationS": "10",
+        "decelerationDurationS": "10"
+      },
+      "expected": {
+        "requiredCyclesExact": "3000000",
+        "steadyDurationSExact": "120000",
+        "cycleDurationSExact": "120020",
+        "totalDurationSExact": "120020"
+      }
+    },
+    {
+      "id": "example-b-producer-rounding-separate",
+      "input": {
+        "nominalRpm": "1500",
+        "baseCycles": "1000",
+        "reserveFactor": "1.5003",
+        "accelerationDurationS": "5",
+        "decelerationDurationS": "5"
+      },
+      "expected": {
+        "requiredCyclesExact": "1500.3",
+        "steadyDurationSExact": "60.012",
+        "cycleDurationSExact": "70.012",
+        "totalDurationSExact": "70.012"
+      },
+      "producerTargets": {
+        "targetCycles": 1501,
+        "targetSteadyDurationS": "60.04",
+        "totalDurationS": "70.04"
+      }
+    },
+    {
+      "id": "example-c-table-3",
+      "input": {
+        "nominalRpm": "1500",
+        "baseCycles": "2000000",
+        "reserveFactor": "1.5",
+        "accelerationDurationS": "10",
+        "decelerationDurationS": "10",
+        "failureDurationS": "60000"
+      },
+      "expected": { "failureCycles": "1499750" }
+    }
+  ]
+}

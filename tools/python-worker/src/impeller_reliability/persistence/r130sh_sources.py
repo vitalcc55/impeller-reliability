@@ -8,10 +8,13 @@ from pathlib import Path, PurePosixPath
 import re
 import sqlite3
 import stat
+import struct
 from threading import Event
 from time import monotonic
 from typing import Final, Literal, cast
 from uuid import RFC_4122, UUID
+from zipfile import BadZipFile, ZipFile
+import zlib
 
 from impeller_reliability.integration.r130run.m9a import (
     M9aPackageFacts,
@@ -39,6 +42,7 @@ from impeller_reliability.worker.deadline import RequestDeadline
 
 SourceIntegrityStatus = Literal["verified", "missing", "modified", "verification_error"]
 ImportDisposition = Literal["created", "existing"]
+RbdPlanSelection = Literal["original", "effective"]
 
 SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 FINAL_PATH_RE: Final = re.compile(
@@ -47,6 +51,7 @@ FINAL_PATH_RE: Final = re.compile(
 STAGING_NAME_RE: Final = re.compile(r"^[0-9a-f-]{36}\.part$")
 STREAM_CHUNK_BYTES: Final = 1024 * 1024
 WINDOWS_REPARSE_POINT_ATTRIBUTE: Final = 0x0400
+RBD_PLAN_MAX_BYTES: Final = 64 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,13 +109,59 @@ class SpecimenBinding:
     updated_at_utc: str
 
 
+@dataclass(frozen=True, slots=True)
+class RbdPlanSourceValues:
+    base_cycles: str
+    reserve_factor: str
+    nominal_rpm: str
+    acceleration_duration_s: str
+    deceleration_duration_s: str
+
+
+@dataclass(frozen=True, slots=True)
+class RbdMethodicalRequirements:
+    required_cycles_exact: str
+    required_steady_duration_s_exact: str
+
+
+@dataclass(frozen=True, slots=True)
+class RbdExecutionTargets:
+    target_cycles: int
+    target_steady_duration_s: str
+    total_duration_s: str
+    rounding_policy: str
+
+
+@dataclass(frozen=True, slots=True)
+class RbdPlanSourceSnapshot:
+    execution_id: str
+    local_import_id: str
+    package_id: str
+    run_id: str
+    export_revision: int
+    outer_package_sha256: str
+    source_snapshot_sha256: str
+    producer_name: str
+    producer_version: str
+    producer_build_id: str
+    producer_git_commit: str
+    selection: RbdPlanSelection
+    payload_path: str
+    payload_sha256: str
+    plan_id: str
+    plan_revision: int
+    source_values: RbdPlanSourceValues
+    methodical_requirements: RbdMethodicalRequirements
+    execution_targets: RbdExecutionTargets
+
+
 class R130shSourceRepository:
     def __init__(self, connection: sqlite3.Connection, project_path: Path) -> None:
         self._connection = connection
         self._project_path = project_path
         self._integrity_cache: dict[
             str,
-            tuple[SourceIntegrityStatus, tuple[int, int, int, int] | None],
+            tuple[SourceIntegrityStatus, tuple[int, int, int, int] | None, str | None],
         ] = {}
 
     def recover_managed_files(self, deadline: RequestDeadline | None = None) -> None:
@@ -322,6 +373,7 @@ class R130shSourceRepository:
             self._integrity_cache[local_import_id] = (
                 "verified",
                 published_signature,
+                facts.outer_package_sha256,
             )
             return _created_summary(
                 local_import_id,
@@ -453,8 +505,10 @@ class R130shSourceRepository:
         *,
         deadline: RequestDeadline | None = None,
     ) -> SourceIntegrityStatus:
+        effective_deadline = deadline or RequestDeadline.start(30_000)
+        verified_outer_sha256: str | None = None
         local_import_id = _uuid4(local_import_id)
-        _check_deadline(deadline, "r130sh_verify")
+        _check_deadline(effective_deadline, "r130sh_verify")
         row = self._connection.execute(
             """
             SELECT managed_relative_path, outer_size_bytes, outer_package_sha256
@@ -472,7 +526,7 @@ class R130shSourceRepository:
             elif not _ordinary_file(path) or path.stat().st_size != int(row[1]):
                 status = "modified"
             else:
-                actual_sha = _sha256_file(path, deadline)
+                actual_sha = _sha256_file(path, effective_deadline)
                 if actual_sha != str(row[2]):
                     status = "modified"
                 else:
@@ -480,11 +534,17 @@ class R130shSourceRepository:
                         path,
                         ValidationControl(
                             Event(),
-                            monotonic() + (30 if deadline is None else deadline.remaining_seconds(30)),
+                            monotonic() + effective_deadline.remaining_seconds(30),
                             _ignore_validation_progress,
                         ),
                     )
-                    status = "verified" if report.structuralVerdict == "passed" and report.semanticVerdict == "passed" else "verification_error"
+                    if report.outerPackageSha256 != str(row[2]) or report.outerSizeBytes != int(row[1]):
+                        status = "modified"
+                    elif report.structuralVerdict == "passed" and report.semanticVerdict == "passed":
+                        status = "verified"
+                        verified_outer_sha256 = report.outerPackageSha256
+                    else:
+                        status = "verification_error"
         except SourceChangedError:
             status = "modified"
         except ValidationTimeoutError as error:
@@ -495,10 +555,161 @@ class R130shSourceRepository:
             ) from error
         except OSError, ValueError:
             status = "verification_error"
-        _check_deadline(deadline, "r130sh_verify")
-        signature = _file_signature(path) if path is not None and status in {"verified", "modified"} else None
-        self._integrity_cache[local_import_id] = (status, signature)
+        _check_deadline(effective_deadline, "r130sh_verify")
+        try:
+            signature = _file_signature(path) if path is not None and status in {"verified", "modified"} else None
+        except OSError, ValueError:
+            status = "verification_error"
+            signature = None
+        self._integrity_cache[local_import_id] = (status, signature, verified_outer_sha256)
         return status
+
+    def read_rbd_plan_source(
+        self,
+        execution_id: str,
+        local_import_id: str,
+        selection: RbdPlanSelection,
+        *,
+        deadline: RequestDeadline | None = None,
+    ) -> RbdPlanSourceSnapshot:
+        effective_deadline = deadline or RequestDeadline.start(30_000)
+        execution_id = _uuid4(execution_id)
+        local_import_id = _uuid4(local_import_id)
+        if selection not in {"original", "effective"}:
+            raise ProjectOperationError("validation_error", "Редакция исходного плана не поддерживается.")
+        integrity = self.verify_source(local_import_id, deadline=effective_deadline)
+        if integrity != "verified":
+            raise ProjectOperationError(
+                "file_integrity_mismatch",
+                "Managed archive не прошёл проверку целостности; расчётные входы недоступны.",
+            )
+        row = self._connection.execute(
+            """
+            SELECT e.execution_id, e.source_outer_package_sha256,
+                   s.package_id, s.run_id, s.export_revision, s.outer_package_sha256,
+                   s.source_snapshot_sha256, s.producer_name, s.producer_version,
+                   s.producer_build_id, s.producer_git_commit, s.managed_relative_path,
+                   p.mode, p.original_plan_id, p.original_plan_revision,
+                   p.original_plan_sha256, p.effective_plan_id,
+                   p.effective_plan_revision, p.effective_plan_sha256
+            FROM r130sh_sources s
+            JOIN r130sh_run_projections p ON p.local_import_id=s.local_import_id
+            JOIN reliability_test_executions e ON e.local_import_id=s.local_import_id
+            WHERE s.local_import_id=? AND e.execution_id=?
+            """,
+            (local_import_id, execution_id),
+        ).fetchone()
+        if row is None:
+            raise ProjectOperationError(
+                "entity_not_found",
+                "Выбранное исполнение не связано с указанной revision импортированного источника.",
+            )
+        if str(row[1]) != str(row[5]):
+            raise _corrupt_source()
+        if str(row[12]) != "rbd":
+            raise ProjectOperationError("validation_error", "Выбранное исполнение не относится к РБД.")
+        payload_path = "plan/original.json" if selection == "original" else "plan/effective.json"
+        plan_id = str(row[13] if selection == "original" else row[16])
+        plan_revision = int(row[14] if selection == "original" else row[17])
+        projected_sha256 = str(row[15] if selection == "original" else row[18])
+        inventory = self._connection.execute(
+            """
+            SELECT size_bytes, sha256 FROM r130sh_source_inventory
+            WHERE local_import_id=? AND path=?
+            """,
+            (local_import_id, payload_path),
+        ).fetchone()
+        if inventory is None or int(inventory[0]) > RBD_PLAN_MAX_BYTES or str(inventory[1]) != projected_sha256:
+            raise _corrupt_source()
+        try:
+            managed_path = _managed_path(self._project_path, str(row[11]))
+            if not _ordinary_file(managed_path):
+                raise OSError("managed_source_not_ordinary")
+            cached = self._integrity_cache.get(local_import_id)
+            if cached is None or cached[0] != "verified" or cached[1] is None or cached[2] != str(row[5]):
+                raise OSError("integrity_receipt_missing")
+            with managed_path.open("rb") as package_stream:
+                signature_before = _file_signature_from_stat(os.fstat(package_stream.fileno()))
+                if signature_before != cached[1]:
+                    raise OSError("managed_source_replaced")
+                with ZipFile(package_stream, mode="r") as archive:
+                    info = archive.getinfo(payload_path)
+                    if info.file_size != int(inventory[0]) or info.file_size > RBD_PLAN_MAX_BYTES:
+                        raise _corrupt_source()
+                    with archive.open(info, mode="r") as stream:
+                        payload_bytes = stream.read(RBD_PLAN_MAX_BYTES + 1)
+                if _file_signature_from_stat(os.fstat(package_stream.fileno())) != signature_before:
+                    raise OSError("managed_source_changed")
+        except ProjectOperationError:
+            raise
+        except (
+            BadZipFile,
+            EOFError,
+            KeyError,
+            OSError,
+            RecursionError,
+            RuntimeError,
+            ValueError,
+            struct.error,
+            zlib.error,
+        ) as error:
+            raise ProjectOperationError("file_integrity_mismatch", "Расчётный план недоступен в managed archive.") from error
+        _check_deadline(effective_deadline, "rbd_plan_source_read")
+        if len(payload_bytes) != int(inventory[0]) or hashlib.sha256(payload_bytes).hexdigest() != projected_sha256:
+            raise ProjectOperationError("file_integrity_mismatch", "Расчётный план изменён после импорта.")
+        try:
+            payload = json.loads(payload_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ProjectOperationError("file_integrity_mismatch", "Расчётный план повреждён.") from error
+        plan = _rbd_plan_object(cast(object, payload), selection)
+        if (
+            _plan_required_text(plan, "mode") != "rbd"
+            or _plan_required_text(plan, "plan_id") != plan_id
+            or _plan_required_integer(plan, "plan_revision") != plan_revision
+            or _plan_required_text(plan, "run_id") != str(row[3])
+        ):
+            raise _corrupt_source()
+        source_values = _plan_required_object(plan, "source_values")
+        requirements = _plan_required_object(plan, "methodical_requirements")
+        targets = _plan_required_object(plan, "execution_targets")
+        return RbdPlanSourceSnapshot(
+            execution_id=execution_id,
+            local_import_id=local_import_id,
+            package_id=str(row[2]),
+            run_id=str(row[3]),
+            export_revision=int(row[4]),
+            outer_package_sha256=str(row[5]),
+            source_snapshot_sha256=str(row[6]),
+            producer_name=str(row[7]),
+            producer_version=str(row[8]),
+            producer_build_id=str(row[9]),
+            producer_git_commit=str(row[10]),
+            selection=selection,
+            payload_path=payload_path,
+            payload_sha256=projected_sha256,
+            plan_id=plan_id,
+            plan_revision=plan_revision,
+            source_values=RbdPlanSourceValues(
+                base_cycles=_plan_required_text(source_values, "base_cycles"),
+                reserve_factor=_plan_required_text(source_values, "reserve_factor"),
+                nominal_rpm=_plan_required_text(source_values, "nominal_rpm"),
+                acceleration_duration_s=_plan_required_text(source_values, "acceleration_duration_s"),
+                deceleration_duration_s=_plan_required_text(source_values, "deceleration_duration_s"),
+            ),
+            methodical_requirements=RbdMethodicalRequirements(
+                required_cycles_exact=_plan_required_text(requirements, "required_cycles_exact"),
+                required_steady_duration_s_exact=_plan_required_text(
+                    requirements,
+                    "required_steady_duration_s_exact",
+                ),
+            ),
+            execution_targets=RbdExecutionTargets(
+                target_cycles=_plan_required_integer(targets, "target_cycles"),
+                target_steady_duration_s=_plan_required_text(targets, "target_steady_duration_s"),
+                total_duration_s=_plan_required_text(targets, "total_duration_s"),
+                rounding_policy=_plan_required_text(targets, "rounding_policy"),
+            ),
+        )
 
     def get_binding(
         self,
@@ -1393,6 +1604,43 @@ def _managed_relative_path(facts: M9aPackageFacts) -> str:
     return value
 
 
+def _rbd_plan_object(value: object, selection: RbdPlanSelection) -> dict[str, object]:
+    envelope = _plan_object_value(value)
+    if selection == "original":
+        return envelope
+    effective = _plan_required_object(envelope, "effective_plan")
+    return _plan_required_object(effective, "effective_plan")
+
+
+def _plan_required_object(value: dict[str, object], key: str) -> dict[str, object]:
+    if key not in value:
+        raise _corrupt_source()
+    return _plan_object_value(value[key])
+
+
+def _plan_object_value(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise _corrupt_source()
+    mapping = cast(dict[object, object], value)
+    if not all(isinstance(key, str) for key in mapping):
+        raise _corrupt_source()
+    return {str(key): item for key, item in mapping.items()}
+
+
+def _plan_required_text(value: dict[str, object], key: str) -> str:
+    item = value.get(key)
+    if not isinstance(item, str) or not item or len(item.encode("utf-8")) > 512:
+        raise _corrupt_source()
+    return item
+
+
+def _plan_required_integer(value: dict[str, object], key: str) -> int:
+    item = value.get(key)
+    if not isinstance(item, int) or isinstance(item, bool) or item < 0:
+        raise _corrupt_source()
+    return item
+
+
 def _inventory_path(value: str) -> str:
     path = PurePosixPath(value)
     if (
@@ -1438,7 +1686,10 @@ def _cheap_integrity_evidence(
 
 
 def _file_signature(path: Path) -> tuple[int, int, int, int]:
-    value = path.stat()
+    return _file_signature_from_stat(path.stat())
+
+
+def _file_signature_from_stat(value: os.stat_result) -> tuple[int, int, int, int]:
     return value.st_size, value.st_mtime_ns, value.st_dev, value.st_ino
 
 

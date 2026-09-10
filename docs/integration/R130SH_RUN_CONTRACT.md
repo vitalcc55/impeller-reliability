@@ -30,3 +30,15 @@ life metric.
 `.r130run` v1 не содержит обязательных `TrialRun`, `VibrationBaseline` или
 relative `×1,5` criterion. Их отсутствие не является повреждением package;
 downstream не реконструирует их из первой measurement или минимумов X/Y/Z.
+
+M04C читает RBD input fields только из exact managed archive через существующий
+`R130shSourceRepository`: explicit `plan/original.json` либо inner plan из
+`plan/effective.json`, после полной integrity-проверки и с bounded member read.
+Запрос связывает exact `execution_id` и `local_import_id`; их несоответствие
+отклоняется, а новая export revision не выбирается автоматически. Даже без
+внешнего request deadline проверка источника ограничена 30 секундами.
+Renderer не передаёт path и не читает ZIP. `_plan_summary` остаётся сокращённой
+проекцией; отсутствие `N0`, `k1`, разгона и торможения в summary не означает их
+отсутствия в source. Inventory payload SHA-256, outer archive SHA-256,
+plan id/revision и producer provenance сохраняются раздельно. `measurements.csv`
+не materialize ради получения scalar plan fields.

@@ -14,6 +14,7 @@ from threading import Event
 from time import monotonic, sleep
 from uuid import uuid4
 from zipfile import ZipFile
+import zlib
 
 from pydantic import TypeAdapter
 import pytest
@@ -370,6 +371,53 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(tmp_pat
     )
 
     execution = service.materialize_reliability_execution(imported.local_import_id, None)
+    rounding_import = _import(service, project_path, _package("exact_methodical_rounding.r130run"))
+    assert rounding_import.source_specimen_id == imported.source_specimen_id
+    rounding_execution = service.materialize_reliability_execution(rounding_import.local_import_id, None)
+    original_plan = service.read_rbd_plan_source(
+        rounding_execution.execution_id,
+        rounding_import.local_import_id,
+        "original",
+    )
+    effective_plan = service.read_rbd_plan_source(
+        rounding_execution.execution_id,
+        rounding_import.local_import_id,
+        "effective",
+    )
+    rounding_detail = service.get_imported_run(rounding_import.local_import_id)
+    assert original_plan.execution_id == rounding_execution.execution_id
+    assert original_plan.local_import_id == rounding_import.local_import_id
+    assert original_plan.outer_package_sha256 == rounding_import.outer_package_sha256
+    assert original_plan.source_snapshot_sha256 == rounding_import.source_snapshot_sha256
+    assert original_plan.producer_name == rounding_import.producer_name
+    assert original_plan.producer_version == rounding_import.producer_version
+    assert original_plan.producer_build_id == rounding_import.producer_build_id
+    assert original_plan.producer_git_commit == rounding_import.producer_git_commit
+    assert original_plan.source_values.base_cycles == "1000"
+    assert original_plan.source_values.reserve_factor == "1.5003"
+    assert original_plan.source_values.nominal_rpm == "1500"
+    assert original_plan.source_values.acceleration_duration_s == "5"
+    assert original_plan.source_values.deceleration_duration_s == "5"
+    assert original_plan.methodical_requirements.required_cycles_exact == "1500.3"
+    assert original_plan.methodical_requirements.required_steady_duration_s_exact == "60.012"
+    assert original_plan.execution_targets.target_cycles == 1501
+    assert original_plan.execution_targets.target_steady_duration_s == "60.04"
+    assert original_plan.execution_targets.total_duration_s == "70.04"
+    assert original_plan.payload_path == "plan/original.json"
+    assert original_plan.payload_sha256 == rounding_detail.projection["original_plan_sha256"]
+    assert effective_plan.selection == "effective"
+    assert effective_plan.payload_path == "plan/effective.json"
+    assert effective_plan.payload_sha256 == rounding_detail.projection["effective_plan_sha256"]
+    assert effective_plan.payload_sha256 != original_plan.payload_sha256
+    assert effective_plan.source_values == original_plan.source_values
+    assert effective_plan.execution_targets == original_plan.execution_targets
+    with pytest.raises(ProjectOperationError) as mismatched_execution_source:
+        service.read_rbd_plan_source(
+            execution.execution_id,
+            rounding_import.local_import_id,
+            "original",
+        )
+    assert mismatched_execution_source.value.code == "entity_not_found"
     with pytest.raises(ProjectOperationError) as rebound_after_materialization:
         service.bind_imported_run_specimen(
             source_specimen_id=imported.source_specimen_id,
@@ -387,7 +435,10 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(tmp_pat
     assert execution.lifecycle_status == "completed"
     assert execution.failure_observations == ()
     page = service.list_reliability_execution_page(wheel.wheel_model_id, None, 25, None)
-    assert [item.execution_id for item in page.items] == [execution.execution_id]
+    assert {item.execution_id for item in page.items} == {
+        execution.execution_id,
+        rounding_execution.execution_id,
+    }
     assert page.next_cursor is None
     assert service.get_reliability_execution(execution.execution_id, None) == execution
     archived_source = _import(service, project_path, _package("normal_final_pmn.r130run"))
@@ -427,6 +478,117 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(tmp_pat
     with pytest.raises(ProjectOperationError) as corrupted:
         service.open(path=str(project_path), application_instance_id="tampered-derived-snapshot")
     assert corrupted.value.code == "corrupt_project"
+
+
+def test_rbd_plan_source_read_fails_typed_for_missing_modified_and_expired_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, project_path = _project(tmp_path)
+    imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
+    wheel = service.create_wheel(
+        {
+            "wheelModelId": str(uuid4()),
+            "fullName": "Колесо для source integrity",
+            "designation": "",
+            "nominalDiameterMm": None,
+            "nominalSpeedRpm": None,
+            "bladeCount": None,
+            "geometryDescription": "",
+            "compositionDescription": "",
+            "materialDescription": "",
+            "notes": "",
+        },
+        None,
+    )
+    specimen = service.create_specimen(
+        {
+            "specimenId": str(uuid4()),
+            "wheelModelId": wheel.wheel_model_id,
+            "identificationNumber": "M04C-SOURCE-001",
+            "batchNumber": "",
+            "marking": "",
+            "manufacturedOn": None,
+            "receivedOn": None,
+            "workingDiameterMm": None,
+            "initialConditionNotes": "",
+            "notes": "",
+        },
+        None,
+    )
+    service.bind_imported_run_specimen(
+        source_specimen_id=imported.source_specimen_id,
+        local_specimen_id=specimen.specimen_id,
+        expected_revision=1,
+        actor="local_user",
+        reason="Проверка источника расчёта",
+        deadline=None,
+    )
+    execution = service.materialize_reliability_execution(imported.local_import_id, None)
+    managed_path = _managed_path(project_path, imported)
+
+    with pytest.raises(ProjectOperationError) as expired:
+        service.read_rbd_plan_source(
+            execution.execution_id,
+            imported.local_import_id,
+            "original",
+            RequestDeadline.start(0),
+        )
+    assert expired.value.code == "timeout"
+
+    validated_report, _ = _validated(_package("normal_final_rbd.r130run"))
+    mismatched_report = validated_report.model_copy(update={"outerPackageSha256": "0" * 64})
+    with monkeypatch.context() as patch_context:
+
+        def mismatched_validation_report(
+            self: RunPackageValidator,
+            source_path: Path,
+            control: ValidationControl,
+        ) -> RunPackageValidationReport:
+            return mismatched_report
+
+        patch_context.setattr(
+            RunPackageValidator,
+            "validate",
+            mismatched_validation_report,
+        )
+        with pytest.raises(ProjectOperationError) as receipt_mismatch:
+            service.read_rbd_plan_source(execution.execution_id, imported.local_import_id, "original")
+        assert receipt_mismatch.value.code == "file_integrity_mismatch"
+
+    with monkeypatch.context() as patch_context:
+
+        def malformed_zip(*args: object, **kwargs: object) -> ZipFile:
+            raise zlib.error("malformed stream")
+
+        patch_context.setattr(
+            r130sh_sources_module,
+            "ZipFile",
+            malformed_zip,
+        )
+        with pytest.raises(ProjectOperationError) as malformed_member:
+            service.read_rbd_plan_source(execution.execution_id, imported.local_import_id, "original")
+        assert malformed_member.value.code == "file_integrity_mismatch"
+
+    managed_path.unlink()
+    with pytest.raises(ProjectOperationError) as missing:
+        service.read_rbd_plan_source(execution.execution_id, imported.local_import_id, "original")
+    assert missing.value.code == "file_integrity_mismatch"
+
+    shutil.copyfile(_package("normal_final_rbd.r130run"), managed_path)
+    assert (
+        service.read_rbd_plan_source(
+            execution.execution_id,
+            imported.local_import_id,
+            "original",
+        ).execution_id
+        == execution.execution_id
+    )
+    managed_path.write_bytes(b"modified")
+    with pytest.raises(ProjectOperationError) as modified:
+        service.read_rbd_plan_source(execution.execution_id, imported.local_import_id, "original")
+    assert modified.value.code == "file_integrity_mismatch"
+    service.close()
 
 
 def test_reliability_failure_observation_does_not_turn_technical_stop_into_specimen_failure(tmp_path: Path) -> None:

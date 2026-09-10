@@ -278,7 +278,14 @@ Portable smoke; Browser ready/unavailable и detector выполнены.
 
 Domain docs + independent golden → pure calculator → bounded managed-plan read →
 unit/integration review → commit. Критерий: exact A/B/C и frozen rounding case,
-source projections неизменны.
+source projections неизменны. Статус: закрыт на ветке. Pure Python owner
+использует exact `Fraction`, результаты таблицы 3 переходят границу как
+canonical integer strings, golden закрепляет ПМИ и примеры A/B/C. Source seam
+связан с exact execution/import tuple, проверяет registry hash receipt и читает
+только выбранный bounded plan member. Два повторных профильных review не
+содержат findings. `pnpm verify -- --IncludePackaging` прошёл: 71 Vitest,
+469 Python tests (85.60%), 15 Electron E2E, worker build, WinUnpacked и Portable
+smoke.
 
 ### C2 — snapshots and IPC
 

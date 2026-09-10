@@ -34,6 +34,8 @@ from impeller_reliability.persistence.r130sh_sources import (
     ImportedRunDetail,
     ImportedRunSummary,
     R130shSourceRepository,
+    RbdPlanSelection,
+    RbdPlanSourceSnapshot,
     SourceIntegrityStatus,
     SpecimenBinding,
 )
@@ -402,6 +404,20 @@ class ProjectSession:
 
     def verify_imported_run_source(self, local_import_id: str, deadline: RequestDeadline | None = None) -> SourceIntegrityStatus:
         return self._r130sh_sources.verify_source(local_import_id, deadline=deadline)
+
+    def read_rbd_plan_source(
+        self,
+        execution_id: str,
+        local_import_id: str,
+        selection: RbdPlanSelection,
+        deadline: RequestDeadline | None = None,
+    ) -> RbdPlanSourceSnapshot:
+        return self._r130sh_sources.read_rbd_plan_source(
+            execution_id,
+            local_import_id,
+            selection,
+            deadline=deadline,
+        )
 
     def get_imported_run_binding(
         self,
