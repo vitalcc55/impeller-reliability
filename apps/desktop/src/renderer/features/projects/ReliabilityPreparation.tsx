@@ -12,6 +12,15 @@ import type {
   WheelModelSummary,
 } from '@impeller-reliability/contracts';
 
+import {
+  MAX_DATASET_CANDIDATES,
+  addDatasetCandidate,
+  hasUniqueDatasetMembers,
+  observationResponseMatches,
+  replaceDatasetCandidateVersion,
+  type DatasetCandidateDecision,
+} from './reliability-dataset-draft';
+
 interface ReliabilityPreparationProps {
   readonly desktopApi: ImpellerApi;
   readonly disabled: boolean;
@@ -38,12 +47,6 @@ interface ObservationDraft {
   readonly documentLocator: string;
   readonly reason: string;
   readonly failureIds: readonly string[];
-}
-
-interface CandidateDecision {
-  readonly observationVersionId: string;
-  readonly decision: 'pending' | 'included' | 'excluded';
-  readonly reason: string;
 }
 
 const emptyObservation: ObservationDraft = {
@@ -98,7 +101,22 @@ export const ReliabilityPreparation = forwardRef<
   );
   const [observationDirty, setObservationDirty] = useState(false);
   const [candidateDecisions, setCandidateDecisions] = useState<
-    Readonly<Record<string, CandidateDecision>>
+    Readonly<Record<string, DatasetCandidateDecision>>
+  >({});
+  const [candidateVersions, setCandidateVersions] = useState<
+    Readonly<Record<string, ReliabilityObservationVersion>>
+  >({});
+  const [candidateLatestVersions, setCandidateLatestVersions] = useState<
+    Readonly<
+      Record<
+        string,
+        {
+          readonly observationVersionId: string;
+          readonly versionNumber: number;
+          readonly classification: ReliabilityObservationVersion['classification'];
+        }
+      >
+    >
   >({});
   const [datasetTitle, setDatasetTitle] = useState('Выборка наработки');
   const [datasetMethod, setDatasetMethod] = useState<'rbd' | 'rpt' | null>(null);
@@ -106,24 +124,25 @@ export const ReliabilityPreparation = forwardRef<
     'rbd_steady_rotation_time' | 'rpt_start_stop_cycles' | null
   >(null);
   const [datasetMetricUnit, setDatasetMetricUnit] = useState<'hours' | 'count' | null>(null);
-  const [populationBasis, setPopulationBasis] = useState('Рабочие колёса выбранной модели');
-  const [methodologyBasis, setMethodologyBasis] = useState('Выбранная инженером методика');
-  const [comparabilityBasis, setComparabilityBasis] = useState(
-    'Сопоставимые условия подтверждены инженером',
-  );
-  const [datasetReason, setDatasetReason] = useState(
-    'Зафиксирован состав рассмотренных наблюдений',
-  );
+  const [populationBasis, setPopulationBasis] = useState('');
+  const [methodologyBasis, setMethodologyBasis] = useState('');
+  const [comparabilityBasis, setComparabilityBasis] = useState('');
+  const [datasetReason, setDatasetReason] = useState('');
   const [datasetId, setDatasetId] = useState<string>(() => crypto.randomUUID());
   const [datasetVersionId, setDatasetVersionId] = useState<string>(() => crypto.randomUUID());
   const [datasetDirty, setDatasetDirty] = useState(false);
   const [datasets, setDatasets] = useState<readonly ReliabilityDatasetVersion[]>([]);
   const [datasetCursor, setDatasetCursor] = useState<string | null>(null);
   const [selectedDataset, setSelectedDataset] = useState<ReliabilityDatasetVersion | null>(null);
+  const [committedDatasetVersionId, setCommittedDatasetVersionId] = useState<string | null>(null);
+  const [observationWriteUnresolved, setObservationWriteUnresolved] = useState(false);
+  const [datasetWriteUnresolved, setDatasetWriteUnresolved] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<DesktopError | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const pendingRef = useRef<Promise<void> | null>(null);
+  const busyRef = useRef<string | null>(null);
+  const operationRef = useRef(0);
   const selectionRef = useRef(0);
   const dirty = observationDirty || datasetDirty;
 
@@ -138,7 +157,12 @@ export const ReliabilityPreparation = forwardRef<
       setExecutionCursor(null);
       setDatasetCursor(null);
       setCandidateDecisions({});
+      setCandidateVersions({});
+      setCandidateLatestVersions({});
       setSelectedDataset(null);
+      setCommittedDatasetVersionId(null);
+      setObservationWriteUnresolved(false);
+      setDatasetWriteUnresolved(false);
       setDatasetId(crypto.randomUUID());
       setDatasetVersionId(crypto.randomUUID());
       setDatasetDirty(false);
@@ -146,10 +170,10 @@ export const ReliabilityPreparation = forwardRef<
       setDatasetMethod(null);
       setDatasetMetricKind(null);
       setDatasetMetricUnit(null);
-      setPopulationBasis('Рабочие колёса выбранной модели');
-      setMethodologyBasis('Выбранная инженером методика');
-      setComparabilityBasis('Сопоставимые условия подтверждены инженером');
-      setDatasetReason('Зафиксирован состав рассмотренных наблюдений');
+      setPopulationBasis('');
+      setMethodologyBasis('');
+      setComparabilityBasis('');
+      setDatasetReason('');
       const executionResult = await desktopApi.reliabilityExecution.listPage(
         selectedWheelId,
         null,
@@ -187,23 +211,13 @@ export const ReliabilityPreparation = forwardRef<
           setError(detail.error);
           return false;
         }
+        if (detail.result.datasetVersionId !== item.latestVersionId) {
+          setError(contractError());
+          return false;
+        }
         loadedDatasets.push(detail.result);
       }
       setDatasets(loadedDatasets);
-      setCandidateDecisions(
-        Object.fromEntries(
-          executionResult.result.items
-            .filter((item) => item.currentObservationVersionId !== null)
-            .map((item) => [
-              item.executionId,
-              {
-                observationVersionId: item.currentObservationVersionId as string,
-                decision: 'pending',
-                reason: '',
-              },
-            ]),
-        ),
-      );
       return true;
     },
     [desktopApi],
@@ -243,14 +257,20 @@ export const ReliabilityPreparation = forwardRef<
   }, [busy, onPendingChange]);
 
   const runPending = (key: string, action: () => Promise<void>): Promise<void> => {
+    if (busyRef.current !== null) return pendingRef.current ?? Promise.resolve();
+    const operation = ++operationRef.current;
+    busyRef.current = key;
     setBusy(key);
     setError(null);
     setMessage(null);
     const pending = action()
       .catch(() => setError(unavailableError()))
       .finally(() => {
-        pendingRef.current = null;
-        setBusy(null);
+        if (operation === operationRef.current) {
+          pendingRef.current = null;
+          busyRef.current = null;
+          setBusy(null);
+        }
       });
     pendingRef.current = pending;
     return pending;
@@ -281,9 +301,162 @@ export const ReliabilityPreparation = forwardRef<
     setObservationDirty(false);
   };
 
+  const addCurrentObservationCandidate = async (
+    item: ReliabilityExecutionSummary,
+  ): Promise<void> => {
+    if (item.currentObservationVersionId === null) return;
+    const proposal = addDatasetCandidate(
+      candidateDecisions,
+      item.executionId,
+      item.currentObservationVersionId,
+    );
+    if (proposal.limitReached) {
+      setError({
+        code: 'validation_error',
+        message: `В одной версии выборки допускается не более ${String(MAX_DATASET_CANDIDATES)} рассмотренных наблюдений. Удалите ненужный кандидат перед добавлением нового.`,
+        details: {},
+        retryable: false,
+      });
+      return;
+    }
+    if (proposal.decisions === candidateDecisions) return;
+    const selectionRevision = selectionRef.current;
+    const detail = await desktopApi.reliabilityObservation.getVersion(
+      item.currentObservationVersionId,
+    );
+    if (selectionRevision !== selectionRef.current) return;
+    if (!detail.ok) return setError(detail.error);
+    if (
+      !observationResponseMatches(detail.result, item.currentObservationVersionId, item.executionId)
+    )
+      return setError(contractError());
+    setCandidateVersions((current) => ({
+      ...current,
+      [detail.result.observationVersionId]: detail.result,
+    }));
+    setCandidateLatestVersions((current) => ({
+      ...current,
+      [item.executionId]: {
+        observationVersionId: detail.result.observationVersionId,
+        versionNumber: detail.result.versionNumber,
+        classification: detail.result.classification,
+      },
+    }));
+    setCandidateDecisions(proposal.decisions);
+    setDatasetDirty(true);
+  };
+
+  const replaceCandidateWithLatest = async (
+    executionId: string,
+    latestObservationVersionId: string,
+  ): Promise<void> => {
+    const selectionRevision = selectionRef.current;
+    const detail = await desktopApi.reliabilityObservation.getVersion(latestObservationVersionId);
+    if (selectionRevision !== selectionRef.current) return;
+    if (!detail.ok) return setError(detail.error);
+    if (!observationResponseMatches(detail.result, latestObservationVersionId, executionId))
+      return setError(contractError());
+    setCandidateVersions((current) => ({
+      ...current,
+      [detail.result.observationVersionId]: detail.result,
+    }));
+    setCandidateDecisions((current) =>
+      replaceDatasetCandidateVersion(current, executionId, latestObservationVersionId),
+    );
+    setDatasetDirty(true);
+  };
+
+  const selectDatasetVersion = useCallback(
+    async (item: ReliabilityDatasetVersion): Promise<boolean> => {
+      const selectionRevision = ++selectionRef.current;
+      if (!hasUniqueDatasetMembers(item.members)) {
+        setError(contractError());
+        return false;
+      }
+      const exactVersions: Record<string, ReliabilityObservationVersion> = {};
+      const latestVersions: Record<
+        string,
+        {
+          observationVersionId: string;
+          versionNumber: number;
+          classification: ReliabilityObservationVersion['classification'];
+        }
+      > = {};
+      for (const member of item.members) {
+        const detail = await desktopApi.reliabilityObservation.getVersion(
+          member.observationVersionId,
+        );
+        if (selectionRevision !== selectionRef.current) return false;
+        if (!detail.ok) {
+          setError(detail.error);
+          return false;
+        }
+        if (
+          !observationResponseMatches(
+            detail.result,
+            member.observationVersionId,
+            member.executionId,
+          )
+        ) {
+          setError(contractError());
+          return false;
+        }
+        exactVersions[detail.result.observationVersionId] = detail.result;
+        const versionList = await desktopApi.reliabilityObservation.listVersions(
+          member.executionId,
+        );
+        if (selectionRevision !== selectionRef.current) return false;
+        if (!versionList.ok) {
+          setError(versionList.error);
+          return false;
+        }
+        const latest = versionList.result[0];
+        if (latest === undefined || latest.executionId !== member.executionId) {
+          setError(contractError());
+          return false;
+        }
+        latestVersions[member.executionId] = {
+          observationVersionId: latest.observationVersionId,
+          versionNumber: latest.versionNumber,
+          classification: latest.classification,
+        };
+      }
+      setSelectedDataset(item);
+      setDatasetId(item.datasetId);
+      setDatasetVersionId(crypto.randomUUID());
+      setDatasetTitle(item.title);
+      setDatasetMethod(item.method);
+      setDatasetMetricKind(item.metricKind);
+      setDatasetMetricUnit(item.metricUnit);
+      setPopulationBasis(item.populationBasis);
+      setMethodologyBasis(item.methodologyBasis);
+      setComparabilityBasis(item.comparabilityBasis);
+      setDatasetReason(item.decisionReason);
+      setCandidateVersions(exactVersions);
+      setCandidateLatestVersions(latestVersions);
+      setCandidateDecisions(
+        Object.fromEntries(
+          item.members.map((member) => [
+            member.executionId,
+            {
+              observationVersionId: member.observationVersionId,
+              decision: member.decision,
+              reason: member.inclusionReason,
+            },
+          ]),
+        ),
+      );
+      setCommittedDatasetVersionId(item.datasetVersionId);
+      setDatasetDirty(false);
+      return true;
+    },
+    [desktopApi],
+  );
+
   const saveObservation = (): Promise<void> =>
     runPending('observation-save', async () => {
       if (execution === null || observationDraft.documentId === null) return;
+      setObservationWriteUnresolved(true);
       const result = await desktopApi.reliabilityObservation.createVersion({
         observationId,
         observationVersionId,
@@ -304,7 +477,19 @@ export const ReliabilityPreparation = forwardRef<
         actor: 'local_user',
         reason: observationDraft.reason,
       });
-      if (!result.ok) return setError(result.error);
+      if (!result.ok) {
+        if (!result.error.retryable) setObservationWriteUnresolved(false);
+        return setError(result.error);
+      }
+      if (
+        !observationResponseMatches(
+          result.result.version,
+          observationVersionId,
+          execution.executionId,
+        )
+      )
+        return setError(contractError());
+      setObservationWriteUnresolved(false);
       const next = [result.result.version, ...versions];
       setVersions(next);
       setSelectedVersion(result.result.version);
@@ -322,15 +507,14 @@ export const ReliabilityPreparation = forwardRef<
             : item,
         ),
       );
-      setCandidateDecisions((current) => ({
+      setCandidateLatestVersions((current) => ({
         ...current,
         [execution.executionId]: {
           observationVersionId: result.result.version.observationVersionId,
-          decision: 'pending',
-          reason: '',
+          versionNumber: result.result.version.versionNumber,
+          classification: result.result.version.classification,
         },
       }));
-      setDatasetDirty(true);
       setMessage(
         result.result.disposition === 'existing'
           ? 'Уже сохранённая версия восстановлена после повтора.'
@@ -360,6 +544,7 @@ export const ReliabilityPreparation = forwardRef<
             ],
       );
       if (decisions.length === 0 || resolvedDecisions.length !== decisions.length) return;
+      setDatasetWriteUnresolved(true);
       const result = await desktopApi.reliabilityDataset.createVersion({
         datasetId,
         datasetVersionId,
@@ -380,8 +565,19 @@ export const ReliabilityPreparation = forwardRef<
         actor: 'local_user',
         reason: datasetReason,
       });
-      if (!result.ok) return setError(result.error);
+      if (!result.ok) {
+        if (!result.error.retryable) setDatasetWriteUnresolved(false);
+        return setError(result.error);
+      }
+      if (
+        result.result.version.datasetVersionId !== datasetVersionId ||
+        result.result.version.wheelModelId !== wheelModelId ||
+        !hasUniqueDatasetMembers(result.result.version.members)
+      )
+        return setError(contractError());
+      setDatasetWriteUnresolved(false);
       setSelectedDataset(result.result.version);
+      setCommittedDatasetVersionId(result.result.version.datasetVersionId);
       setDatasets((current) => [
         result.result.version,
         ...current.filter(
@@ -401,19 +597,74 @@ export const ReliabilityPreparation = forwardRef<
     ref,
     () => ({
       discardDraft: () => {
+        if (selectedDataset !== null && !hasUniqueDatasetMembers(selectedDataset.members)) {
+          setError(contractError());
+          return;
+        }
         setObservationDraft(
           selectedVersion === null ? emptyObservation : versionToDraft(selectedVersion),
         );
         setObservationVersionId(crypto.randomUUID());
         setObservationDirty(false);
+        if (selectedDataset === null) {
+          setDatasetTitle('Выборка наработки');
+          setDatasetMethod(null);
+          setDatasetMetricKind(null);
+          setDatasetMetricUnit(null);
+          setPopulationBasis('');
+          setMethodologyBasis('');
+          setComparabilityBasis('');
+          setDatasetReason('');
+          setCandidateDecisions({});
+          setCandidateVersions({});
+          setCandidateLatestVersions({});
+        } else {
+          setDatasetTitle(selectedDataset.title);
+          setDatasetMethod(selectedDataset.method);
+          setDatasetMetricKind(selectedDataset.metricKind);
+          setDatasetMetricUnit(selectedDataset.metricUnit);
+          setPopulationBasis(selectedDataset.populationBasis);
+          setMethodologyBasis(selectedDataset.methodologyBasis);
+          setComparabilityBasis(selectedDataset.comparabilityBasis);
+          setDatasetReason(selectedDataset.decisionReason);
+          setCandidateDecisions(
+            Object.fromEntries(
+              selectedDataset.members.map((member) => [
+                member.executionId,
+                {
+                  observationVersionId: member.observationVersionId,
+                  decision: member.decision,
+                  reason: member.inclusionReason,
+                },
+              ]),
+            ),
+          );
+        }
+        setDatasetVersionId(crypto.randomUUID());
         setDatasetDirty(false);
       },
       waitForPendingSave: async () => pendingRef.current ?? Promise.resolve(),
       verifyAfterReattach: async () => {
-        const observationProbe =
-          await desktopApi.reliabilityObservation.getVersion(observationVersionId);
-        if (observationProbe.ok) {
+        let reconciled = false;
+        if (observationWriteUnresolved) {
+          const observationProbe =
+            await desktopApi.reliabilityObservation.getVersion(observationVersionId);
+          if (!observationProbe.ok) {
+            setError(
+              observationProbe.error.code === 'entity_not_found'
+                ? unresolvedWriteError('интерпретации')
+                : observationProbe.error,
+            );
+            return false;
+          }
           const restored = observationProbe.result;
+          if (
+            execution === null ||
+            !observationResponseMatches(restored, observationVersionId, execution.executionId)
+          ) {
+            setError(contractError());
+            return false;
+          }
           setVersions((current) => [
             restored,
             ...current.filter(
@@ -424,6 +675,7 @@ export const ReliabilityPreparation = forwardRef<
           setObservationDraft(versionToDraft(restored));
           setObservationVersionId(crypto.randomUUID());
           setObservationDirty(false);
+          setObservationWriteUnresolved(false);
           setExecutions((current) =>
             current.map((item) =>
               item.executionId === restored.executionId
@@ -436,37 +688,65 @@ export const ReliabilityPreparation = forwardRef<
                 : item,
             ),
           );
-          setCandidateDecisions((current) => ({
+          setCandidateLatestVersions((current) => ({
             ...current,
             [restored.executionId]: {
               observationVersionId: restored.observationVersionId,
-              decision: 'pending',
-              reason: 'Версия восстановлена после потери ответа; решение нужно подтвердить',
+              versionNumber: restored.versionNumber,
+              classification: restored.classification,
             },
           }));
-          setDatasetDirty(true);
+          reconciled = true;
         }
-        const datasetProbe = await desktopApi.reliabilityDataset.getVersion(datasetVersionId);
-        if (datasetProbe.ok) {
+        const datasetProbeId = datasetWriteUnresolved
+          ? datasetVersionId
+          : datasetDirty
+            ? null
+            : committedDatasetVersionId;
+        if (datasetProbeId !== null) {
+          const datasetProbe = await desktopApi.reliabilityDataset.getVersion(datasetProbeId);
+          if (!datasetProbe.ok) {
+            setError(
+              datasetProbe.error.code === 'entity_not_found'
+                ? unresolvedWriteError('выборки')
+                : datasetProbe.error,
+            );
+            return false;
+          }
           const restored = datasetProbe.result;
-          setSelectedDataset(restored);
+          if (
+            restored.datasetVersionId !== datasetProbeId ||
+            restored.wheelModelId !== wheelModelId ||
+            !hasUniqueDatasetMembers(restored.members)
+          ) {
+            setError(contractError());
+            return false;
+          }
+          if (!(await selectDatasetVersion(restored))) return false;
           setDatasets((current) => [
             restored,
             ...current.filter((item) => item.datasetVersionId !== restored.datasetVersionId),
           ]);
-          setDatasetVersionId(crypto.randomUUID());
-          setDatasetDirty(false);
+          setDatasetWriteUnresolved(false);
+          reconciled = true;
         }
-        if (observationProbe.ok || datasetProbe.ok || dirty) return true;
+        if (reconciled || dirty) return true;
         return wheelModelId === null ? true : loadWheel(wheelModelId);
       },
     }),
     [
+      committedDatasetVersionId,
       datasetVersionId,
+      datasetDirty,
+      datasetWriteUnresolved,
       desktopApi,
       dirty,
+      execution,
       loadWheel,
       observationVersionId,
+      observationWriteUnresolved,
+      selectDatasetVersion,
+      selectedDataset,
       selectedVersion,
       wheelModelId,
     ],
@@ -484,6 +764,7 @@ export const ReliabilityPreparation = forwardRef<
           .sort((left, right) => left.versionNumber - right.versionNumber)[0]?.previousVersionId ??
         null);
   const observationHistoryCursor = versions.at(-1)?.previousVersionId ?? null;
+  const datasetDraftLocked = disabled || busy !== null || datasetWriteUnresolved;
 
   return (
     <section
@@ -532,6 +813,12 @@ export const ReliabilityPreparation = forwardRef<
             : 'Загружаются данные проекта…'}
         </Text>
       )}
+      {observationWriteUnresolved || datasetWriteUnresolved ? (
+        <div className="feedback feedback--warning" role="status">
+          Ответ на сохранение не подтверждён. Поля отправленного черновика заблокированы; повторите
+          сохранение с тем же идентификатором или перезапустите ядро для точной сверки.
+        </div>
+      ) : null}
       <div className="reliability-master-detail">
         <section aria-labelledby="execution-list-title">
           <Title id="execution-list-title" order={3}>
@@ -541,24 +828,41 @@ export const ReliabilityPreparation = forwardRef<
             <Text size="sm">Для выбранной модели пока нет сохранённых исполнений.</Text>
           ) : null}
           <div className="reliability-record-list">
-            {executions.map((item) => (
-              <button
-                key={item.executionId}
-                type="button"
-                className="reliability-record"
-                aria-pressed={execution?.executionId === item.executionId}
-                disabled={disabled || busy !== null || observationDirty}
-                onClick={() =>
-                  void runPending('execution-detail', () => selectExecution(item.executionId))
-                }
-              >
-                <strong>{methodLabel(item.method)}</strong>
-                <span>
-                  {item.sourceRunId} · редакция {String(item.exportRevision)}
-                </span>
-                <span>{classificationLabel(item.currentClassification)}</span>
-              </button>
-            ))}
+            {executions.map((item) => {
+              const alreadySelected = candidateDecisions[item.executionId] !== undefined;
+              return (
+                <div key={item.executionId} className="reliability-record-entry">
+                  <button
+                    type="button"
+                    className="reliability-record"
+                    aria-pressed={execution?.executionId === item.executionId}
+                    disabled={disabled || busy !== null || observationDirty}
+                    onClick={() =>
+                      void runPending('execution-detail', () => selectExecution(item.executionId))
+                    }
+                  >
+                    <strong>{methodLabel(item.method)}</strong>
+                    <span>
+                      {item.sourceRunId} · редакция {String(item.exportRevision)}
+                    </span>
+                    <span>{classificationLabel(item.currentClassification)}</span>
+                  </button>
+                  {item.currentObservationVersionId === null ? null : (
+                    <Button
+                      size="compact-sm"
+                      variant="subtle"
+                      aria-label={`${alreadySelected ? 'Добавлено в черновик' : 'Добавить в выборку'}: ${item.sourceRunId}, версия ${String(item.currentObservationVersionNumber)}`}
+                      disabled={datasetDraftLocked || alreadySelected}
+                      onClick={() =>
+                        void runPending('candidate-add', () => addCurrentObservationCandidate(item))
+                      }
+                    >
+                      {alreadySelected ? 'Добавлено в черновик' : 'Добавить в выборку'}
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
           </div>
           {executionCursor === null || wheelModelId === null ? null : (
             <Button
@@ -573,21 +877,6 @@ export const ReliabilityPreparation = forwardRef<
                   );
                   if (!result.ok) return setError(result.error);
                   setExecutions((current) => [...current, ...result.result.items]);
-                  setCandidateDecisions((current) => ({
-                    ...current,
-                    ...Object.fromEntries(
-                      result.result.items
-                        .filter((item) => item.currentObservationVersionId !== null)
-                        .map((item) => [
-                          item.executionId,
-                          current[item.executionId] ?? {
-                            observationVersionId: item.currentObservationVersionId as string,
-                            decision: 'pending',
-                            reason: '',
-                          },
-                        ]),
-                    ),
-                  }));
                   setExecutionCursor(result.result.nextCursor);
                 })
               }
@@ -613,6 +902,8 @@ export const ReliabilityPreparation = forwardRef<
                       item.latestVersionId,
                     );
                     if (!detail.ok) return setError(detail.error);
+                    if (detail.result.datasetVersionId !== item.latestVersionId)
+                      return setError(contractError());
                     more.push(detail.result);
                   }
                   setDatasets((current) => [...current, ...more]);
@@ -696,7 +987,7 @@ export const ReliabilityPreparation = forwardRef<
               >
                 <fieldset
                   className="reliability-observation-fields"
-                  disabled={disabled || busy !== null}
+                  disabled={disabled || busy !== null || observationWriteUnresolved}
                 >
                   <div className="reliability-form-grid">
                     <Select
@@ -875,7 +1166,9 @@ export const ReliabilityPreparation = forwardRef<
                       !observationReady(observationDraft)
                     }
                   >
-                    Сохранить новую версию
+                    {observationWriteUnresolved
+                      ? 'Повторить сохранение версии'
+                      : 'Сохранить новую версию'}
                   </Button>
                 </Group>
               </form>
@@ -913,6 +1206,14 @@ export const ReliabilityPreparation = forwardRef<
                         const detail =
                           await desktopApi.reliabilityObservation.getVersion(versionId);
                         if (!detail.ok) return setError(detail.error);
+                        if (
+                          !observationResponseMatches(
+                            detail.result,
+                            versionId,
+                            execution.executionId,
+                          )
+                        )
+                          return setError(contractError());
                         older.push(detail.result);
                         versionId = detail.result.previousVersionId;
                       }
@@ -959,7 +1260,7 @@ export const ReliabilityPreparation = forwardRef<
           <Select
             label="Метод выборки"
             required
-            disabled={disabled || busy !== null}
+            disabled={datasetDraftLocked}
             data={[
               { value: 'rbd', label: 'РБД' },
               { value: 'rpt', label: 'РПТ' },
@@ -974,7 +1275,7 @@ export const ReliabilityPreparation = forwardRef<
           <Select
             label="Показатель выборки"
             required
-            disabled={disabled || busy !== null}
+            disabled={datasetDraftLocked}
             data={[
               { value: 'rbd_steady_rotation_time', label: 'Время установившегося вращения' },
               { value: 'rpt_start_stop_cycles', label: 'Циклы «пуск–торможение»' },
@@ -989,7 +1290,7 @@ export const ReliabilityPreparation = forwardRef<
           <Select
             label="Единица выборки"
             required
-            disabled={disabled || busy !== null}
+            disabled={datasetDraftLocked}
             data={[
               { value: 'hours', label: 'часы' },
               { value: 'count', label: 'циклы, целое число' },
@@ -1004,7 +1305,7 @@ export const ReliabilityPreparation = forwardRef<
           <TextInput
             label="Название"
             required
-            disabled={disabled || busy !== null}
+            disabled={datasetDraftLocked}
             value={datasetTitle}
             maxLength={200}
             onChange={(event) => {
@@ -1015,7 +1316,8 @@ export const ReliabilityPreparation = forwardRef<
           <Textarea
             label="Граница совокупности"
             required
-            disabled={disabled || busy !== null}
+            placeholder="Опишите, какие рабочие колёса и условия относятся к этой выборке"
+            disabled={datasetDraftLocked}
             value={populationBasis}
             maxLength={2000}
             onChange={(event) => {
@@ -1026,7 +1328,8 @@ export const ReliabilityPreparation = forwardRef<
           <Textarea
             label="Применимая методика"
             required
-            disabled={disabled || busy !== null}
+            placeholder="Укажите документ, раздел и почему методика применима"
+            disabled={datasetDraftLocked}
             value={methodologyBasis}
             maxLength={2000}
             onChange={(event) => {
@@ -1037,7 +1340,8 @@ export const ReliabilityPreparation = forwardRef<
           <Textarea
             label="Почему условия сопоставимы"
             required
-            disabled={disabled || busy !== null}
+            placeholder="Зафиксируйте проверенные общие условия и существенные различия"
+            disabled={datasetDraftLocked}
             value={comparabilityBasis}
             maxLength={2000}
             onChange={(event) => {
@@ -1047,74 +1351,132 @@ export const ReliabilityPreparation = forwardRef<
           />
         </div>
         <div className="reliability-candidates">
-          {executions
-            .filter((item) => item.currentObservationVersionId !== null)
-            .map((item) => {
-              const decision = candidateDecisions[item.executionId];
-              if (decision === undefined) return null;
-              return (
-                <div key={item.executionId} className="reliability-candidate">
-                  <div>
-                    <Select
-                      label={`${methodLabel(item.method)} · ${item.sourceRunId}`}
-                      data={[
-                        { value: 'pending', label: 'Решение не принято' },
-                        { value: 'included', label: 'Включить' },
-                        { value: 'excluded', label: 'Исключить' },
-                      ]}
-                      value={decision.decision}
-                      required
-                      disabled={disabled || busy !== null}
-                      onChange={(value) => {
-                        if (value === null) return;
-                        setCandidateDecisions((current) => ({
-                          ...current,
-                          [item.executionId]: {
-                            ...decision,
-                            decision: value,
-                            reason: '',
-                          },
-                        }));
-                        setDatasetDirty(true);
-                      }}
-                    />
-                    <Text size="xs" c="dimmed">
-                      {item.packageKind === 'diagnostic_partial'
-                        ? 'Политика life_metric_exact_v1: diagnostic_partial не включается.'
-                        : item.method === 'pmn'
-                          ? 'Политика life_metric_exact_v1: ПМН не относится к выборке наработки.'
-                          : `Классификация: ${classificationLabel(item.currentClassification)}. Endpoint и metric проверит Python при фиксации.`}
-                    </Text>
-                  </div>
-                  <TextInput
-                    label={
-                      decision.decision === 'included'
-                        ? 'Причина включения'
-                        : decision.decision === 'excluded'
-                          ? 'Причина исключения'
-                          : 'Почему решение пока не принято'
-                    }
-                    value={decision.reason}
-                    required={decision.decision !== 'pending'}
-                    disabled={disabled || busy !== null || decision.decision === 'pending'}
-                    maxLength={2000}
-                    onChange={(event) => {
-                      const reason = event.currentTarget.value;
+          {Object.entries(candidateDecisions).map(([executionId, decision]) => {
+            const item = executions.find((entry) => entry.executionId === executionId);
+            const persistedMember = selectedDataset?.members.find(
+              (member) => member.executionId === executionId,
+            );
+            const exactVersion = candidateVersions[decision.observationVersionId];
+            const sourceLabel = item?.sourceRunId ?? persistedMember?.sourceRunId ?? executionId;
+            const latestFromPage =
+              item?.currentObservationVersionId === null ||
+              item?.currentObservationVersionId === undefined ||
+              item.currentObservationVersionNumber === null ||
+              item.currentClassification === null
+                ? undefined
+                : {
+                    observationVersionId: item.currentObservationVersionId,
+                    versionNumber: item.currentObservationVersionNumber,
+                    classification: item.currentClassification,
+                  };
+            const latestVersion = candidateLatestVersions[executionId] ?? latestFromPage;
+            const latestVersionId = latestVersion?.observationVersionId ?? null;
+            const hasNewerVersion =
+              latestVersionId !== null && latestVersionId !== decision.observationVersionId;
+            return (
+              <div key={executionId} className="reliability-candidate">
+                <div>
+                  <Select
+                    label={`${methodLabel(item?.method ?? selectedDataset?.method ?? 'rbd')} · ${sourceLabel}`}
+                    data={[
+                      { value: 'pending', label: 'Решение не принято' },
+                      { value: 'included', label: 'Включить' },
+                      { value: 'excluded', label: 'Исключить' },
+                    ]}
+                    value={decision.decision}
+                    required
+                    disabled={datasetDraftLocked}
+                    onChange={(value) => {
+                      if (value === null) return;
                       setCandidateDecisions((current) => ({
                         ...current,
-                        [item.executionId]: { ...decision, reason },
+                        [executionId]: {
+                          ...decision,
+                          decision: value,
+                          reason: '',
+                        },
                       }));
                       setDatasetDirty(true);
                     }}
                   />
+                  <Text size="xs" c="dimmed">
+                    {exactVersion === undefined
+                      ? `Выбрана версия ${decision.observationVersionId}; сведения версии не загружены.`
+                      : `Выбрана версия ${String(exactVersion.versionNumber)}: ${classificationLabel(exactVersion.classification)}; ${observationMetricLabel(exactVersion)}.`}
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    {item?.packageKind === 'diagnostic_partial'
+                      ? 'Политика life_metric_exact_v1: diagnostic_partial не включается.'
+                      : item?.method === 'pmn'
+                        ? 'Политика life_metric_exact_v1: ПМН не относится к выборке наработки.'
+                        : 'Endpoint, metric и применимость Python повторно проверит при фиксации.'}
+                  </Text>
+                  {hasNewerVersion ? (
+                    <Button
+                      size="compact-sm"
+                      variant="subtle"
+                      aria-label={`Заменить ${sourceLabel}: версия ${String(exactVersion?.versionNumber ?? decision.observationVersionId)} на версию ${String(latestVersion?.versionNumber ?? latestVersionId)}`}
+                      disabled={datasetDraftLocked || latestVersionId === null}
+                      onClick={() =>
+                        latestVersionId === null
+                          ? undefined
+                          : void runPending('candidate-replace', () =>
+                              replaceCandidateWithLatest(executionId, latestVersionId),
+                            )
+                      }
+                    >
+                      Доступна новая версия — заменить явно
+                    </Button>
+                  ) : null}
                 </div>
-              );
-            })}
+                <TextInput
+                  label={
+                    decision.decision === 'included'
+                      ? 'Причина включения'
+                      : decision.decision === 'excluded'
+                        ? 'Причина исключения'
+                        : 'Почему решение пока не принято'
+                  }
+                  value={decision.reason}
+                  required={decision.decision !== 'pending'}
+                  disabled={datasetDraftLocked || decision.decision === 'pending'}
+                  maxLength={2000}
+                  onChange={(event) => {
+                    const reason = event.currentTarget.value;
+                    setCandidateDecisions((current) => ({
+                      ...current,
+                      [executionId]: { ...decision, reason },
+                    }));
+                    setDatasetDirty(true);
+                  }}
+                />
+                <Button
+                  size="compact-sm"
+                  variant="subtle"
+                  aria-label={`Убрать из черновика: ${sourceLabel}, версия ${String(exactVersion?.versionNumber ?? decision.observationVersionId)}`}
+                  disabled={datasetDraftLocked}
+                  onClick={() => {
+                    setCandidateDecisions((current) =>
+                      Object.fromEntries(
+                        Object.entries(current).filter(
+                          ([candidateId]) => candidateId !== executionId,
+                        ),
+                      ),
+                    );
+                    setDatasetDirty(true);
+                  }}
+                >
+                  Убрать из черновика
+                </Button>
+              </div>
+            );
+          })}
         </div>
         <Textarea
           label="Основание версии выборки"
           required
-          disabled={disabled || busy !== null}
+          placeholder="Опишите, почему зафиксирован именно этот состав и решения"
+          disabled={datasetDraftLocked}
           value={datasetReason}
           maxLength={2000}
           onChange={(event) => {
@@ -1140,12 +1502,19 @@ export const ReliabilityPreparation = forwardRef<
               datasetMethod === null ||
               datasetMetricKind === null ||
               datasetMetricUnit === null ||
+              datasetTitle.trim() === '' ||
+              populationBasis.trim() === '' ||
+              methodologyBasis.trim() === '' ||
+              comparabilityBasis.trim() === '' ||
+              datasetReason.trim() === '' ||
               Object.values(candidateDecisions).some((item) => item.decision === 'pending') ||
               Object.values(candidateDecisions).some((item) => item.reason.trim() === '')
             }
             onClick={() => void saveDataset()}
           >
-            Зафиксировать новую версию выборки
+            {datasetWriteUnresolved
+              ? 'Повторить сохранение версии выборки'
+              : 'Зафиксировать новую версию выборки'}
           </Button>
         </Group>
         <div className="reliability-version-strip" aria-label="Сохранённые выборки">
@@ -1155,49 +1524,11 @@ export const ReliabilityPreparation = forwardRef<
               type="button"
               aria-pressed={selectedDataset?.datasetVersionId === item.datasetVersionId}
               disabled={dirty || busy !== null}
-              onClick={() => {
-                setSelectedDataset(item);
-                setDatasetId(item.datasetId);
-                setDatasetVersionId(crypto.randomUUID());
-                setDatasetTitle(item.title);
-                setDatasetMethod(item.method);
-                setDatasetMetricKind(item.metricKind);
-                setDatasetMetricUnit(item.metricUnit);
-                setPopulationBasis(item.populationBasis);
-                setMethodologyBasis(item.methodologyBasis);
-                setComparabilityBasis(item.comparabilityBasis);
-                setDatasetReason(item.decisionReason);
-                const persisted = Object.fromEntries(
-                  item.members.map((member) => [
-                    member.executionId,
-                    {
-                      observationVersionId: member.observationVersionId,
-                      decision: member.decision,
-                      reason: member.inclusionReason,
-                    },
-                  ]),
-                );
-                setCandidateDecisions({
-                  ...Object.fromEntries(
-                    executions.flatMap((entry) =>
-                      entry.currentObservationVersionId === null
-                        ? []
-                        : [
-                            [
-                              entry.executionId,
-                              {
-                                observationVersionId: entry.currentObservationVersionId,
-                                decision: 'pending' as const,
-                                reason: '',
-                              },
-                            ],
-                          ],
-                    ),
-                  ),
-                  ...persisted,
-                });
-                setDatasetDirty(false);
-              }}
+              onClick={() =>
+                void runPending('dataset-detail', async () => {
+                  await selectDatasetVersion(item);
+                })
+              }
             >
               Версия {String(item.versionNumber)} · включено{' '}
               {String(item.members.filter((member) => member.decision === 'included').length)} /
@@ -1217,6 +1548,12 @@ export const ReliabilityPreparation = forwardRef<
                 while (versionId !== null && older.length < 50) {
                   const detail = await desktopApi.reliabilityDataset.getVersion(versionId);
                   if (!detail.ok) return setError(detail.error);
+                  if (
+                    detail.result.datasetVersionId !== versionId ||
+                    detail.result.wheelModelId !== wheelModelId ||
+                    !hasUniqueDatasetMembers(detail.result.members)
+                  )
+                    return setError(contractError());
                   older.push(detail.result);
                   versionId = detail.result.previousVersionId;
                 }
@@ -1291,6 +1628,15 @@ function classificationLabel(value: ReliabilityExecutionSummary['currentClassifi
         : 'Недействительно для назначения';
 }
 
+function observationMetricLabel(version: ReliabilityObservationVersion): string {
+  if (version.metricKind === null || version.metricUnit === null || version.lowerValue === null)
+    return 'числовое значение отсутствует';
+  const unit = version.metricUnit === 'hours' ? 'ч' : 'циклов';
+  if (version.endpointKind === 'interval' && version.upperValue !== null)
+    return `${version.lowerValue}–${version.upperValue} ${unit}`;
+  return `${version.lowerValue} ${unit}`;
+}
+
 function sourceValue(value: unknown): string {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
     ? String(value)
@@ -1301,6 +1647,24 @@ function unavailableError(): DesktopError {
   return {
     code: 'worker_unavailable',
     message: 'Ядро недоступно. Черновик сохранён в форме.',
+    details: {},
+    retryable: true,
+  };
+}
+
+function contractError(): DesktopError {
+  return {
+    code: 'contract_error',
+    message: 'Полученные сведения не относятся к выбранному исполнению. Обновите раздел.',
+    details: {},
+    retryable: true,
+  };
+}
+
+function unresolvedWriteError(entityLabel: string): DesktopError {
+  return {
+    code: 'revision_conflict',
+    message: `Не удалось подтвердить сохранение ${entityLabel} после перезапуска. Черновик и идентификатор повтора сохранены; повторите сверку или сохранение.`,
     details: {},
     retryable: true,
   };

@@ -221,6 +221,73 @@ def test_life_metric_origin_is_explicit_and_matches_value_presence() -> None:
         normalize_metric_origin("source_measured", "rbd_steady_rotation_time")
 
 
+def test_multiline_engineering_text_normalizes_newlines_and_preserves_russian_text() -> None:
+    value = "  Первая строка\r\nВторая строка\rТретья строка  "
+
+    normalized = _normalize_text_inputs(origin_basis=value, reason=value)
+
+    assert normalized[6] == "Первая строка\nВторая строка\nТретья строка"
+    assert normalized[10] == "Первая строка\nВторая строка\nТретья строка"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Строка\tс табуляцией",
+        "Строка\x00с NUL",
+        "Строка\x1fс control",
+        "Строка\x7fс DEL",
+        "Строка\u0085с C1",
+        "Строка\u009fс C1",
+    ],
+)
+def test_multiline_engineering_text_rejects_non_newline_controls(value: str) -> None:
+    with pytest.raises(ProjectOperationError) as raised:
+        _normalize_text_inputs(origin_basis=value)
+    assert raised.value.code == "validation_error"
+
+
+def test_single_line_text_still_rejects_newlines() -> None:
+    with pytest.raises(ProjectOperationError) as raised:
+        _normalize_text_inputs(document_locator="Первая\nВторая")
+    assert raised.value.code == "validation_error"
+
+
+@pytest.mark.parametrize("value", ["Текст\t", "Текст\n", "Текст\u0085"])
+def test_single_line_text_rejects_trailing_controls_before_trimming(value: str) -> None:
+    with pytest.raises(ProjectOperationError):
+        _normalize_text_inputs(document_locator=value)
+
+
+@pytest.mark.parametrize("field", ["origin_basis", "document_locator"])
+def test_reliability_text_normalizers_map_invalid_unicode_to_typed_error(field: str) -> None:
+    values = {field: "Строка\ud800"}
+    with pytest.raises(ProjectOperationError) as raised:
+        _normalize_text_inputs(**values)
+    assert raised.value.code == "validation_error"
+
+
+def _normalize_text_inputs(
+    *,
+    origin_basis: str = "Начало",
+    document_locator: str = "Раздел 10",
+    reason: str = "Основание",
+) -> tuple[str, str, str | None, str | None, str | None, str | None, str, str, str, str, str]:
+    return normalize_observation_values(
+        classification="invalid",
+        endpoint_kind="unavailable",
+        metric_kind=None,
+        metric_unit=None,
+        lower_value=None,
+        upper_value=None,
+        origin_basis=origin_basis,
+        endpoint_basis="Граница",
+        document_locator=document_locator,
+        actor="local_user",
+        reason=reason,
+    )
+
+
 def test_failure_may_be_saved_without_metric_but_right_censoring_requires_bound() -> None:
     normalized = normalize_observation_values(
         classification="failure",

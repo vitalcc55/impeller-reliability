@@ -1308,6 +1308,21 @@ h3 {
   cursor: pointer;
 }
 
+.reliability-record-entry {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--ir-color-border);
+}
+
+.reliability-record-entry .reliability-record {
+  border-bottom: 0;
+}
+
+.reliability-record-entry > .mantine-Button-root {
+  justify-self: start;
+}
+
 .reliability-record {
   display: grid;
   gap: 4px;

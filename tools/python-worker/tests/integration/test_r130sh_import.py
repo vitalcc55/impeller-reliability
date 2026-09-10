@@ -573,6 +573,9 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
     )
     observation_id = str(uuid4())
     version_id = str(uuid4())
+    observation_origin_basis = "Начало зачтённого вращения\r\nПо разделу 10 ПМИ"
+    observation_endpoint_basis = "Граница наблюдения\rПо записи инженера"
+    observation_reason = "Отказ не установлен\nдо документированной границы"
     first = service.create_reliability_observation_version(
         observation_id=observation_id,
         observation_version_id=version_id,
@@ -585,18 +588,21 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
         metric_origin="analyst_provided",
         lower_value="12.5",
         upper_value=None,
-        origin_basis="Начало зачтённого установившегося вращения по разделу 10",
-        endpoint_basis="Граница наблюдения по записи инженера",
+        origin_basis=observation_origin_basis,
+        endpoint_basis=observation_endpoint_basis,
         document_id=document.case_document_id,
         document_locator="Раздел 10; журнал испытания, строка 42",
         failure_ids=(),
         actor="local_user",
-        reason="Отказ не установлен до документированной границы",
+        reason=observation_reason,
         deadline=None,
     )
     assert first.disposition == "created"
     assert first.version.classification == "right_censored"
     assert first.version.lower_value == "12.5"
+    assert first.version.origin_basis == "Начало зачтённого вращения\nПо разделу 10 ПМИ"
+    assert first.version.endpoint_basis == "Граница наблюдения\nПо записи инженера"
+    assert first.version.decision_reason == "Отказ не установлен\nдо документированной границы"
     assert first.version.document_snapshot.record_revision == 1
     audit_before_retry = _audit_count(project_path)
     repeated = service.create_reliability_observation_version(
@@ -611,13 +617,13 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
         metric_origin="analyst_provided",
         lower_value="12.5",
         upper_value=None,
-        origin_basis="Начало зачтённого установившегося вращения по разделу 10",
-        endpoint_basis="Граница наблюдения по записи инженера",
+        origin_basis=observation_origin_basis,
+        endpoint_basis=observation_endpoint_basis,
         document_id=document.case_document_id,
         document_locator="Раздел 10; журнал испытания, строка 42",
         failure_ids=(),
         actor="local_user",
-        reason="Отказ не установлен до документированной границы",
+        reason=observation_reason,
         deadline=None,
     )
     assert repeated.disposition == "existing"
@@ -636,13 +642,13 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
             metric_origin="analyst_provided",
             lower_value="13",
             upper_value=None,
-            origin_basis="Начало зачтённого установившегося вращения по разделу 10",
-            endpoint_basis="Граница наблюдения по записи инженера",
+            origin_basis=observation_origin_basis,
+            endpoint_basis=observation_endpoint_basis,
             document_id=document.case_document_id,
             document_locator="Раздел 10; журнал испытания, строка 42",
             failure_ids=(),
             actor="local_user",
-            reason="Отказ не установлен до документированной границы",
+            reason=observation_reason,
             deadline=None,
         )
     assert conflicting_retry.value.code == "revision_conflict"
@@ -658,9 +664,9 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
         method="rbd",
         metric_kind="rbd_steady_rotation_time",
         metric_unit="hours",
-        population_basis="Рабочие колёса модели РБД-01",
-        methodology_basis="ПМИ Р130У, редакция 01",
-        comparability_basis="Одинаковый метод РБД; условия отобраны инженером",
+        population_basis="Рабочие колёса модели РБД-01\r\nИз заказа ЛИЦ ВВУ",
+        methodology_basis="ПМИ Р130У, редакция 01\rРазделы 9.3.1 и 10",
+        comparability_basis="Одинаковый метод РБД\nУсловия отобраны инженером",
         decisions=(
             {
                 "observationVersionId": version_id,
@@ -669,12 +675,16 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
             },
         ),
         actor="local_user",
-        reason="Первая зафиксированная выборка",
+        reason="Первая зафиксированная выборка\r\nПосле проверки документов",
         deadline=None,
     )
     assert dataset.disposition == "created"
     assert dataset.version.members[0].policy_eligibility == "eligible"
     assert dataset.version.members[0].decision == "included"
+    assert dataset.version.population_basis == "Рабочие колёса модели РБД-01\nИз заказа ЛИЦ ВВУ"
+    assert dataset.version.methodology_basis == "ПМИ Р130У, редакция 01\nРазделы 9.3.1 и 10"
+    assert dataset.version.comparability_basis == "Одинаковый метод РБД\nУсловия отобраны инженером"
+    assert dataset.version.decision_reason == "Первая зафиксированная выборка\nПосле проверки документов"
 
     second = service.create_reliability_observation_version(
         observation_id=observation_id,
@@ -1088,6 +1098,98 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
             application_instance_id="m04b-incompatible-dataset",
         )
     assert incompatible_dataset.value.code == "corrupt_project"
+
+    noncanonical_text_path = tmp_path / "m04b-noncanonical-multiline.irproj"
+    shutil.copytree(project_path, noncanonical_text_path)
+    noncanonical_basis = "Рабочие колёса модели РБД-01\rНенормализованная строка"
+    noncanonical_payload = dict(tampered_payload)
+    noncanonical_payload["metricKind"] = tampered_version.metric_kind
+    noncanonical_payload["metricUnit"] = tampered_version.metric_unit
+    noncanonical_payload["populationBasis"] = noncanonical_basis
+    noncanonical_hash = hashlib.sha256(
+        json.dumps(
+            noncanonical_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    with closing(sqlite3.connect(noncanonical_text_path / "project.sqlite")) as connection:
+        dataset_trigger_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='reliability_dataset_versions_no_update'",
+            ).fetchone()[0]
+        )
+        audit_trigger_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='project_audit_events_no_update'",
+            ).fetchone()[0]
+        )
+        connection.execute("DROP TRIGGER reliability_dataset_versions_no_update")
+        connection.execute("DROP TRIGGER project_audit_events_no_update")
+        connection.execute(
+            "UPDATE reliability_dataset_versions SET population_basis=?, content_sha256=? WHERE dataset_version_id=?",
+            (noncanonical_basis, noncanonical_hash, tampered_version.dataset_version_id),
+        )
+        audit_row = connection.execute(
+            """
+            SELECT sequence, payload_json FROM project_audit_events
+            WHERE event_type='reliability_dataset.version_created'
+              AND json_extract(payload_json, '$.datasetVersionId')=?
+            """,
+            (tampered_version.dataset_version_id,),
+        ).fetchone()
+        assert audit_row is not None
+        audit_payload = OBJECT_ADAPTER.validate_json(str(audit_row[1]))
+        audit_payload["contentSha256"] = noncanonical_hash
+        connection.execute(
+            "UPDATE project_audit_events SET payload_json=? WHERE sequence=?",
+            (
+                json.dumps(audit_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                int(audit_row[0]),
+            ),
+        )
+        connection.execute(dataset_trigger_sql)
+        connection.execute(audit_trigger_sql)
+        connection.commit()
+    with pytest.raises(ProjectOperationError) as noncanonical_text:
+        ProjectService().open(
+            path=str(noncanonical_text_path),
+            application_instance_id="m04b-noncanonical-multiline",
+        )
+    assert noncanonical_text.value.code == "corrupt_project"
+
+    noncanonical_document_path = tmp_path / "m04b-noncanonical-document-snapshot.irproj"
+    shutil.copytree(project_path, noncanonical_document_path)
+    with closing(sqlite3.connect(noncanonical_document_path / "project.sqlite")) as connection:
+        trigger_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='reliability_observation_versions_no_update'",
+            ).fetchone()[0]
+        )
+        snapshot_row = connection.execute(
+            "SELECT document_snapshot_json FROM reliability_observation_versions WHERE observation_version_id=?",
+            (version_id,),
+        ).fetchone()
+        assert snapshot_row is not None
+        document_snapshot = OBJECT_ADAPTER.validate_json(str(snapshot_row[0]))
+        document_snapshot["title"] = f"{document_snapshot['title']}\r"
+        connection.execute("DROP TRIGGER reliability_observation_versions_no_update")
+        connection.execute(
+            "UPDATE reliability_observation_versions SET document_snapshot_json=? WHERE observation_version_id=?",
+            (
+                json.dumps(document_snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                version_id,
+            ),
+        )
+        connection.execute(trigger_sql)
+        connection.commit()
+    with pytest.raises(ProjectOperationError) as noncanonical_document:
+        ProjectService().open(
+            path=str(noncanonical_document_path),
+            application_instance_id="m04b-noncanonical-document-snapshot",
+        )
+    assert noncanonical_document.value.code == "corrupt_project"
 
     with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
         trigger_sql = str(

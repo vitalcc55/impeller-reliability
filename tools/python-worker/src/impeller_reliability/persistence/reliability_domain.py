@@ -11,6 +11,7 @@ import json
 import re
 import sqlite3
 from typing import Literal, cast
+from unicodedata import category as unicode_category
 from uuid import UUID, uuid4
 
 from impeller_reliability.persistence.audit import audit_now, insert_audit
@@ -806,11 +807,16 @@ class ReliabilityDomainRepository:
         expected_previous_version_id = None if expected_previous_version_id is None else _uuid4(expected_previous_version_id)
         method_value, metric_kind_value, metric_unit_value = _normalize_dataset_metric(method, metric_kind, metric_unit)
         title = _bounded_text(title, 200, "Название выборки")
-        population_basis = _bounded_text(population_basis, 2000, "Граница совокупности")
-        methodology_basis = _bounded_text(methodology_basis, 2000, "Основание методики")
-        comparability_basis = _bounded_text(comparability_basis, 2000, "Основание сопоставимости")
+        population_basis = _bounded_text(population_basis, 2000, "Граница совокупности", multiline=True)
+        methodology_basis = _bounded_text(methodology_basis, 2000, "Основание методики", multiline=True)
+        comparability_basis = _bounded_text(
+            comparability_basis,
+            2000,
+            "Основание сопоставимости",
+            multiline=True,
+        )
         actor = _bounded_text(actor, 200, "Автор решения")
-        reason = _bounded_text(reason, 2000, "Основание версии выборки")
+        reason = _bounded_text(reason, 2000, "Основание версии выборки", multiline=True)
         normalized_decisions = _normalize_dataset_decisions(decisions)
         existing = self._dataset_version_by_id(dataset_version_id, deadline)
         if existing is not None:
@@ -1256,13 +1262,13 @@ class ReliabilityDomainRepository:
             metric_origin=None if row[9] is None else parse_metric_origin(str(row[9])),
             lower_value=None if row[10] is None else str(row[10]),
             upper_value=None if row[11] is None else str(row[11]),
-            origin_basis=str(row[12]),
-            endpoint_basis=str(row[13]),
+            origin_basis=_stored_text(str(row[12]), 1_000, multiline=True),
+            endpoint_basis=_stored_text(str(row[13]), 1_000, multiline=True),
             document_snapshot=snapshot,
-            document_locator=str(row[15]),
+            document_locator=_stored_text(str(row[15]), 1_000),
             failure_ids=tuple(_uuid4(str(item[0])) for item in failure_rows),
-            actor=str(row[17]),
-            decision_reason=str(row[18]),
+            actor=_stored_text(str(row[17]), 200),
+            decision_reason=_stored_text(str(row[18]), 2_000, multiline=True),
             created_at_utc=str(row[19]),
             content_sha256=_sha256(str(row[20])),
         )
@@ -1326,9 +1332,9 @@ class ReliabilityDomainRepository:
                 local_specimen_id=_uuid4(str(item[2])),
                 source_run_id=_bounded_reference(str(item[3])),
                 policy_eligibility=parse_policy_eligibility(str(item[4])),
-                policy_reason=str(item[5]),
+                policy_reason=_stored_text(str(item[5]), 1_000),
                 decision=parse_inclusion_decision(str(item[6])),
-                inclusion_reason=str(item[7]),
+                inclusion_reason=_stored_text(str(item[7]), 2_000),
             )
             for item in member_rows
         )
@@ -1339,16 +1345,16 @@ class ReliabilityDomainRepository:
             version_number=_stored_integer(row[3], minimum=1),
             previous_version_id=None if row[4] is None else _uuid4(str(row[4])),
             policy_id="life_metric_exact_v1",
-            title=str(row[6]),
+            title=_stored_text(str(row[6]), 200),
             method=parse_dataset_method(str(row[7])),
             metric_kind=parse_metric_kind(str(row[8])),
             metric_unit=parse_metric_unit(str(row[9])),
-            population_basis=str(row[10]),
-            methodology_basis=str(row[11]),
-            comparability_basis=str(row[12]),
+            population_basis=_stored_text(str(row[10]), 2_000, multiline=True),
+            methodology_basis=_stored_text(str(row[11]), 2_000, multiline=True),
+            comparability_basis=_stored_text(str(row[12]), 2_000, multiline=True),
             members=members,
-            actor=str(row[13]),
-            decision_reason=str(row[14]),
+            actor=_stored_text(str(row[13]), 200),
+            decision_reason=_stored_text(str(row[14]), 2_000, multiline=True),
             created_at_utc=str(row[15]),
             content_sha256=_sha256(str(row[16])),
         )
@@ -1991,10 +1997,10 @@ def _parse_document_snapshot(value: dict[str, object]) -> AnalystDocumentSnapsho
         raise _corrupt_evidence()
     return AnalystDocumentSnapshot(
         document_id=_uuid4(_required_string(value["documentId"])),
-        document_kind=_bounded_text(_required_string(value["documentKind"]), 100, "Вид документа"),
-        title=_bounded_text(_required_string(value["title"]), 300, "Название документа"),
-        designation=_bounded_optional_text(_required_string(value["designation"]), 200, "Обозначение документа"),
-        revision_label=_bounded_optional_text(_required_string(value["revisionLabel"]), 200, "Редакция документа"),
+        document_kind=_stored_text(_required_string(value["documentKind"]), 100),
+        title=_stored_text(_required_string(value["title"]), 300),
+        designation=_stored_optional_text(_required_string(value["designation"]), 200),
+        revision_label=_stored_optional_text(_required_string(value["revisionLabel"]), 200),
         record_revision=revision,
         managed_file_sha256=None if file_sha is None else _sha256(_required_string(file_sha)),
     )
@@ -2330,11 +2336,11 @@ def normalize_observation_values(
         unit_value,
         normalized_lower,
         normalized_upper,
-        _bounded_text(origin_basis, 1000, "Начало отсчёта"),
-        _bounded_text(endpoint_basis, 1000, "Основание границы"),
+        _bounded_text(origin_basis, 1000, "Начало отсчёта", multiline=True),
+        _bounded_text(endpoint_basis, 1000, "Основание границы", multiline=True),
         _bounded_text(document_locator, 1000, "Локатор документа"),
         _bounded_text(actor, 200, "Автор решения"),
-        _bounded_text(reason, 2000, "Основание решения"),
+        _bounded_text(reason, 2000, "Основание решения", multiline=True),
     )
 
 
@@ -2438,18 +2444,54 @@ def _validate_included_uniqueness(members: tuple[ReliabilityDatasetMember, ...])
         raise ProjectOperationError("validation_error", "В выборке допускается одна включённая export revision исходного запуска.")
 
 
-def _bounded_text(value: str, maximum_bytes: int, label: str) -> str:
-    normalized = value.strip()
-    if not normalized or len(normalized.encode("utf-8")) > maximum_bytes or any(ord(char) < 32 for char in normalized):
+def _bounded_text(value: str, maximum_bytes: int, label: str, *, multiline: bool = False) -> str:
+    normalized_newlines = value.replace("\r\n", "\n").replace("\r", "\n") if multiline else value
+    if _contains_forbidden_control(normalized_newlines, multiline=multiline):
+        raise ProjectOperationError("validation_error", f"{label}: значение отсутствует или превышает лимит.")
+    normalized = normalized_newlines.strip()
+    if not normalized or _utf8_size(normalized, label) > maximum_bytes:
         raise ProjectOperationError("validation_error", f"{label}: значение отсутствует или превышает лимит.")
     return normalized
 
 
 def _bounded_optional_text(value: str, maximum_bytes: int, label: str) -> str:
+    if _contains_forbidden_control(value):
+        raise ProjectOperationError("validation_error", f"{label}: значение превышает лимит.")
     normalized = value.strip()
-    if len(normalized.encode("utf-8")) > maximum_bytes or any(ord(char) < 32 for char in normalized):
+    if _utf8_size(normalized, label) > maximum_bytes:
         raise ProjectOperationError("validation_error", f"{label}: значение превышает лимит.")
     return normalized
+
+
+def _contains_forbidden_control(value: str, *, multiline: bool = False) -> bool:
+    return any(unicode_category(char) == "Cc" and not (multiline and char == "\n") for char in value)
+
+
+def _utf8_size(value: str, label: str) -> int:
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeError as error:
+        raise ProjectOperationError("validation_error", f"{label}: значение не является UTF-8 текстом.") from error
+
+
+def _stored_text(value: str, maximum_bytes: int, *, multiline: bool = False) -> str:
+    try:
+        normalized = _bounded_text(value, maximum_bytes, "Сохранённый текст", multiline=multiline)
+    except ProjectOperationError as error:
+        raise _corrupt_evidence() from error
+    if normalized != value:
+        raise _corrupt_evidence()
+    return value
+
+
+def _stored_optional_text(value: str, maximum_bytes: int) -> str:
+    try:
+        normalized = _bounded_optional_text(value, maximum_bytes, "Сохранённый текст")
+    except ProjectOperationError as error:
+        raise _corrupt_evidence() from error
+    if normalized != value:
+        raise _corrupt_evidence()
+    return value
 
 
 def _assert_existing_observation_matches(
@@ -2665,7 +2707,11 @@ def _stored_integer(value: object, *, minimum: int = 0) -> int:
 
 
 def _bounded_reference(value: str) -> str:
-    if not value or len(value.encode("utf-8")) > 512 or any(ord(char) < 32 for char in value):
+    try:
+        encoded_size = _utf8_size(value, "Source reference")
+    except ProjectOperationError as error:
+        raise ProjectOperationError("corrupt_project", "Source reference повреждён.") from error
+    if not value or encoded_size > 512 or _contains_forbidden_control(value):
         raise ProjectOperationError("corrupt_project", "Source reference повреждён.")
     return value
 
