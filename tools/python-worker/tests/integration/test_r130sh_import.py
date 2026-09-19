@@ -20,7 +20,10 @@ import pytest
 
 from impeller_reliability.application.project_service import ProjectService
 from impeller_reliability.integration.r130run.import_jobs import RunPackageImportJobManager
-from impeller_reliability.integration.r130run.import_models import imported_run_detail_model
+from impeller_reliability.integration.r130run.import_models import (
+    ImportedRunPlanModel,
+    imported_run_detail_model,
+)
 from impeller_reliability.integration.r130run.m9a import M9aPackageFacts, read_m9a_package_facts
 from impeller_reliability.integration.r130run.models import RunPackageValidationReport
 from impeller_reliability.integration.r130run.validator import (
@@ -181,6 +184,46 @@ def test_exact_repeat_is_noop_without_duplicate_audit(tmp_path: Path) -> None:
     assert repeated.imported_existing is True
     assert len(service.list_imported_runs()) == 1
     assert _audit_count(project_path) == audit_before
+    service.close()
+
+
+def test_nullable_plan_references_survive_import_detail_retry_and_reopen(
+    tmp_path: Path,
+) -> None:
+    service, project_path = _project(tmp_path)
+    source = _package_with_nullable_plan_references(tmp_path)
+
+    first = _import_via_job(
+        service,
+        project_path,
+        source,
+        allow_diagnostic_partial=False,
+    )
+    detail = imported_run_detail_model(
+        service.get_imported_run(first.local_import_id),
+    )
+    assert detail.projection.originalPlan.laboratoryCaseReference is None
+    assert detail.projection.originalPlan.customerOrderReference is None
+    assert detail.projection.effectivePlan.laboratoryCaseReference is None
+    assert detail.projection.effectivePlan.customerOrderReference is None
+    for field in ("laboratoryCaseReference", "customerOrderReference"):
+        for invalid in ("", "   "):
+            payload = detail.projection.originalPlan.model_dump()
+            payload[field] = invalid
+            with pytest.raises(ValueError, match="plan_reference_required"):
+                ImportedRunPlanModel.model_validate(payload)
+
+    repeated = _import(service, project_path, source)
+    assert repeated.local_import_id == first.local_import_id
+    assert repeated.imported_existing is True
+    service.close()
+
+    service.open(path=str(project_path), application_instance_id="nullable-reopen")
+    reopened = imported_run_detail_model(
+        service.get_imported_run(first.local_import_id),
+    )
+    assert reopened == detail
+    assert len(service.list_imported_runs()) == 1
     service.close()
 
 
@@ -1821,6 +1864,43 @@ def _integer(value: object) -> int:
 
 def _package(name: str) -> Path:
     return M9A_ROOT / "packages" / name
+
+
+def _package_with_nullable_plan_references(tmp_path: Path) -> Path:
+    source = _package("normal_final_rbd.r130run")
+    with ZipFile(source) as archive:
+        original = OBJECT_ADAPTER.validate_json(archive.read("plan/original.json"))
+        effective = OBJECT_ADAPTER.validate_json(archive.read("plan/effective.json"))
+        summary = OBJECT_ADAPTER.validate_json(archive.read("run-summary.json"))
+    for key in ("laboratory_case_reference", "customer_order_reference"):
+        original[key] = None
+    effective_container = OBJECT_ADAPTER.validate_python(effective["effective_plan"])
+    effective_plan = OBJECT_ADAPTER.validate_python(
+        effective_container["effective_plan"],
+    )
+    for key in ("laboratory_case_reference", "customer_order_reference"):
+        effective_plan[key] = None
+    effective_container["effective_plan"] = effective_plan
+    effective_container["original_plan_sha256"] = hashlib.sha256(
+        (json.dumps(original, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"),
+    ).hexdigest()
+    effective["effective_plan"] = effective_container
+    run_card = OBJECT_ADAPTER.validate_python(summary["run_card"])
+    for key in ("laboratory_case_reference", "customer_order_reference"):
+        run_card[key] = None
+    summary["run_card"] = run_card
+
+    def encoded(value: dict[str, object]) -> bytes:
+        return (json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+    return build_synthetic_r130run(
+        tmp_path / "nullable-plan-references.r130run",
+        payload_overrides={
+            "plan/original.json": encoded(original),
+            "plan/effective.json": encoded(effective),
+            "run-summary.json": encoded(summary),
+        },
+    )
 
 
 def _validated(path: Path) -> tuple[RunPackageValidationReport, M9aPackageFacts]:

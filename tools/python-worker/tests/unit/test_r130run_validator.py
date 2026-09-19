@@ -719,6 +719,52 @@ def test_frozen_semantic_shape_requires_example_fields(tmp_path: Path) -> None:
     assert any(item.code == "semantic_shape_mismatch" for item in report.findings)
 
 
+@pytest.mark.parametrize(
+    ("location", "field", "replacement", "remove", "expected_code"),
+    [
+        ("original", "laboratory_case_reference", None, True, "semantic_shape_mismatch"),
+        ("effective", "customer_order_reference", None, True, "semantic_shape_mismatch"),
+        ("original", "customer_order_reference", 42, False, "semantic_value_mismatch"),
+        ("effective", "laboratory_case_reference", 42, False, "semantic_value_mismatch"),
+        ("original", "laboratory_case_reference", "", False, "semantic_value_mismatch"),
+        ("effective", "customer_order_reference", "   ", False, "semantic_value_mismatch"),
+    ],
+)
+def test_plan_optional_references_require_nullable_text_keys(
+    tmp_path: Path,
+    location: str,
+    field: str,
+    replacement: JsonValue,
+    remove: bool,
+    expected_code: str,
+) -> None:
+    path = "plan/original.json" if location == "original" else "plan/effective.json"
+    payload = _m9a_json_object(path)
+    plan = payload
+    if location == "effective":
+        container = payload["effective_plan"]
+        assert isinstance(container, dict)
+        plan_value = container["effective_plan"]
+        assert isinstance(plan_value, dict)
+        plan = plan_value
+    if remove:
+        del plan[field]
+    else:
+        plan[field] = replacement
+    package = build_synthetic_r130run(
+        tmp_path / f"invalid-{location}-{field}.r130run",
+        payload_overrides={
+            path: json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        },
+    )
+
+    report = RunPackageValidator().validate(package, _control())
+
+    assert report.structuralVerdict == "passed"
+    assert report.semanticVerdict == "failed"
+    assert any(item.code == expected_code for item in report.findings)
+
+
 def test_frozen_plan_exact_and_rounding_values_are_checked(tmp_path: Path) -> None:
     plan = _m9a_json_object("plan/original.json")
     targets = plan["execution_targets"]

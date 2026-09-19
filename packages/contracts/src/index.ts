@@ -724,6 +724,10 @@ export const importedRunSummarySchema = z
     importedExisting: z.boolean(),
   })
   .strict();
+const nullablePlanReferenceSchema = z
+  .string()
+  .refine((value) => value.trim().length > 0)
+  .nullable();
 export const importedRunPlanSchema = z
   .object({
     planId: planIdSchema,
@@ -731,8 +735,8 @@ export const importedRunPlanSchema = z
     mode: z.enum(['pmn', 'rpt', 'rbd']),
     specimenId: specimenSourceIdSchema,
     wheelIdentifier: z.string(),
-    laboratoryCaseReference: z.string(),
-    customerOrderReference: z.string(),
+    laboratoryCaseReference: nullablePlanReferenceSchema,
+    customerOrderReference: nullablePlanReferenceSchema,
     nominalRpm: z.string().nullable(),
     targetCycles: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
     targetMaxRpm: z.string().nullable(),

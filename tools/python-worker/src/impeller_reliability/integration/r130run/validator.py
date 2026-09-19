@@ -1338,6 +1338,8 @@ def _validate_m9a_plan(
         "specimen_id",
         "wheel_identifier",
         "mode",
+        "laboratory_case_reference",
+        "customer_order_reference",
         "source_values",
         "methodical_requirements",
         "execution_targets",
@@ -1357,6 +1359,13 @@ def _validate_m9a_plan(
         return
     for identity in (value.get("run_id"), value.get("plan_id"), value.get("specimen_id")):
         if not _valid_source_identity(identity):
+            _semantic_value_finding(findings, location)
+            return
+    for reference in (
+        value["laboratory_case_reference"],
+        value["customer_order_reference"],
+    ):
+        if reference is not None and (not isinstance(reference, str) or not reference.strip()):
             _semantic_value_finding(findings, location)
             return
     try:
