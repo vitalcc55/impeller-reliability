@@ -1057,6 +1057,7 @@ async function runSmokeIfRequested(): Promise<void> {
   let projectScenarioPassed = false;
   let runPackageValidationPassed = false;
   let runPackageImportPassed = false;
+  let rbdCalculationPassed = false;
   if (automatedProjectPath !== null && workerClient !== null) {
     const created = await workerClient.request('project.create', {
       path: automatedProjectPath,
@@ -1269,12 +1270,96 @@ async function runSmokeIfRequested(): Promise<void> {
             const importDiscarded = await workerClient.request('runPackageImport.discard', {
               jobId: importJobId,
             });
+            const sourceSpecimenId = imported.result.result.importedRun.sourceSpecimenId;
+            const binding = await workerClient.request('importedRun.bindSpecimen', {
+              sourceSpecimenId,
+              localSpecimenId: smokeSpecimenId,
+              expectedRevision: imported.result.result.importedRun.bindingRevision,
+              actor: 'local_user',
+              reason: 'Проверка расчёта по управляемому архиву',
+            });
+            const materialized = binding.ok
+              ? await workerClient.request('reliabilityExecution.materialize', { localImportId })
+              : null;
+            const sourceInputs =
+              materialized?.ok === true
+                ? await workerClient.request('rbdCalculation.getSourceInputs', {
+                    executionId: materialized.result.executionId,
+                    planSelection: 'original',
+                  })
+                : null;
+            const calculationInputId = randomUUID();
+            const calculationResultId = randomUUID();
+            const calculation =
+              sourceInputs?.ok === true
+                ? await workerClient.request('rbdCalculation.create', {
+                    analysisInputSnapshotId: calculationInputId,
+                    calculationSnapshotId: calculationResultId,
+                    executionId: sourceInputs.result.executionId,
+                    planSelection: 'original',
+                    selections: (
+                      [
+                        'nominal_rpm',
+                        'base_cycles',
+                        'reserve_factor',
+                        'acceleration_duration_s',
+                        'deceleration_duration_s',
+                      ] as const
+                    ).map((field) => ({
+                      field,
+                      origin: 'source' as const,
+                      manualValue: null,
+                      basis: '',
+                      evidence: null,
+                    })),
+                    failureEvidence: null,
+                    actor: 'local_user',
+                    reason: 'Проверка точного требования отдельно от округлённой уставки',
+                  })
+                : null;
             const importClosed = await workerClient.request('project.close', {});
             const importReopened = await workerClient.request('project.open', {
               path: automatedProjectPath,
               applicationInstanceId,
             });
             const listedAfterReopen = await workerClient.request('importedRun.list', {});
+            const calculationAfterReopen =
+              calculation?.ok === true && importReopened.ok
+                ? await workerClient.request('rbdCalculation.getDetail', {
+                    calculationSnapshotId: calculationResultId,
+                  })
+                : null;
+            rbdCalculationPassed =
+              binding.ok &&
+              materialized?.ok === true &&
+              sourceInputs?.ok === true &&
+              sourceInputs.result.packageId === '8b29c35e-60d0-46c1-bc02-4498145011ce' &&
+              sourceInputs.result.runId === 'exact_methodical_rounding' &&
+              sourceInputs.result.outerPackageSha256 ===
+                '7d36efb7af29dc4da049b7d474034f69d137502f314fe671fa70f9aff0ac4930' &&
+              sourceInputs.result.payloadSha256 ===
+                'cc45dc09c6ec04bc832b89f940770f3a35eb54392ee2ee15cd0198b2577cbcf2' &&
+              sourceInputs.result.sourceValues.baseCycles === '1000' &&
+              sourceInputs.result.sourceValues.reserveFactor === '1.5003' &&
+              sourceInputs.result.executionTargets.targetCycles === '1501' &&
+              sourceInputs.result.executionTargets.targetSteadyDurationS === '60.04' &&
+              sourceInputs.result.executionTargets.totalDurationS === '70.04' &&
+              calculation?.ok === true &&
+              calculation.result.detail.inputSnapshot.analysisInputSnapshotId ===
+                calculationInputId &&
+              calculation.result.detail.calculationSnapshot.calculationSnapshotId ===
+                calculationResultId &&
+              calculation.result.detail.calculationSnapshot.resultSnapshot.required_cycles_exact
+                .decimal === '1500.3' &&
+              calculation.result.detail.calculationSnapshot.resultSnapshot.steady_duration_s_exact
+                .decimal === '60.012' &&
+              calculation.result.detail.calculationSnapshot.resultSnapshot.total_duration_s_exact
+                .decimal === '70.012' &&
+              calculationAfterReopen?.ok === true &&
+              calculationAfterReopen.result.inputSnapshot.contentSha256 ===
+                calculation.result.detail.inputSnapshot.contentSha256 &&
+              calculationAfterReopen.result.calculationSnapshot.contentSha256 ===
+                calculation.result.detail.calculationSnapshot.contentSha256;
             runPackageImportPassed =
               imported.result.result.disposition === 'created' &&
               listed.ok &&
@@ -1306,12 +1391,14 @@ async function runSmokeIfRequested(): Promise<void> {
           ping?.ok === true &&
           projectScenarioPassed &&
           runPackageValidationPassed &&
-          runPackageImportPassed,
+          runPackageImportPassed &&
+          rbdCalculationPassed,
         runtime,
         pingOk: ping?.ok === true,
         projectScenarioPassed,
         runPackageValidationPassed,
         runPackageImportPassed,
+        rbdCalculationPassed,
         elapsedMs: Math.round(performance.now() - startedAt),
         pid: process.pid,
         workerPid: workerClient?.processId ?? null,

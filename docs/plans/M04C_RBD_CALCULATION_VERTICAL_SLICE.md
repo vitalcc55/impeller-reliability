@@ -303,6 +303,18 @@ smoke. Эти smoke ещё не выполняют новый расчёт; эт
 RBD panel + preview states + real-worker E2E/reopen + packaged calculation smoke
 → Browser/Impeccable detector → final profile reviews → findings closure →
 `pnpm verify -- --IncludePackaging` → `git diff --check` → commit/push/PR.
+Статус реализации: локальный gate закрыт. Production Renderer выбирает точное
+исполнение, original/effective план и пять входов; Python создаёт immutable
+пару, а история и detail читают её после reopen без пересчёта. Production
+Electron E2E проходит этот путь до создания статистической выборки. Browser
+ready/unavailable, 1280×720, narrow reflow, AX/focus и консоль проверены;
+Impeccable detector отметил только ранее существовавший общий CSS grid.
+Профильные read-only review закрыты без новых findings после исправлений.
+`pnpm verify -- --IncludePackaging` завершился успешно: 76 Vitest, 474 Python
+tests (85.05%), 15 Electron E2E, worker build, WinUnpacked и Portable smoke;
+оба packaged smoke действительно выполнили расчёт frozen exact-rounding RBD,
+проверили отличия от producer targets и тот же hash после reopen. Commit,
+push, PR и review итогового SHA отмечаются только после фактического выполнения.
 
 Завершение этапа означает один прослеживаемый production-сценарий от exact
 managed R130SH source до сохранённого результата после reopen. Это не

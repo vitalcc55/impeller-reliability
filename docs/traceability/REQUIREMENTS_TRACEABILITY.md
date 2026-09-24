@@ -71,3 +71,9 @@
 | M04B bounded IPC | keyset execution/dataset pages, bounded details, UTF-8 JSONL producer/consumer guards | contract/Vitest/process/pagination tests |
 | M04B recovery | caller UUID exact retry, expected head conflict and authoritative reattach readback | pytest retry/conflict + Electron reopen/restart |
 | No reliability calculation in M04B | no AnalysisInputSnapshot, CalculationSnapshot, algorithm or report result | capability/source review |
+| Exact RBD source selection | selected execution/export revision plus original/effective bounded plan read from managed archive; producer targets remain separate | Python source integration + production Electron E2E |
+| RBD mathematical contract | Python `Fraction` formulas 1–3, independent golden A/B/C, periodic fraction and Table 3 floor/applicability | pure Python unit matrix + packaged exact-rounding smoke |
+| RBD input provenance | each selected source/manual field, exact document revision and reason frozen without rewriting R130SH source | Python persistence/reopen/tamper integration + UI readback |
+| Atomic immutable calculation | input/result/audit pair, exact/conflicting retry, rollback and bounded history | Python transaction tests + Electron close/reopen |
+| Bounded calculation IPC | four typed operations, no calculated outputs from Renderer, UTF-8 JSONL envelope under 1 MiB | Pydantic/Zod/Vitest/process tests |
+| RBD production path | import → bind/materialize → explicit input UI → calculation → history/detail after reopen | Electron E2E + WinUnpacked/Portable calculation smoke |

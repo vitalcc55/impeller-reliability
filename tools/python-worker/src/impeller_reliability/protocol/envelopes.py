@@ -1482,6 +1482,13 @@ class RbdPhaseResult(BaseModel):
     end_rpm: RbdExactRationalResult
 
 
+class RbdDiagramPointResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    boundary: Literal["start", "acceleration_end", "steady_end", "cycle_end"]
+    x: int = Field(ge=0, le=1000)
+    y: int = Field(ge=0, le=100)
+
+
 class RbdFailureResultModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     status: Literal["calculated", "not_applicable"]
@@ -1501,6 +1508,7 @@ class RbdReferenceResultModel(BaseModel):
     total_duration_s_exact: RbdExactRationalResult
     failure_result: RbdFailureResultModel
     phases: list[RbdPhaseResult] = Field(min_length=3, max_length=3)
+    diagram_points: list[RbdDiagramPointResult] = Field(min_length=4, max_length=4)
     formula_references: list[str] = Field(min_length=3, max_length=8)
 
 

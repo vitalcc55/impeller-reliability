@@ -10,6 +10,7 @@ import type {
 } from '@impeller-reliability/contracts';
 
 import { AnalystDossier, type AnalystDossierHandle, type DossierSection } from './AnalystDossier';
+import { RbdCalculation, type RbdCalculationHandle } from './RbdCalculation';
 import { R130shResults, type R130shResultsHandle } from './R130shResults';
 import {
   ReliabilityPreparation,
@@ -34,7 +35,8 @@ interface ProjectWorkspaceProps {
   readonly workerReady: boolean;
 }
 
-type WorkspaceSection = 'overview' | 'r130sh-results' | 'reliability' | DossierSection;
+type WorkspaceSection =
+  'overview' | 'r130sh-results' | 'reliability' | 'rbd-calculation' | DossierSection;
 
 export interface ProjectWorkspaceHandle {
   hasDirtyDraft(): boolean;
@@ -61,6 +63,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     const [resultsPending, setResultsPending] = useState(false);
     const [reliabilityDirty, setReliabilityDirty] = useState(false);
     const [reliabilityPending, setReliabilityPending] = useState(false);
+    const [calculationDirty, setCalculationDirty] = useState(false);
+    const [calculationPending, setCalculationPending] = useState(false);
     const [pendingTransition, setPendingTransition] = useState<{
       readonly action: () => void;
       readonly discard: () => void;
@@ -75,13 +79,17 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           ? resultsDirty
           : section === 'reliability'
             ? reliabilityDirty
-            : dossierDirty);
+            : section === 'rbd-calculation'
+              ? calculationDirty
+              : dossierDirty);
     const dirtyRef = useRef(dirty);
     const pendingSaveRef = useRef<Promise<void> | null>(null);
     const dossierRef = useRef<AnalystDossierHandle>(null);
     const resultsRef = useRef<R130shResultsHandle>(null);
     const reliabilityRef = useRef<ReliabilityPreparationHandle>(null);
-    const sectionPending = dossierPending || resultsPending || reliabilityPending;
+    const calculationRef = useRef<RbdCalculationHandle>(null);
+    const sectionPending =
+      dossierPending || resultsPending || reliabilityPending || calculationPending;
     const detached = project !== null && (!workerReady || reattachBlocked);
     useEffect(() => {
       dirtyRef.current = dirty;
@@ -137,6 +145,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
       setResultsPending(false);
       setReliabilityDirty(false);
       setReliabilityPending(false);
+      setCalculationDirty(false);
+      setCalculationPending(false);
       setPendingTransition(null);
       setMessage(notice);
       void refreshRecent();
@@ -220,6 +230,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           setResultsPending(false);
           setReliabilityDirty(false);
           setReliabilityPending(false);
+          setCalculationDirty(false);
+          setCalculationPending(false);
           setPendingTransition(null);
           setConfirmClose(false);
           setMessage(
@@ -301,8 +313,15 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           const reconciled = await reliabilityRef.current?.verifyAfterReattach();
           if (reconciled === false) throw new Error('reliability_reattach_failed');
         }
+        if (section === 'rbd-calculation') {
+          const reconciled = await calculationRef.current?.verifyAfterReattach();
+          if (reconciled !== true) throw new Error('calculation_reattach_failed');
+        }
         const dossierReattach =
-          section === 'overview' || section === 'r130sh-results' || section === 'reliability'
+          section === 'overview' ||
+          section === 'r130sh-results' ||
+          section === 'reliability' ||
+          section === 'rbd-calculation'
             ? { status: 'reconciled' as const }
             : await dossierRef.current?.verifyAfterReattach();
         if (dossierReattach?.status !== 'reconciled') {
@@ -352,6 +371,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           await dossierRef.current?.waitForPendingSave();
           await resultsRef.current?.waitForPendingSave();
           await reliabilityRef.current?.waitForPendingSave();
+          await calculationRef.current?.waitForPendingSave();
           return dirtyRef.current;
         },
         reattachAfterWorkerRestart,
@@ -601,6 +621,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
               ['overview', 'Обзор'],
               ['r130sh-results', 'Результаты R130SH'],
               ['reliability', 'Данные надёжности'],
+              ['rbd-calculation', 'Расчёт РБД'],
               ['customer', 'Заказчик'],
               ['wheels', 'Модели колёс'],
               ['specimens', 'Образцы'],
@@ -625,6 +646,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                     });
                   } else if (section === 'r130sh-results') resultsRef.current?.discardDraft();
                   else if (section === 'reliability') reliabilityRef.current?.discardDraft();
+                  else if (section === 'rbd-calculation') calculationRef.current?.discardDraft();
                   else dossierRef.current?.discardActiveDraft();
                 };
                 if (dirty)
@@ -793,6 +815,14 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
             disabled={detached || busy !== null || pendingTransition !== null}
             onDirtyChange={setReliabilityDirty}
             onPendingChange={setReliabilityPending}
+          />
+        ) : section === 'rbd-calculation' && desktopApi !== null ? (
+          <RbdCalculation
+            ref={calculationRef}
+            desktopApi={desktopApi}
+            disabled={detached || busy !== null || pendingTransition !== null}
+            onDirtyChange={setCalculationDirty}
+            onPendingChange={setCalculationPending}
           />
         ) : desktopApi === null || !isDossierSection(section) ? null : (
           <AnalystDossier

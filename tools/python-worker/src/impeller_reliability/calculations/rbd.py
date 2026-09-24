@@ -63,6 +63,13 @@ class RbdPhase:
 
 
 @dataclass(frozen=True, slots=True)
+class RbdDiagramPoint:
+    boundary: Literal["start", "acceleration_end", "steady_end", "cycle_end"]
+    x: int
+    y: int
+
+
+@dataclass(frozen=True, slots=True)
 class RbdFailureResult:
     status: Literal["calculated", "not_applicable"]
     cycles_to_failure: str | None
@@ -81,6 +88,7 @@ class RbdReferenceResult:
     total_duration_s_exact: ExactRationalValue
     failure_result: RbdFailureResult
     phases: tuple[RbdPhase, RbdPhase, RbdPhase]
+    diagram_points: tuple[RbdDiagramPoint, RbdDiagramPoint, RbdDiagramPoint, RbdDiagramPoint]
     formula_references: tuple[str, ...]
 
 
@@ -142,12 +150,29 @@ def calculate_rbd_reference(values: object) -> RbdReferenceResult:
                 end_rpm=_exact_value(Fraction(0)),
             ),
         ),
+        diagram_points=_diagram_points(acceleration_fraction, steady_end, cycle_duration),
         formula_references=(
             "ПМИ Р130У, редакция 01, 2024, страница 12, формула 1",
             "ПМИ Р130У, редакция 01, 2024, страница 12, формула 2",
             "ПМИ Р130У, редакция 01, 2024, страница 12, формула 3",
             "ПМИ Р130У, редакция 01, 2024, таблица 3",
         ),
+    )
+
+
+def _diagram_points(
+    acceleration_end: Fraction,
+    steady_end: Fraction,
+    cycle_end: Fraction,
+) -> tuple[RbdDiagramPoint, RbdDiagramPoint, RbdDiagramPoint, RbdDiagramPoint]:
+    # A legible schematic, not a proportional time series. Exact durations remain in phases.
+    acceleration_x = max(150, min(350, round(acceleration_end * 1000 / cycle_end)))
+    steady_x = max(650, min(850, round(steady_end * 1000 / cycle_end)))
+    return (
+        RbdDiagramPoint("start", 0, 100),
+        RbdDiagramPoint("acceleration_end", acceleration_x, 0),
+        RbdDiagramPoint("steady_end", steady_x, 0),
+        RbdDiagramPoint("cycle_end", 1000, 100),
     )
 
 

@@ -12,7 +12,7 @@ $desktopDist = Join-Path $repositoryRoot "apps\desktop\dist"
 $smokeDirectory = Join-Path $repositoryRoot ".tmp\.codex\evidence\$($Target.ToLowerInvariant())"
 $summaryPath = Join-Path $smokeDirectory "summary.json"
 $projectPath = Join-Path $smokeDirectory "Packaged smoke project.irproj"
-$runPackagePath = Join-Path $repositoryRoot "fixtures\contracts\r130run\v1\m9a\packages\normal_final_rbd.r130run"
+$runPackagePath = Join-Path $repositoryRoot "fixtures\contracts\r130run\v1\m9a\packages\exact_methodical_rounding.r130run"
 $packageMetadata = Get-Content -LiteralPath (Join-Path $repositoryRoot "apps\desktop\package.json") -Raw | ConvertFrom-Json
 $applicationExecutable = Join-Path $desktopDist "win-unpacked\ImpellerReliabilityCalc.exe"
 
@@ -127,6 +127,7 @@ if ($summary.passed -ne $true) { throw "Desktop smoke returned failure." }
 if ($summary.projectScenarioPassed -ne $true) { throw "Desktop smoke project create/update/close/reopen failed." }
 if ($summary.runPackageValidationPassed -ne $true) { throw "Desktop smoke R130SH contract validation failed." }
 if ($summary.runPackageImportPassed -ne $true) { throw "Desktop smoke R130SH production import/reopen failed." }
+if ($summary.rbdCalculationPassed -ne $true) { throw "Desktop smoke RBD calculation/reopen failed." }
 if ($networkObserved) { throw "Desktop smoke observed a TCP connection in its process tree." }
 
 $shutdownDeadline = [DateTime]::UtcNow.AddSeconds(5)

@@ -97,6 +97,12 @@ describe('worker contracts', () => {
         reason_code: 'failure_duration_unavailable',
       },
       phases: [phase, { ...phase, phase: 'steady_rotation' }, { ...phase, phase: 'deceleration' }],
+      diagram_points: [
+        { boundary: 'start', x: 0, y: 100 },
+        { boundary: 'acceleration_end', x: 150, y: 0 },
+        { boundary: 'steady_end', x: 850, y: 0 },
+        { boundary: 'cycle_end', x: 1000, y: 100 },
+      ],
       formula_references: ['ПМИ, формула 1', 'ПМИ, формула 2', 'ПМИ, формула 3'],
     };
     expect(rbdResultSnapshotSchema.safeParse(result).success).toBe(true);

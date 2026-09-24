@@ -1284,7 +1284,66 @@ export const rbdResultSnapshotSchema = z
           .strict(),
       )
       .length(3),
+    diagram_points: z
+      .array(
+        z
+          .object({
+            boundary: z.enum(['start', 'acceleration_end', 'steady_end', 'cycle_end']),
+            x: z.number().int().min(0).max(1_000),
+            y: z.number().int().min(0).max(100),
+          })
+          .strict(),
+      )
+      .length(4),
     formula_references: z.array(z.string()).min(3).max(8),
+  })
+  .strict();
+const rbdSavedEvidenceSchema = z
+  .object({
+    document: z
+      .object({
+        documentId: entityIdSchema,
+        recordRevision: z.number().int().positive(),
+        documentKind: caseDocumentKindSchema,
+        title: z.string(),
+        designation: z.string(),
+        revisionLabel: z.string(),
+        fileSha256: sha256Schema.nullable(),
+        locator: z.string(),
+      })
+      .strict()
+      .nullable(),
+    observation: z.record(z.string(), z.unknown()).nullable(),
+  })
+  .strict();
+export const rbdSavedFieldSelectionSchema = z
+  .object({
+    field: rbdInputFieldSchema,
+    unit: z.string().min(1).max(32),
+    origin: z.enum(['source', 'manual']),
+    value: z.string().min(1).max(64),
+    rawSourceValue: z.string().max(64).nullable(),
+    sourceReference: z.string().min(1).max(200),
+    basis: z.string().max(2_000),
+    evidence: rbdSavedEvidenceSchema.nullable(),
+  })
+  .strict();
+export const rbdSavedFailureEvidenceSchema = z
+  .object({
+    applicability: rbdFailureApplicabilitySchema,
+    durationToFailureS: z.string().max(64).nullable(),
+    basis: z.string().min(1).max(2_000),
+    failureObservations: z.array(z.record(z.string(), z.unknown())).max(64),
+    evidence: rbdSavedEvidenceSchema.nullable(),
+  })
+  .strict();
+export const rbdInputSnapshotPayloadSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    operation: z.record(z.string(), z.unknown()),
+    source: z.record(z.string(), z.unknown()),
+    fieldSelections: z.array(rbdSavedFieldSelectionSchema).length(5),
+    failureEvidence: rbdSavedFailureEvidenceSchema.nullable(),
   })
   .strict();
 export const rbdAnalysisInputSnapshotSchema = z
@@ -1305,7 +1364,7 @@ export const rbdAnalysisInputSnapshotSchema = z
     sourceOuterPackageSha256: sha256Schema,
     sourceSnapshotSha256: sha256Schema,
     operationSha256: sha256Schema,
-    inputSnapshot: z.record(z.string(), z.unknown()),
+    inputSnapshot: rbdInputSnapshotPayloadSchema,
     contentSha256: sha256Schema,
     actor: z.string().min(1).max(200),
     decisionReason: z.string().min(1).max(2_000),

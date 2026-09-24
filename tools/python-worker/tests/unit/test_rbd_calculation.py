@@ -33,6 +33,12 @@ def test_rbd_reference_examples_are_independent_golden_values() -> None:
     assert second_result.total_duration_s_exact.decimal == second["expected"]["totalDurationSExact"]
     assert second_result.required_cycles_exact.decimal != str(second["producerTargets"]["targetCycles"])
     assert second_result.steady_duration_s_exact.decimal != second["producerTargets"]["targetSteadyDurationS"]
+    assert [(point.boundary, point.x, point.y) for point in second_result.diagram_points] == [
+        ("start", 0, 100),
+        ("acceleration_end", 150, 0),
+        ("steady_end", 850, 0),
+        ("cycle_end", 1000, 100),
+    ]
 
     third_result = calculate_rbd_reference(
         _reference_input(

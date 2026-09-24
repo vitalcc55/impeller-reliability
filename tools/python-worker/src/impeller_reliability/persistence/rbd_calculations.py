@@ -1090,6 +1090,7 @@ def _validate_snapshot_shapes(input_payload: dict[str, object], result_payload: 
         "total_duration_s_exact",
         "failure_result",
         "phases",
+        "diagram_points",
         "formula_references",
     }:
         raise _corrupt()
