@@ -23,7 +23,7 @@ TypeScript: "TypeScript packages" {
 
 Worker: "tools/python-worker" {
   Protocol: "operation-specific Pydantic JSONL envelopes"
-  Domain: "dossier + case documents + reliability observations/datasets; future calculations"
+  Domain: "dossier + reliability evidence + pure Python RBD calculation"
   Persistence: "sqlite3, migrations, repositories"
   Integration: "R130SH M9a validator + import job/projection"
 }
@@ -60,4 +60,4 @@ Desktop.Main -> Worker.Protocol: "approved path over typed JSONL"
 Worker.Protocol -> Worker.Integration: "validate/import job; no extraction tree"
 ```
 
-Clean pre-release schema v1 содержит dossier, M03B `r130sh_source` и M04A/M04B `derived_analysis`. Main владеет file dialog; Python единолично владеет validation, classification rules, managed archive и SQLite. Renderer получает compact pages/details и отправляет только typed decisions. R130SH владеет package schema и первичными фактами; `TestCampaign`, `AnalysisInputSnapshot`, `CalculationSnapshot` и отчётность остаются будущими границами.
+Clean pre-release schema v1 содержит dossier, `r130sh_source` и `derived_analysis`, включая immutable `AnalysisInputSnapshot` и `CalculationSnapshot` для расчёта РБД. Main владеет file dialog; Python единолично владеет validation, classification rules, managed archive, расчётом и SQLite. Renderer получает compact pages/details и отправляет только typed decisions и выбранные расчётные входы. R130SH владеет package schema и первичными фактами; `TestCampaign` и аналитическая отчётность остаются будущими границами.

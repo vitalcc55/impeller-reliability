@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from impeller_reliability.calculations.rbd_input_snapshot import RbdInputSnapshotModel
+from impeller_reliability.calculations.rbd_result_snapshot import RbdReferenceResultModel as RbdReferenceResultModel
 from impeller_reliability.integration.r130run.import_models import (
     ImportedRunDetailModel,
     ImportedRunSummaryModel,
@@ -81,6 +83,10 @@ Operation = Literal[
     "reliabilityDataset.listPage",
     "reliabilityDataset.getVersion",
     "reliabilityDataset.createVersion",
+    "rbdCalculation.getSourceInputs",
+    "rbdCalculation.create",
+    "rbdCalculation.listPage",
+    "rbdCalculation.getDetail",
 ]
 
 ProjectStatus = Literal["draft", "active", "completed", "archived"]
@@ -541,6 +547,123 @@ class ReliabilityDatasetCreateVersionPayload(BaseModel):
     reason: str = Field(min_length=1, max_length=2_000)
 
 
+RbdInputField = Literal[
+    "base_cycles",
+    "reserve_factor",
+    "nominal_rpm",
+    "acceleration_duration_s",
+    "deceleration_duration_s",
+]
+
+
+class RbdEvidenceReferencePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    documentId: EntityId | None = None
+    documentRecordRevision: int | None = Field(default=None, ge=1, le=9_007_199_254_740_991)
+    documentLocator: str = Field(default="", max_length=1_000)
+    observationVersionId: EntityId | None = None
+
+
+class RbdFieldSelectionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    field: RbdInputField
+    origin: Literal["source", "manual"]
+    manualValue: str | None = Field(default=None, max_length=64)
+    basis: str = Field(default="", max_length=2_000)
+    evidence: RbdEvidenceReferencePayload | None = None
+
+
+class RbdFailureEvidencePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    applicability: Literal[
+        "exact_supported",
+        "unavailable",
+        "interval_endpoint",
+        "right_censored",
+        "unsupported_phase",
+        "ambiguous_pauses",
+    ]
+    durationToFailureS: str | None = Field(default=None, max_length=64)
+    basis: str = Field(min_length=1, max_length=2_000)
+    failureObservationIds: list[EntityId] = Field(default_factory=list, max_length=64)
+    evidence: RbdEvidenceReferencePayload | None = None
+
+
+class RbdSourceInputsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    executionId: EntityId
+    planSelection: Literal["original", "effective"]
+
+
+class RbdCalculationCreatePayload(RbdSourceInputsPayload):
+    analysisInputSnapshotId: EntityId
+    calculationSnapshotId: EntityId
+    selections: list[RbdFieldSelectionPayload] = Field(min_length=5, max_length=5)
+    failureEvidence: RbdFailureEvidencePayload | None
+    actor: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_fixed_selections(self) -> RbdCalculationCreatePayload:
+        required = {
+            "base_cycles",
+            "reserve_factor",
+            "nominal_rpm",
+            "acceleration_duration_s",
+            "deceleration_duration_s",
+        }
+        if {item.field for item in self.selections} != required:
+            raise ValueError("rbd_field_selections_invalid")
+        _require_utf8_tree(self.model_dump(mode="python"))
+        _require_utf8_bytes(self.actor, 200)
+        _require_utf8_bytes(self.reason, 2_000)
+        for selection in self.selections:
+            _require_utf8_bytes(selection.basis, 2_000)
+            if selection.manualValue is not None:
+                _require_utf8_bytes(selection.manualValue, 64)
+            if selection.evidence is not None:
+                _require_utf8_bytes(selection.evidence.documentLocator, 1_000)
+        if self.failureEvidence is not None:
+            _require_utf8_bytes(self.failureEvidence.basis, 2_000)
+            if self.failureEvidence.durationToFailureS is not None:
+                _require_utf8_bytes(self.failureEvidence.durationToFailureS, 64)
+            if self.failureEvidence.evidence is not None:
+                _require_utf8_bytes(self.failureEvidence.evidence.documentLocator, 1_000)
+        return self
+
+
+def _require_utf8_tree(value: object) -> None:
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeError as error:
+            raise ValueError("rbd_text_not_utf8") from error
+    elif isinstance(value, dict):
+        for key, item in cast(dict[object, object], value).items():
+            _require_utf8_tree(key)
+            _require_utf8_tree(item)
+    elif isinstance(value, list):
+        for item in cast(list[object], value):
+            _require_utf8_tree(item)
+
+
+def _require_utf8_bytes(value: str, maximum_bytes: int) -> None:
+    if len(value.encode("utf-8")) > maximum_bytes:
+        raise ValueError("rbd_text_utf8_limit_exceeded")
+
+
+class RbdCalculationIdPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    calculationSnapshotId: EntityId
+
+
+class RbdCalculationListPagePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    wheelModelId: EntityId
+    cursor: str | None = Field(default=None, min_length=1, max_length=512)
+    limit: int = Field(default=25, ge=1, le=50)
+
+
 class CustomerGetRequest(RequestBase):
     operation: Literal["caseCustomer.get"]
     payload: EmptyPayload
@@ -776,6 +899,26 @@ class ReliabilityDatasetCreateVersionRequest(RequestBase):
     payload: ReliabilityDatasetCreateVersionPayload
 
 
+class RbdCalculationGetSourceInputsRequest(RequestBase):
+    operation: Literal["rbdCalculation.getSourceInputs"]
+    payload: RbdSourceInputsPayload
+
+
+class RbdCalculationCreateRequest(RequestBase):
+    operation: Literal["rbdCalculation.create"]
+    payload: RbdCalculationCreatePayload
+
+
+class RbdCalculationListPageRequest(RequestBase):
+    operation: Literal["rbdCalculation.listPage"]
+    payload: RbdCalculationListPagePayload
+
+
+class RbdCalculationGetDetailRequest(RequestBase):
+    operation: Literal["rbdCalculation.getDetail"]
+    payload: RbdCalculationIdPayload
+
+
 type RequestEnvelope = Annotated[
     HandshakeRequest
     | PingRequest
@@ -833,7 +976,11 @@ type RequestEnvelope = Annotated[
     | ReliabilityObservationCreateVersionRequest
     | ReliabilityDatasetListPageRequest
     | ReliabilityDatasetGetVersionRequest
-    | ReliabilityDatasetCreateVersionRequest,
+    | ReliabilityDatasetCreateVersionRequest
+    | RbdCalculationGetSourceInputsRequest
+    | RbdCalculationCreateRequest
+    | RbdCalculationListPageRequest
+    | RbdCalculationGetDetailRequest,
     Field(discriminator="operation"),
 ]
 REQUEST_ENVELOPE_ADAPTER: TypeAdapter[RequestEnvelope] = TypeAdapter(RequestEnvelope)
@@ -1244,6 +1391,128 @@ class ReliabilityDatasetPageResult(BaseModel):
     nextCursor: str | None = Field(default=None, max_length=512)
 
 
+class RbdPlanSourceValuesResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    baseCycles: str | None = Field(default=None, max_length=128)
+    reserveFactor: str | None = Field(default=None, max_length=128)
+    nominalRpm: str | None = Field(default=None, max_length=128)
+    accelerationDurationS: str | None = Field(default=None, max_length=128)
+    decelerationDurationS: str | None = Field(default=None, max_length=128)
+
+
+class RbdMethodicalRequirementsResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    requiredCyclesExact: str = Field(max_length=128)
+    requiredSteadyDurationSExact: str = Field(max_length=128)
+
+
+class RbdExecutionTargetsResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    targetCycles: str = Field(pattern=r"^(?:0|[1-9][0-9]{0,63})$")
+    targetSteadyDurationS: str = Field(max_length=128)
+    totalDurationS: str = Field(max_length=128)
+    roundingPolicy: str = Field(min_length=1, max_length=512)
+
+
+class RbdPlanSourceResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    executionId: EntityId
+    localImportId: EntityId
+    packageId: str = Field(min_length=1, max_length=200)
+    runId: str = Field(min_length=1, max_length=200)
+    exportRevision: int = Field(ge=1, le=9_007_199_254_740_991)
+    outerPackageSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sourceSnapshotSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    producerName: str = Field(min_length=1, max_length=200)
+    producerVersion: str = Field(min_length=1, max_length=200)
+    producerBuildId: str = Field(min_length=1, max_length=200)
+    producerGitCommit: str = Field(min_length=1, max_length=200)
+    planSelection: Literal["original", "effective"]
+    payloadPath: Literal["plan/original.json", "plan/effective.json"]
+    payloadSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    planId: str = Field(min_length=1, max_length=200)
+    planRevision: int = Field(ge=1, le=9_007_199_254_740_991)
+    sourceValues: RbdPlanSourceValuesResult
+    methodicalRequirements: RbdMethodicalRequirementsResult
+    executionTargets: RbdExecutionTargetsResult
+
+    @model_validator(mode="after")
+    def validate_source_text_utf8(self) -> RbdPlanSourceResult:
+        _require_utf8_tree(self.model_dump(mode="python"))
+        return self
+
+
+class RbdAnalysisInputSnapshotResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    analysisInputSnapshotId: EntityId
+    executionId: EntityId
+    localImportId: EntityId
+    wheelModelId: EntityId
+    localSpecimenId: EntityId
+    sourceSpecimenId: str = Field(min_length=1, max_length=200)
+    sourceRunId: str = Field(min_length=1, max_length=200)
+    exportRevision: int = Field(ge=1, le=9_007_199_254_740_991)
+    planSelection: Literal["original", "effective"]
+    planId: str = Field(min_length=1, max_length=200)
+    planRevision: int = Field(ge=1, le=9_007_199_254_740_991)
+    planPayloadPath: Literal["plan/original.json", "plan/effective.json"]
+    planPayloadSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sourceOuterPackageSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sourceSnapshotSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    operationSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    inputSnapshot: RbdInputSnapshotModel
+    contentSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    actor: str = Field(min_length=1, max_length=200)
+    decisionReason: str = Field(min_length=1, max_length=2_000)
+    createdAtUtc: CanonicalUtcTimestamp
+
+
+class RbdCalculationSnapshotResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    calculationSnapshotId: EntityId
+    analysisInputSnapshotId: EntityId
+    executionId: EntityId
+    wheelModelId: EntityId
+    algorithmId: Literal["rbd_reference"]
+    algorithmVersion: Literal["1.0.0"]
+    numericPolicy: Literal["exact_fraction_v1"]
+    resultSnapshot: RbdReferenceResultModel
+    inputContentSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    operationSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    contentSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    createdAtUtc: CanonicalUtcTimestamp
+
+
+class RbdCalculationDetailResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    inputSnapshot: RbdAnalysisInputSnapshotResult
+    calculationSnapshot: RbdCalculationSnapshotResult
+
+
+class RbdCalculationWriteResultModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    disposition: Literal["created", "existing"]
+    detail: RbdCalculationDetailResult
+
+
+class RbdCalculationSummaryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    calculationSnapshotId: EntityId
+    analysisInputSnapshotId: EntityId
+    executionId: EntityId
+    wheelModelId: EntityId
+    planSelection: Literal["original", "effective"]
+    requiredCycles: str = Field(min_length=1, max_length=128)
+    failureStatus: Literal["calculated", "not_applicable"]
+    createdAtUtc: CanonicalUtcTimestamp
+
+
+class RbdCalculationPageResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    items: list[RbdCalculationSummaryResult] = Field(max_length=50)
+    nextCursor: str | None = Field(default=None, max_length=512)
+
+
 class ErrorPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -1326,6 +1595,10 @@ type SuccessResponseType = (
     | SuccessResponse[ReliabilityDatasetVersionResult]
     | SuccessResponse[ReliabilityDatasetWriteResultModel]
     | SuccessResponse[ReliabilityDatasetPageResult]
+    | SuccessResponse[RbdPlanSourceResult]
+    | SuccessResponse[RbdCalculationDetailResult]
+    | SuccessResponse[RbdCalculationWriteResultModel]
+    | SuccessResponse[RbdCalculationPageResult]
 )
 
 

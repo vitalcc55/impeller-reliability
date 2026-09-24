@@ -1308,6 +1308,21 @@ h3 {
   cursor: pointer;
 }
 
+.reliability-record-entry {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--ir-color-border);
+}
+
+.reliability-record-entry .reliability-record {
+  border-bottom: 0;
+}
+
+.reliability-record-entry > .mantine-Button-root {
+  justify-self: start;
+}
+
 .reliability-record {
   display: grid;
   gap: 4px;
@@ -1412,11 +1427,164 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.rbd-calculation {
+  display: grid;
+  gap: 26px;
+}
+
+.rbd-calculation-layout {
+  display: grid;
+  grid-template-columns: minmax(270px, 0.72fr) minmax(0, 1.45fr);
+  gap: 28px;
+  align-items: start;
+}
+
+.rbd-calculation-layout > section {
+  display: grid;
+  gap: 15px;
+  min-width: 0;
+}
+
+.rbd-execution-list,
+.rbd-history-list {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.rbd-field {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 15px;
+  border: 1px solid var(--ir-color-border);
+  border-radius: 10px;
+}
+
+.rbd-field legend {
+  padding: 0 6px;
+  font-weight: 650;
+}
+
+.rbd-manual-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.rbd-producer-targets,
+.rbd-results {
+  min-width: 0;
+  padding: 18px;
+  background: var(--ir-color-surface-subtle);
+  border: 1px solid var(--ir-color-border);
+  border-radius: 12px;
+}
+
+.rbd-results,
+.rbd-result-detail {
+  display: grid;
+  gap: 14px;
+}
+
+.rbd-provenance {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+.rbd-provenance > div {
+  padding: 8px 10px;
+  border-left: 2px solid var(--ir-color-border);
+}
+
+.rbd-provenance dt {
+  color: var(--ir-color-text-muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.rbd-provenance dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.87rem;
+}
+
+.rbd-profile {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--ir-color-border);
+  border-radius: 8px;
+  background: rgba(95, 179, 198, 0.06);
+}
+
+.rbd-profile svg {
+  width: 100%;
+  height: 100px;
+}
+
+.rbd-profile polyline {
+  fill: none;
+  stroke: var(--ir-color-accent-cool);
+  stroke-width: 6px;
+  vector-effect: non-scaling-stroke;
+}
+
+.rbd-profile-labels {
+  display: grid;
+  grid-template-columns: 1fr 3fr 1fr;
+}
+
+.rbd-profile-labels span {
+  padding: 9px 8px;
+  border-top: 1px solid var(--ir-color-border);
+  border-right: 1px solid var(--ir-color-border);
+  text-align: center;
+  font-size: 0.82rem;
+}
+
+.rbd-profile-labels span:last-child {
+  border-right: 0;
+}
+
+.rbd-phase-table-wrap {
+  overflow-x: auto;
+}
+
+.rbd-phase-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+
+.rbd-phase-table caption {
+  padding-bottom: 7px;
+  text-align: left;
+  font-weight: 650;
+}
+
+.rbd-phase-table th,
+.rbd-phase-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--ir-color-border);
+  white-space: nowrap;
+}
+
+.rbd-phase-table thead th {
+  color: var(--ir-color-text-muted);
+  font-size: 0.77rem;
+}
+
 @media (max-width: 1279px) {
   .reliability-master-detail,
   .reliability-form-grid,
   .reliability-candidate,
   .reliability-facts {
+    grid-template-columns: 1fr;
+  }
+  .rbd-calculation-layout {
     grid-template-columns: 1fr;
   }
 }

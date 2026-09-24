@@ -14,7 +14,14 @@ from impeller_reliability.integration.r130run.import_models import (
 from impeller_reliability.integration.r130run.jobs import RunPackageValidationJobManager
 from impeller_reliability.integration.r130run.m9a import M9aPackageFacts
 from impeller_reliability.integration.r130run.models import RunPackageValidationReport
-from impeller_reliability.persistence.r130sh_sources import ImportedRunSummary
+from impeller_reliability.persistence.r130sh_sources import ImportedRunSummary, RbdPlanSourceSnapshot
+from impeller_reliability.persistence.rbd_calculations import (
+    RbdCalculationDetail,
+    RbdCalculationSummary,
+    RbdEvidenceReference,
+    RbdFailureEvidence,
+    RbdFieldSelection,
+)
 from impeller_reliability.persistence.sqlite_health import SCHEMA_VERSION, check_storage
 from impeller_reliability.protocol.envelopes import (
     AnalystDocumentSnapshotResult,
@@ -59,6 +66,19 @@ from impeller_reliability.protocol.envelopes import (
     ProjectOpenRequest,
     ProjectOverviewResult,
     ProjectUpdateMetadataRequest,
+    RbdCalculationCreateRequest,
+    RbdCalculationDetailResult,
+    RbdCalculationGetDetailRequest,
+    RbdCalculationGetSourceInputsRequest,
+    RbdCalculationListPageRequest,
+    RbdCalculationPageResult,
+    RbdCalculationSummaryResult,
+    RbdCalculationWriteResultModel,
+    RbdEvidenceReferencePayload,
+    RbdExecutionTargetsResult,
+    RbdMethodicalRequirementsResult,
+    RbdPlanSourceResult,
+    RbdPlanSourceValuesResult,
     ReliabilityDatasetCreateVersionRequest,
     ReliabilityDatasetGetVersionRequest,
     ReliabilityDatasetListPageRequest,
@@ -173,6 +193,10 @@ CAPABILITIES: list[Operation] = [
     "reliabilityDataset.listPage",
     "reliabilityDataset.getVersion",
     "reliabilityDataset.createVersion",
+    "rbdCalculation.getSourceInputs",
+    "rbdCalculation.create",
+    "rbdCalculation.listPage",
+    "rbdCalculation.getDetail",
 ]
 
 
@@ -203,7 +227,7 @@ class Dispatcher:
                     numpyVersion=version("numpy"),
                     scipyVersion=version("scipy"),
                     databaseSchemaVersions=[SCHEMA_VERSION],
-                    algorithmVersions={},
+                    algorithmVersions={"rbd_reference": "1.0.0"},
                     supportedRunPackageSchemas=["r130sh.run-package.v1"],
                     supportedPlanSchemas=[],
                     capabilities=CAPABILITIES,
@@ -280,6 +304,9 @@ class Dispatcher:
             "reliabilityObservation.getVersion",
             "reliabilityDataset.listPage",
             "reliabilityDataset.getVersion",
+            "rbdCalculation.getSourceInputs",
+            "rbdCalculation.listPage",
+            "rbdCalculation.getDetail",
         }:
             from impeller_reliability.persistence.project_errors import ProjectOperationError
 
@@ -696,6 +723,84 @@ class Dispatcher:
                         version=self._reliability_dataset_version_result(written_dataset.version),
                     ),
                 )
+            case RbdCalculationGetSourceInputsRequest():
+                source = self._projects.get_rbd_source_inputs(
+                    request.payload.executionId,
+                    request.payload.planSelection,
+                    active_deadline,
+                )
+                return SuccessResponse[RbdPlanSourceResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._rbd_plan_source_result(source),
+                )
+            case RbdCalculationCreateRequest():
+                selections = tuple(
+                    RbdFieldSelection(
+                        field=item.field,
+                        origin=item.origin,
+                        manual_value=item.manualValue,
+                        basis=item.basis,
+                        evidence=self._rbd_evidence_reference(item.evidence),
+                    )
+                    for item in request.payload.selections
+                )
+                failure_payload = request.payload.failureEvidence
+                failure = (
+                    None
+                    if failure_payload is None
+                    else RbdFailureEvidence(
+                        applicability=failure_payload.applicability,
+                        duration_to_failure_s=failure_payload.durationToFailureS,
+                        basis=failure_payload.basis,
+                        failure_observation_ids=tuple(failure_payload.failureObservationIds),
+                        evidence=self._rbd_evidence_reference(failure_payload.evidence),
+                    )
+                )
+                written_rbd = self._projects.create_rbd_calculation(
+                    analysis_input_snapshot_id=request.payload.analysisInputSnapshotId,
+                    calculation_snapshot_id=request.payload.calculationSnapshotId,
+                    execution_id=request.payload.executionId,
+                    selection=request.payload.planSelection,
+                    selections=selections,
+                    failure=failure,
+                    actor=request.payload.actor,
+                    reason=request.payload.reason,
+                    deadline=active_deadline,
+                )
+                return SuccessResponse[RbdCalculationWriteResultModel](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=RbdCalculationWriteResultModel(
+                        disposition=written_rbd.disposition,
+                        detail=self._rbd_calculation_detail_result(written_rbd.detail),
+                    ),
+                )
+            case RbdCalculationListPageRequest():
+                rbd_page = self._projects.list_rbd_calculation_page(
+                    request.payload.wheelModelId,
+                    request.payload.cursor,
+                    request.payload.limit,
+                    active_deadline,
+                )
+                return SuccessResponse[RbdCalculationPageResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=RbdCalculationPageResult(
+                        items=[self._rbd_calculation_summary_result(item) for item in rbd_page.items],
+                        nextCursor=rbd_page.next_cursor,
+                    ),
+                )
+            case RbdCalculationGetDetailRequest():
+                detail = self._projects.get_rbd_calculation_detail(
+                    request.payload.calculationSnapshotId,
+                    active_deadline,
+                )
+                return SuccessResponse[RbdCalculationDetailResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._rbd_calculation_detail_result(detail),
+                )
 
     def close(self) -> None:
         if not self._run_package_jobs_shutdown:
@@ -979,6 +1084,115 @@ class Dispatcher:
             metricUnit=item.metric_unit,
             includedCount=item.included_count,
             excludedCount=item.excluded_count,
+            createdAtUtc=item.created_at_utc,
+        )
+
+    @staticmethod
+    def _rbd_plan_source_result(source: RbdPlanSourceSnapshot) -> RbdPlanSourceResult:
+        return RbdPlanSourceResult(
+            executionId=source.execution_id,
+            localImportId=source.local_import_id,
+            packageId=source.package_id,
+            runId=source.run_id,
+            exportRevision=source.export_revision,
+            outerPackageSha256=source.outer_package_sha256,
+            sourceSnapshotSha256=source.source_snapshot_sha256,
+            producerName=source.producer_name,
+            producerVersion=source.producer_version,
+            producerBuildId=source.producer_build_id,
+            producerGitCommit=source.producer_git_commit,
+            planSelection=source.selection,
+            payloadPath=source.payload_path,
+            payloadSha256=source.payload_sha256,
+            planId=source.plan_id,
+            planRevision=source.plan_revision,
+            sourceValues=RbdPlanSourceValuesResult(
+                baseCycles=source.source_values.base_cycles,
+                reserveFactor=source.source_values.reserve_factor,
+                nominalRpm=source.source_values.nominal_rpm,
+                accelerationDurationS=source.source_values.acceleration_duration_s,
+                decelerationDurationS=source.source_values.deceleration_duration_s,
+            ),
+            methodicalRequirements=RbdMethodicalRequirementsResult(
+                requiredCyclesExact=source.methodical_requirements.required_cycles_exact,
+                requiredSteadyDurationSExact=source.methodical_requirements.required_steady_duration_s_exact,
+            ),
+            executionTargets=RbdExecutionTargetsResult(
+                targetCycles=source.execution_targets.target_cycles,
+                targetSteadyDurationS=source.execution_targets.target_steady_duration_s,
+                totalDurationS=source.execution_targets.total_duration_s,
+                roundingPolicy=source.execution_targets.rounding_policy,
+            ),
+        )
+
+    @staticmethod
+    def _rbd_evidence_reference(payload: RbdEvidenceReferencePayload | None) -> RbdEvidenceReference | None:
+        if payload is None:
+            return None
+        return RbdEvidenceReference(
+            document_id=payload.documentId,
+            document_record_revision=payload.documentRecordRevision,
+            document_locator=payload.documentLocator,
+            observation_version_id=payload.observationVersionId,
+        )
+
+    @staticmethod
+    def _rbd_calculation_detail_result(detail: RbdCalculationDetail) -> RbdCalculationDetailResult:
+        input_snapshot = detail.input_snapshot
+        calculation = detail.calculation_snapshot
+        return RbdCalculationDetailResult.model_validate(
+            {
+                "inputSnapshot": {
+                    "analysisInputSnapshotId": input_snapshot.analysis_input_snapshot_id,
+                    "executionId": input_snapshot.execution_id,
+                    "localImportId": input_snapshot.local_import_id,
+                    "wheelModelId": input_snapshot.wheel_model_id,
+                    "localSpecimenId": input_snapshot.local_specimen_id,
+                    "sourceSpecimenId": input_snapshot.source_specimen_id,
+                    "sourceRunId": input_snapshot.source_run_id,
+                    "exportRevision": input_snapshot.export_revision,
+                    "planSelection": input_snapshot.plan_selection,
+                    "planId": input_snapshot.plan_id,
+                    "planRevision": input_snapshot.plan_revision,
+                    "planPayloadPath": input_snapshot.plan_payload_path,
+                    "planPayloadSha256": input_snapshot.plan_payload_sha256,
+                    "sourceOuterPackageSha256": input_snapshot.source_outer_package_sha256,
+                    "sourceSnapshotSha256": input_snapshot.source_snapshot_sha256,
+                    "operationSha256": input_snapshot.operation_sha256,
+                    "inputSnapshot": input_snapshot.input_snapshot,
+                    "contentSha256": input_snapshot.content_sha256,
+                    "actor": input_snapshot.actor,
+                    "decisionReason": input_snapshot.decision_reason,
+                    "createdAtUtc": input_snapshot.created_at_utc,
+                },
+                "calculationSnapshot": {
+                    "calculationSnapshotId": calculation.calculation_snapshot_id,
+                    "analysisInputSnapshotId": calculation.analysis_input_snapshot_id,
+                    "executionId": calculation.execution_id,
+                    "wheelModelId": calculation.wheel_model_id,
+                    "algorithmId": calculation.algorithm_id,
+                    "algorithmVersion": calculation.algorithm_version,
+                    "numericPolicy": calculation.numeric_policy,
+                    "resultSnapshot": calculation.result_snapshot,
+                    "inputContentSha256": calculation.input_content_sha256,
+                    "operationSha256": calculation.operation_sha256,
+                    "contentSha256": calculation.content_sha256,
+                    "createdAtUtc": calculation.created_at_utc,
+                },
+            },
+            strict=True,
+        )
+
+    @staticmethod
+    def _rbd_calculation_summary_result(item: RbdCalculationSummary) -> RbdCalculationSummaryResult:
+        return RbdCalculationSummaryResult(
+            calculationSnapshotId=item.calculation_snapshot_id,
+            analysisInputSnapshotId=item.analysis_input_snapshot_id,
+            executionId=item.execution_id,
+            wheelModelId=item.wheel_model_id,
+            planSelection=item.plan_selection,
+            requiredCycles=item.required_cycles,
+            failureStatus=item.failure_status,
             createdAtUtc=item.created_at_utc,
         )
 

@@ -40,6 +40,13 @@ import {
   reliabilityObservationVersionSchema,
   reliabilityObservationWriteResultSchema,
   reliabilityPagePayloadSchema,
+  rbdCalculationCreateCommandSchema,
+  rbdCalculationDetailSchema,
+  rbdCalculationIdPayloadSchema,
+  rbdCalculationPageSchema,
+  rbdCalculationWriteResultSchema,
+  rbdPlanSourceSchema,
+  rbdSourceInputsPayloadSchema,
   recentProjectsSchema,
   runtimeStatusSchema,
   runPackageValidationDiscardResultSchema,
@@ -505,6 +512,36 @@ const api: ImpellerApi = {
         reliabilityDatasetCreateVersionCommandSchema,
         command,
         createDesktopResultSchema(reliabilityDatasetWriteResultSchema),
+      ),
+  },
+  rbdCalculation: {
+    getSourceInputs: async (executionId, planSelection) =>
+      invokeValidated(
+        IPC_CHANNELS.rbdCalculationGetSourceInputs,
+        rbdSourceInputsPayloadSchema,
+        { executionId, planSelection },
+        createDesktopResultSchema(rbdPlanSourceSchema),
+      ),
+    create: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.rbdCalculationCreate,
+        rbdCalculationCreateCommandSchema,
+        command,
+        createDesktopResultSchema(rbdCalculationWriteResultSchema),
+      ),
+    listPage: async (wheelModelId, cursor = null, limit = 25) =>
+      invokeValidated(
+        IPC_CHANNELS.rbdCalculationListPage,
+        reliabilityPagePayloadSchema,
+        { wheelModelId, cursor, limit },
+        createDesktopResultSchema(rbdCalculationPageSchema),
+      ),
+    getDetail: async (calculationSnapshotId) =>
+      invokeValidated(
+        IPC_CHANNELS.rbdCalculationGetDetail,
+        rbdCalculationIdPayloadSchema,
+        { calculationSnapshotId },
+        createDesktopResultSchema(rbdCalculationDetailSchema),
       ),
   },
 };

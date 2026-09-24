@@ -8,6 +8,9 @@ from impeller_reliability.protocol.envelopes import (
     CaseDocumentFileResult,
     EmptyPayload,
     PingRequest,
+    RbdCalculationCreateRequest,
+    RbdPlanSourceResult,
+    RbdReferenceResultModel,
 )
 
 
@@ -125,3 +128,144 @@ def test_run_package_validation_payload_is_internal_and_bounded() -> None:
             sha256="a" * 64,
             attachedAtUtc="2026-08-28T00:00:00.000Z",
         )
+
+
+def test_rbd_calculation_command_is_fixed_bounded_and_does_not_accept_outputs() -> None:
+    payload = {
+        "analysisInputSnapshotId": "113ec2c8-9439-4ce8-823d-3e2b0de8f001",
+        "calculationSnapshotId": "223ec2c8-9439-4ce8-823d-3e2b0de8f002",
+        "executionId": "333ec2c8-9439-4ce8-823d-3e2b0de8f003",
+        "planSelection": "original",
+        "selections": [
+            {"field": field, "origin": "source"}
+            for field in (
+                "base_cycles",
+                "reserve_factor",
+                "nominal_rpm",
+                "acceleration_duration_s",
+                "deceleration_duration_s",
+            )
+        ],
+        "failureEvidence": None,
+        "actor": "Инженер",
+        "reason": "Первая строка\nВторая строка",
+    }
+    request = REQUEST_ENVELOPE_ADAPTER.validate_python(
+        {
+            "protocolVersion": 1,
+            "requestId": "rbd-1",
+            "kind": "request",
+            "operation": "rbdCalculation.create",
+            "revision": 8,
+            "deadlineMs": 30_000,
+            "payload": payload,
+        }
+    )
+    assert request.operation == "rbdCalculation.create"
+    with pytest.raises(ValidationError):
+        REQUEST_ENVELOPE_ADAPTER.validate_python(
+            {
+                **request.model_dump(mode="python"),
+                "payload": {**payload, "calculatedOutputs": {"requiredCycles": "1500.3"}},
+            }
+        )
+    with pytest.raises(ValidationError):
+        REQUEST_ENVELOPE_ADAPTER.validate_python(
+            {
+                **request.model_dump(mode="python"),
+                "payload": {key: value for key, value in payload.items() if key != "failureEvidence"},
+            }
+        )
+    with pytest.raises(ValidationError):
+        REQUEST_ENVELOPE_ADAPTER.validate_python(
+            {
+                **request.model_dump(mode="python"),
+                "payload": {**payload, "reason": "Неверный Unicode\ud800"},
+            }
+        )
+    valid_emoji = REQUEST_ENVELOPE_ADAPTER.validate_python(
+        {
+            **request.model_dump(mode="python"),
+            "payload": {**payload, "reason": "Расчёт 🔧"},
+        }
+    )
+    assert isinstance(valid_emoji, RbdCalculationCreateRequest)
+    assert valid_emoji.payload.reason == "Расчёт 🔧"
+    with pytest.raises(ValidationError):
+        REQUEST_ENVELOPE_ADAPTER.validate_python(
+            {
+                **request.model_dump(mode="python"),
+                "payload": {**payload, "reason": "🔧" * 501},
+            }
+        )
+    with pytest.raises(ValidationError):
+        RbdReferenceResultModel.model_validate({"algorithm_id": "rbd_reference"})
+    with pytest.raises(ValidationError):
+        REQUEST_ENVELOPE_ADAPTER.validate_python(
+            {
+                **request.model_dump(mode="python"),
+                "payload": {
+                    **payload,
+                    "selections": [{"field": "base_cycles", "origin": "source"}] * 5,
+                },
+            }
+        )
+
+
+def test_rbd_source_response_preserves_imported_text_with_unicode_and_bounds() -> None:
+    source_values: dict[str, str] = {
+        "baseCycles": "1000",
+        "reserveFactor": "1.5",
+        "nominalRpm": "1500",
+        "accelerationDurationS": "5",
+        "decelerationDurationS": "5",
+    }
+    methodical_requirements: dict[str, str] = {
+        "requiredCyclesExact": "1500",
+        "requiredSteadyDurationSExact": "60",
+    }
+    execution_targets: dict[str, str] = {
+        "targetCycles": "1500",
+        "targetSteadyDurationS": "60",
+        "totalDurationS": "70",
+        "roundingPolicy": "🔧" * 101,
+    }
+    response = {
+        "executionId": "333ec2c8-9439-4ce8-823d-3e2b0de8f003",
+        "localImportId": "113ec2c8-9439-4ce8-823d-3e2b0de8f001",
+        "packageId": "package-1",
+        "runId": "run-1",
+        "exportRevision": 1,
+        "outerPackageSha256": "a" * 64,
+        "sourceSnapshotSha256": "b" * 64,
+        "producerName": "🔧" * 101,
+        "producerVersion": "1",
+        "producerBuildId": "build-1",
+        "producerGitCommit": "commit-1",
+        "planSelection": "original",
+        "payloadPath": "plan/original.json",
+        "payloadSha256": "c" * 64,
+        "planId": "plan-1",
+        "planRevision": 1,
+        "sourceValues": source_values,
+        "methodicalRequirements": methodical_requirements,
+        "executionTargets": execution_targets,
+    }
+    assert RbdPlanSourceResult.model_validate(response).producerName == "🔧" * 101
+    with pytest.raises(ValidationError):
+        RbdPlanSourceResult.model_validate({**response, "producerName": "x" * 201})
+    with pytest.raises(ValidationError):
+        RbdPlanSourceResult.model_validate({**response, "producerName": "\ud800"})
+    long_imported_number = "0" * 124 + "1000"
+    for field in source_values:
+        changed_source_values = {**source_values, field: long_imported_number}
+        assert RbdPlanSourceResult.model_validate({**response, "sourceValues": changed_source_values}).sourceValues.model_dump()[field] == long_imported_number
+        with pytest.raises(ValidationError):
+            RbdPlanSourceResult.model_validate({**response, "sourceValues": {**changed_source_values, field: long_imported_number + "0"}})
+    for field in methodical_requirements:
+        assert (
+            RbdPlanSourceResult.model_validate({**response, "methodicalRequirements": {**methodical_requirements, field: long_imported_number}}).methodicalRequirements.model_dump()[field]
+            == long_imported_number
+        )
+    for field in ("targetSteadyDurationS", "totalDurationS"):
+        assert RbdPlanSourceResult.model_validate({**response, "executionTargets": {**execution_targets, field: long_imported_number}}).executionTargets.model_dump()[field] == long_imported_number

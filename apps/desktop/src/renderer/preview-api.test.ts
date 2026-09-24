@@ -188,6 +188,53 @@ describe('browser preview api', () => {
       imported.result[0].localImportId,
     );
     if (!materialized.ok) throw new Error('materialize failed');
+    const sourceInputs = await api.rbdCalculation.getSourceInputs(
+      materialized.result.executionId,
+      'original',
+    );
+    expect(sourceInputs).toMatchObject({
+      ok: true,
+      result: { sourceValues: { nominalRpm: '1500', baseCycles: '1000' } },
+    });
+    const calculation = await api.rbdCalculation.create({
+      analysisInputSnapshotId: 'ac8fb54c-520d-479e-9e39-c2fd62b83c41',
+      calculationSnapshotId: 'bc8fb54c-520d-479e-9e39-c2fd62b83c42',
+      executionId: materialized.result.executionId,
+      planSelection: 'original',
+      selections: (
+        [
+          'nominal_rpm',
+          'base_cycles',
+          'reserve_factor',
+          'acceleration_duration_s',
+          'deceleration_duration_s',
+        ] as const
+      ).map((field) => ({
+        field,
+        origin: 'source' as const,
+        manualValue: null,
+        basis: '',
+        evidence: null,
+      })),
+      failureEvidence: null,
+      actor: 'local_user',
+      reason: 'Проверка синтетического интерфейса',
+    });
+    expect(calculation).toMatchObject({
+      ok: true,
+      result: {
+        detail: {
+          calculationSnapshot: { resultSnapshot: { required_cycles_exact: { decimal: '1500.3' } } },
+        },
+      },
+    });
+    await expect(api.rbdCalculation.listPage(wheelId)).resolves.toMatchObject({
+      ok: true,
+      result: { items: [{ calculationSnapshotId: 'bc8fb54c-520d-479e-9e39-c2fd62b83c42' }] },
+    });
+    await expect(
+      api.rbdCalculation.getDetail('bc8fb54c-520d-479e-9e39-c2fd62b83c42'),
+    ).resolves.toMatchObject({ ok: true });
     const unrelatedWheelId = '9f7b2db3-b750-476c-9ee0-2d3e03e75219';
     const unrelatedDocumentId = '9b38f4c8-455d-4a87-8768-a93b2a2f85a8';
     await api.wheelModel.create({

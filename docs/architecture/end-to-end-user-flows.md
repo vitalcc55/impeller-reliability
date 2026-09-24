@@ -95,9 +95,13 @@ Worker -> Project: "policy eligibility + immutable ReliabilityDataset version + 
 User -> Renderer: "Исправить решение / закрыть и открыть дело"
 Project -> Renderer: "предыдущая и новая версии, тот же frozen provenance"
 
-User -> Renderer: "Выбрать значения и выполнить расчёты (M04C+)"
-Renderer -> Worker: "r130sh_source + analyst_enrichment selection"
-Worker -> Project: "AnalysisInputSnapshot + CalculationSnapshot"
+User -> Renderer: "Выбрать exact исполнение РБД и original/effective план"
+Renderer -> Worker: "получить пять source inputs из managed archive выбранной revision"
+User -> Renderer: "явно выбрать source/manual значения и применимость таблицы 3"
+Renderer -> Worker: "выборы и происхождение без готовых результатов"
+Worker -> Project: "Python-расчёт + атомарные AnalysisInputSnapshot/CalculationSnapshot + audit"
+User -> Renderer: "прочитать результат, историю и повторно открыть дело"
+Project -> Renderer: "тот же immutable результат и exact provenance без пересчёта"
 
 User -> Renderer: "Запустить анализ/выпустить отчёт (M05+)"
 Renderer -> Worker: "selected immutable inputs"

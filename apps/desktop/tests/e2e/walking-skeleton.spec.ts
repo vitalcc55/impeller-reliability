@@ -62,6 +62,7 @@ test('renderer reflects worker failure and controlled restart through the narrow
       'reliabilityExecution',
       'reliabilityObservation',
       'reliabilityDataset',
+      'rbdCalculation',
     ]);
     expect(
       await page.evaluate(() => {
@@ -982,10 +983,10 @@ test('reconciles a clean document after a committed attachment response is not a
   }
 });
 
-test('imports, classifies and freezes an M04B dataset through the production worker', async () => {
+test('imports an RBD run, saves its calculation and preserves versioned reliability evidence', async () => {
   const repositoryRoot = resolve(import.meta.dirname, '../../../..');
-  const evidenceRoot = resolve(repositoryRoot, '.tmp/.codex/evidence/m03b-import-e2e');
-  const projectPath = join(evidenceRoot, 'm03b-import.irproj');
+  const evidenceRoot = resolve(repositoryRoot, '.tmp/.codex/evidence/rbd-import-e2e');
+  const projectPath = join(evidenceRoot, 'rbd-import.irproj');
   const userDataPath = join(evidenceRoot, 'user-data');
   const packagePath = join(
     repositoryRoot,
@@ -1016,13 +1017,13 @@ test('imports, classifies and freezes an M04B dataset through the production wor
 
     await page.getByRole('button', { name: 'Модели колёс' }).click();
     await page.getByRole('button', { name: 'Новая модель' }).click();
-    await page.getByLabel('Полное наименование').fill('Локальная модель M03B');
+    await page.getByLabel('Полное наименование').fill('Локальная модель РБД');
     await page.getByRole('button', { name: 'Сохранить модель' }).click();
     await page.getByRole('button', { name: 'Образцы' }).click();
     await page.getByRole('button', { name: 'Новый образец' }).click();
     await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
-    await page.getByRole('option', { name: 'Локальная модель M03B' }).click();
-    await page.getByLabel('Идентификационный номер').fill('LOCAL-M03B-001');
+    await page.getByRole('option', { name: 'Локальная модель РБД' }).click();
+    await page.getByLabel('Идентификационный номер').fill('LOCAL-RBD-001');
     await page.getByRole('button', { name: 'Сохранить образец' }).click();
 
     await page.getByRole('button', { name: 'Документы дела' }).click();
@@ -1032,8 +1033,8 @@ test('imports, classifies and freezes an M04B dataset through the production wor
     await page.getByLabel('Название').fill('ПМИ Р130У');
     await page.getByLabel('Обозначение').fill('ПМИ Р130У');
     await page.getByLabel('Редакция').fill('01');
-    await page.getByRole('checkbox', { name: 'Локальная модель M03B', exact: true }).check();
-    await page.getByRole('checkbox', { name: /LOCAL-M03B-001/u }).check();
+    await page.getByRole('checkbox', { name: 'Локальная модель РБД', exact: true }).check();
+    await page.getByRole('checkbox', { name: /LOCAL-RBD-001/u }).check();
     await page.getByRole('button', { name: 'Создать без файла' }).click();
     await expect(page.getByText('Документ сохранён. Редакция 1.')).toBeVisible();
 
@@ -1044,12 +1045,73 @@ test('imports, classifies and freezes an M04B dataset through the production wor
     await expect(page.getByText('Источник проверен', { exact: true })).toBeVisible();
 
     await page.getByRole('combobox', { name: 'Local Specimen' }).click();
-    await page.getByRole('option', { name: 'LOCAL-M03B-001 — Локальная модель M03B' }).click();
+    await page.getByRole('option', { name: 'LOCAL-RBD-001 — Локальная модель РБД' }).click();
     await page.getByLabel('Причина привязки').fill('Идентичность подтверждена инженером');
     await page.getByRole('button', { name: 'Сохранить привязку' }).click();
     await expect(page.getByText(/Привязка source specimen сохранена/u)).toBeVisible();
     await page.getByRole('button', { name: 'Подготовить исполнение для анализа' }).click();
     await expect(page.getByText(/Аналитическое исполнение РБД подтверждено/u)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Расчёт РБД' }).click();
+    await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
+    await page.getByRole('option', { name: 'Локальная модель РБД' }).click();
+    await expect(page.locator('.rbd-execution-list')).toContainText('normal_final_rbd');
+    await page.getByRole('button', { name: /РБД.*normal_final_rbd/u }).click();
+    for (const field of [
+      'Номинальная частота nP',
+      'Базовое число циклов N0',
+      'Коэффициент запаса k1',
+      'Время разгона tP1',
+      'Время торможения tT1',
+    ]) {
+      await page
+        .getByRole('group', { name: new RegExp(field, 'u') })
+        .getByRole('combobox', { name: 'Происхождение значения' })
+        .click();
+      await page.getByRole('option', { name: 'Значение выбранного плана R130SH' }).click();
+    }
+    await page
+      .getByRole('textbox', { name: 'Основание создания расчётного снимка' })
+      .fill('Исходный план выбран для расчёта одного исполнения');
+    await page.getByRole('button', { name: 'Рассчитать и зафиксировать' }).click();
+    await expect(
+      page.getByText('Расчёт РБД сохранён. Входы и результат зафиксированы неизменяемой парой.'),
+    ).toBeVisible();
+    const calculatedResult = page.getByRole('region', { name: 'Сохранённый расчёт' });
+    await expect(calculatedResult.getByText('100 циклов', { exact: true })).toBeVisible();
+    await expect(calculatedResult.getByText('4 с', { exact: true })).toBeVisible();
+    await expect(calculatedResult.getByText('8 с', { exact: true })).toBeVisible();
+    const savedCalculation = await page.evaluate(async () => {
+      const api = window.impeller;
+      if (api === undefined) throw new Error('preload_api_missing');
+      const wheels = await api.wheelModel.list(false);
+      if (!wheels.ok || wheels.result[0] === undefined) throw new Error('wheel_missing');
+      const history = await api.rbdCalculation.listPage(wheels.result[0].wheelModelId);
+      if (!history.ok || history.result.items[0] === undefined)
+        throw new Error('calculation_missing');
+      const detail = await api.rbdCalculation.getDetail(
+        history.result.items[0].calculationSnapshotId,
+      );
+      if (!detail.ok) throw new Error(detail.error.code);
+      return {
+        calculationSnapshotId: detail.result.calculationSnapshot.calculationSnapshotId,
+        inputContentSha256: detail.result.inputSnapshot.contentSha256,
+        resultContentSha256: detail.result.calculationSnapshot.contentSha256,
+      };
+    });
+    await page
+      .getByRole('textbox', { name: 'Основание создания расчётного снимка' })
+      .fill('Новый черновик после сохранения');
+    await page.getByRole('button', { name: 'Результаты R130SH' }).click();
+    await expect(
+      page.getByRole('alert').getByText('Сначала решите, что делать с черновиком'),
+    ).toBeVisible();
+    await page.getByRole('button', { name: 'Остаться здесь' }).click();
+    await expect(
+      page.getByRole('textbox', { name: 'Основание создания расчётного снимка' }),
+    ).toHaveValue('Новый черновик после сохранения');
+    await page.getByRole('button', { name: 'Сбросить черновик' }).click();
+    await page.getByRole('button', { name: 'Результаты R130SH' }).click();
 
     await page.getByRole('combobox', { name: 'Существенное поле' }).click();
     await page.getByRole('option', { name: 'Заказчик: полное наименование' }).click();
@@ -1063,7 +1125,7 @@ test('imports, classifies and freezes an M04B dataset through the production wor
     await expect(page.getByText('Этот пакет уже зарегистрирован.')).toBeVisible();
     await page.getByRole('button', { name: 'Данные надёжности' }).click();
     await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
-    await page.getByRole('option', { name: 'Локальная модель M03B' }).click();
+    await page.getByRole('option', { name: 'Локальная модель РБД' }).click();
     await page.getByRole('button', { name: /РБД.*normal_final_rbd/u }).click();
     await page.getByRole('combobox', { name: 'Классификация' }).click();
     await page.getByRole('option', { name: 'Правое цензурирование' }).click();
@@ -1086,6 +1148,9 @@ test('imports, classifies and freezes an M04B dataset through the production wor
     await page.getByRole('button', { name: 'Сохранить новую версию' }).click();
     await expect(page.getByText('Версия интерпретации 1 сохранена.')).toBeVisible();
     await expect(page.getByRole('button', { name: /РБД.*normal_final_rbd/u })).toBeEnabled();
+    await expect(page.getByRole('combobox', { name: /РБД.*normal_final_rbd/u })).toHaveCount(0);
+    await page.getByRole('button', { name: /Добавить в выборку: normal_final_rbd/u }).click();
+    await expect(page.getByText(/Выбрана версия 1: Правое цензурирование/u)).toBeVisible();
     await page.getByRole('combobox', { name: /РБД.*normal_final_rbd/u }).click();
     await page.getByRole('option', { name: 'Включить' }).click();
     await page.getByRole('combobox', { name: 'Метод выборки' }).click();
@@ -1094,7 +1159,21 @@ test('imports, classifies and freezes an M04B dataset through the production wor
     await page.getByRole('option', { name: 'Время установившегося вращения' }).click();
     await page.getByRole('combobox', { name: 'Единица выборки' }).click();
     await page.getByRole('option', { name: 'часы' }).click();
+    await expect(page.getByLabel('Граница совокупности')).toHaveValue('');
+    await expect(page.getByLabel('Применимая методика')).toHaveValue('');
+    await expect(page.getByLabel('Почему условия сопоставимы')).toHaveValue('');
+    await expect(page.getByLabel('Основание версии выборки')).toHaveValue('');
+    await page
+      .getByLabel('Граница совокупности')
+      .fill('Рабочие колёса модели РБД-01\nИз заказа ЛИЦ ВВУ');
+    await page.getByLabel('Применимая методика').fill('ПМИ Р130У, редакция 01\nРазделы 9.3.1 и 10');
+    await page
+      .getByLabel('Почему условия сопоставимы')
+      .fill('Одинаковый метод РБД\nУсловия проверены инженером');
     await page.getByLabel('Причина включения').fill('Известна документированная правая граница');
+    await page
+      .getByLabel('Основание версии выборки')
+      .fill('Первая зафиксированная выборка\nПосле проверки документов');
     expect(consoleErrors).toEqual([]);
     await expect(page.getByRole('heading', { name: 'Версия выборки' })).toBeVisible();
     await expect(
@@ -1113,6 +1192,11 @@ test('imports, classifies and freezes an M04B dataset through the production wor
     await page.getByRole('button', { name: 'Сохранить новую версию' }).click();
     await expect(page.getByText('Версия интерпретации 2 сохранена.')).toBeVisible();
     await expect(page.getByRole('button', { name: /РБД.*normal_final_rbd/u })).toBeEnabled();
+    await expect(page.getByText(/Выбрана версия 1: Правое цензурирование/u)).toBeVisible();
+    await page
+      .getByRole('button', { name: /Заменить normal_final_rbd: версия 1 на версию 2/u })
+      .click();
+    await expect(page.getByText(/Выбрана версия 2: Недействительно/u)).toBeVisible();
     await page.getByRole('combobox', { name: /РБД.*normal_final_rbd/u }).click();
     await page.getByRole('option', { name: 'Исключить' }).click();
     await page
@@ -1128,7 +1212,22 @@ test('imports, classifies and freezes an M04B dataset through the production wor
       .last()
       .textContent();
     const executionId = /execution ([0-9a-f-]{36})/u.exec(datasetReadback ?? '')?.[1];
-    if (executionId === undefined) throw new Error('m04b_execution_id_missing');
+    if (executionId === undefined) throw new Error('reliability_execution_id_missing');
+    const mainProcessId = app.process().pid;
+    if (mainProcessId === undefined) throw new Error('electron_main_process_missing');
+    const workerId = workerProcessIds(mainProcessId)[0];
+    if (workerId === undefined) throw new Error('worker_process_missing');
+    process.kill(workerId);
+    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
+    await page.getByRole('button', { name: 'Диагностика' }).click();
+    await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
+    await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
+    await page.getByRole('button', { name: 'Проекты' }).click();
+    await page.getByRole('button', { name: 'Данные надёжности' }).click();
+    await expect(page.getByText(/Выбрана версия 2: Недействительно/u)).toBeVisible();
+    await expect(
+      page.getByText(/Исключено.*Новая версия observation недействительна/u),
+    ).toBeVisible();
     const latestHistoryVersion = await page.evaluate(async (selectedExecutionId) => {
       const api = window.impeller;
       if (api === undefined) throw new Error('preload_api_missing');
@@ -1165,9 +1264,32 @@ test('imports, classifies and freezes an M04B dataset through the production wor
     expect(latestHistoryVersion).toBe(51);
     await page.getByRole('button', { name: 'Закрыть проект' }).click();
     await page.getByRole('button', { name: 'Новый проект' }).click();
+    await page.getByRole('button', { name: 'Расчёт РБД' }).click();
+    await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
+    await page.getByRole('option', { name: 'Локальная модель РБД' }).click();
+    await page.getByRole('button', { name: /100 циклов · исходный план/u }).click();
+    await expect(
+      page
+        .getByRole('region', { name: 'Сохранённый расчёт' })
+        .getByText('100 циклов', { exact: true }),
+    ).toBeVisible();
+    const reopenedCalculation = await page.evaluate(async (calculationSnapshotId) => {
+      const api = window.impeller;
+      if (api === undefined) throw new Error('preload_api_missing');
+      const detail = await api.rbdCalculation.getDetail(calculationSnapshotId);
+      if (!detail.ok) throw new Error(detail.error.code);
+      return {
+        inputContentSha256: detail.result.inputSnapshot.contentSha256,
+        resultContentSha256: detail.result.calculationSnapshot.contentSha256,
+      };
+    }, savedCalculation.calculationSnapshotId);
+    expect(reopenedCalculation).toEqual({
+      inputContentSha256: savedCalculation.inputContentSha256,
+      resultContentSha256: savedCalculation.resultContentSha256,
+    });
     await page.getByRole('button', { name: 'Данные надёжности' }).click();
     await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
-    await page.getByRole('option', { name: 'Локальная модель M03B' }).click();
+    await page.getByRole('option', { name: 'Локальная модель РБД' }).click();
     await page.getByRole('button', { name: /РБД.*normal_final_rbd/u }).click();
     await expect(
       page.getByRole('button', { name: /^Версия 51 · Недействительно для назначения$/u }),
@@ -1187,10 +1309,32 @@ test('imports, classifies and freezes an M04B dataset through the production wor
     });
     await expect(latestDatasetVersion).toBeVisible();
     await latestDatasetVersion.click();
+    await expect(page.getByText(/Выбрана версия 2: Недействительно/u)).toBeVisible();
     await page.getByRole('button', { name: 'Показать предыдущие версии выборки' }).click();
-    await expect(
-      page.getByRole('button', { name: /Версия 1.*включено 1.*исключено 0/u }),
-    ).toBeVisible();
+    const firstDatasetVersion = page.getByRole('button', {
+      name: /Версия 1.*включено 1.*исключено 0/u,
+    });
+    await expect(firstDatasetVersion).toBeVisible();
+    await firstDatasetVersion.click();
+    await expect(page.getByText(/Выбрана версия 1: Правое цензурирование/u)).toBeVisible();
+    await expect(page.getByRole('button', { name: /версия 1 на версию 51/u })).toBeVisible();
+    await page
+      .getByLabel('Основание версии выборки')
+      .fill('Несохранённый многострочный черновик\nпосле выбора исторической версии');
+    const reattachWorkerId = workerProcessIds(mainProcessId)[0];
+    if (reattachWorkerId === undefined) throw new Error('reattach_worker_process_missing');
+    process.kill(reattachWorkerId);
+    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
+    await page.getByRole('button', { name: 'Диагностика' }).click();
+    await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
+    await expect(page.getByRole('dialog', { name: 'Есть несохранённые изменения' })).toBeVisible();
+    await page.getByRole('button', { name: 'Перезапустить, не удаляя черновик' }).click();
+    await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
+    await page.getByRole('button', { name: 'Проекты' }).click();
+    await page.getByRole('button', { name: 'Данные надёжности' }).click();
+    await expect(page.getByLabel('Основание версии выборки')).toHaveValue(
+      'Несохранённый многострочный черновик\nпосле выбора исторической версии',
+    );
     expect(consoleErrors).toEqual([]);
   } finally {
     await app.close();
