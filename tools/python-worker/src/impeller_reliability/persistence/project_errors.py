@@ -23,6 +23,7 @@ ProjectErrorCode = Literal[
     "import_integrity_conflict",
     "resolution_conflict",
     "validation_error",
+    "domain_error",
     "storage_error",
     "worker_unavailable",
 ]

@@ -52,6 +52,7 @@ STAGING_NAME_RE: Final = re.compile(r"^[0-9a-f-]{36}\.part$")
 STREAM_CHUNK_BYTES: Final = 1024 * 1024
 WINDOWS_REPARSE_POINT_ATTRIBUTE: Final = 0x0400
 RBD_PLAN_MAX_BYTES: Final = 64 * 1024
+MAX_SAFE_JSON_INTEGER: Final = 9_007_199_254_740_991
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,11 +112,11 @@ class SpecimenBinding:
 
 @dataclass(frozen=True, slots=True)
 class RbdPlanSourceValues:
-    base_cycles: str
-    reserve_factor: str
-    nominal_rpm: str
-    acceleration_duration_s: str
-    deceleration_duration_s: str
+    base_cycles: str | None
+    reserve_factor: str | None
+    nominal_rpm: str | None
+    acceleration_duration_s: str | None
+    deceleration_duration_s: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +127,7 @@ class RbdMethodicalRequirements:
 
 @dataclass(frozen=True, slots=True)
 class RbdExecutionTargets:
-    target_cycles: int
+    target_cycles: str
     target_steady_duration_s: str
     total_duration_s: str
     rounding_policy: str
@@ -146,7 +147,7 @@ class RbdPlanSourceSnapshot:
     producer_build_id: str
     producer_git_commit: str
     selection: RbdPlanSelection
-    payload_path: str
+    payload_path: Literal["plan/original.json", "plan/effective.json"]
     payload_sha256: str
     plan_id: str
     plan_revision: int
@@ -606,11 +607,15 @@ class R130shSourceRepository:
             )
         if str(row[1]) != str(row[5]):
             raise _corrupt_source()
+        if not 1 <= int(row[4]) <= MAX_SAFE_JSON_INTEGER:
+            raise _corrupt_source()
         if str(row[12]) != "rbd":
             raise ProjectOperationError("validation_error", "Выбранное исполнение не относится к РБД.")
-        payload_path = "plan/original.json" if selection == "original" else "plan/effective.json"
+        payload_path: Literal["plan/original.json", "plan/effective.json"] = "plan/original.json" if selection == "original" else "plan/effective.json"
         plan_id = str(row[13] if selection == "original" else row[16])
         plan_revision = int(row[14] if selection == "original" else row[17])
+        if not 1 <= plan_revision <= MAX_SAFE_JSON_INTEGER:
+            raise _corrupt_source()
         projected_sha256 = str(row[15] if selection == "original" else row[18])
         inventory = self._connection.execute(
             """
@@ -690,11 +695,11 @@ class R130shSourceRepository:
             plan_id=plan_id,
             plan_revision=plan_revision,
             source_values=RbdPlanSourceValues(
-                base_cycles=_plan_required_text(source_values, "base_cycles"),
-                reserve_factor=_plan_required_text(source_values, "reserve_factor"),
-                nominal_rpm=_plan_required_text(source_values, "nominal_rpm"),
-                acceleration_duration_s=_plan_required_text(source_values, "acceleration_duration_s"),
-                deceleration_duration_s=_plan_required_text(source_values, "deceleration_duration_s"),
+                base_cycles=_plan_optional_text(source_values, "base_cycles"),
+                reserve_factor=_plan_optional_text(source_values, "reserve_factor"),
+                nominal_rpm=_plan_optional_text(source_values, "nominal_rpm"),
+                acceleration_duration_s=_plan_optional_text(source_values, "acceleration_duration_s"),
+                deceleration_duration_s=_plan_optional_text(source_values, "deceleration_duration_s"),
             ),
             methodical_requirements=RbdMethodicalRequirements(
                 required_cycles_exact=_plan_required_text(requirements, "required_cycles_exact"),
@@ -704,11 +709,33 @@ class R130shSourceRepository:
                 ),
             ),
             execution_targets=RbdExecutionTargets(
-                target_cycles=_plan_required_integer(targets, "target_cycles"),
+                target_cycles=str(_plan_required_integer(targets, "target_cycles", maximum=10**64 - 1)),
                 target_steady_duration_s=_plan_required_text(targets, "target_steady_duration_s"),
                 total_duration_s=_plan_required_text(targets, "total_duration_s"),
                 rounding_policy=_plan_required_text(targets, "rounding_policy"),
             ),
+        )
+
+    def read_rbd_plan_source_for_execution(
+        self,
+        execution_id: str,
+        selection: RbdPlanSelection,
+        *,
+        deadline: RequestDeadline | None = None,
+    ) -> RbdPlanSourceSnapshot:
+        execution_id = _uuid4(execution_id)
+        row = self._connection.execute(
+            "SELECT local_import_id FROM reliability_test_executions WHERE execution_id=? AND method='rbd'",
+            (execution_id,),
+        ).fetchone()
+        _check_deadline(deadline, "rbd_execution_source_lookup")
+        if row is None:
+            raise ProjectOperationError("entity_not_found", "Исполнение РБД не найдено.")
+        return self.read_rbd_plan_source(
+            execution_id,
+            _uuid4(str(row[0])),
+            selection,
+            deadline=deadline,
         )
 
     def get_binding(
@@ -1634,9 +1661,15 @@ def _plan_required_text(value: dict[str, object], key: str) -> str:
     return item
 
 
-def _plan_required_integer(value: dict[str, object], key: str) -> int:
+def _plan_optional_text(value: dict[str, object], key: str) -> str | None:
+    if key not in value or value[key] is None:
+        return None
+    return _plan_required_text(value, key)
+
+
+def _plan_required_integer(value: dict[str, object], key: str, *, maximum: int = MAX_SAFE_JSON_INTEGER) -> int:
     item = value.get(key)
-    if not isinstance(item, int) or isinstance(item, bool) or item < 0:
+    if not isinstance(item, int) or isinstance(item, bool) or item < 0 or item > maximum:
         raise _corrupt_source()
     return item
 

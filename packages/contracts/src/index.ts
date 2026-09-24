@@ -62,6 +62,10 @@ export const workerOperationSchema = z.enum([
   'reliabilityDataset.listPage',
   'reliabilityDataset.getVersion',
   'reliabilityDataset.createVersion',
+  'rbdCalculation.getSourceInputs',
+  'rbdCalculation.create',
+  'rbdCalculation.listPage',
+  'rbdCalculation.getDetail',
 ]);
 
 export type WorkerOperation = z.infer<typeof workerOperationSchema>;
@@ -951,7 +955,7 @@ export const reliabilityExecutionSchema = z
     wheelModelId: entityIdSchema,
     sourceSpecimenId: specimenSourceIdSchema,
     sourceRunId: runIdSchema,
-    exportRevision: z.number().int().positive(),
+    exportRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     packageKind: z.enum(['final', 'diagnostic_partial']),
     method: z.enum(['rbd', 'rpt', 'pmn']),
     lifecycleStatus: z.enum(['completed', 'interrupted', 'failed']),
@@ -1095,6 +1099,259 @@ export const reliabilityDatasetSummarySchema = z
 export const reliabilityDatasetPageSchema = z
   .object({
     items: z.array(reliabilityDatasetSummarySchema).max(50),
+    nextCursor: z.string().max(512).nullable(),
+  })
+  .strict();
+
+export const rbdPlanSelectionSchema = z.enum(['original', 'effective']);
+export const rbdInputFieldSchema = z.enum([
+  'base_cycles',
+  'reserve_factor',
+  'nominal_rpm',
+  'acceleration_duration_s',
+  'deceleration_duration_s',
+]);
+const rbdUtf8TextSchema = z.string().refine((value) => {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}, 'Текст содержит недопустимую последовательность Unicode.');
+const rbdTextWithinUtf8Bytes = (maximumBytes: number) =>
+  rbdUtf8TextSchema.refine(
+    (value) => new TextEncoder().encode(value).length <= maximumBytes,
+    'Текст превышает допустимый размер UTF-8.',
+  );
+const rbdSourceTextSchema = (maximumCodePoints: number) =>
+  rbdTextWithinUtf8Bytes(maximumCodePoints * 4).refine(
+    (value) => Array.from(value).length >= 1 && Array.from(value).length <= maximumCodePoints,
+    'Длина исходного текста вне допустимых границ.',
+  );
+export const rbdEvidenceReferenceSchema = z
+  .object({
+    documentId: entityIdSchema.nullable().default(null),
+    documentRecordRevision: z
+      .number()
+      .int()
+      .positive()
+      .max(Number.MAX_SAFE_INTEGER)
+      .nullable()
+      .default(null),
+    documentLocator: rbdTextWithinUtf8Bytes(1_000).max(1_000).default(''),
+    observationVersionId: entityIdSchema.nullable().default(null),
+  })
+  .strict();
+export const rbdFieldSelectionSchema = z
+  .object({
+    field: rbdInputFieldSchema,
+    origin: z.enum(['source', 'manual']),
+    manualValue: rbdTextWithinUtf8Bytes(64).max(64).nullable().default(null),
+    basis: rbdTextWithinUtf8Bytes(2_000).max(2_000).default(''),
+    evidence: rbdEvidenceReferenceSchema.nullable().default(null),
+  })
+  .strict();
+export const rbdFailureApplicabilitySchema = z.enum([
+  'exact_supported',
+  'unavailable',
+  'interval_endpoint',
+  'right_censored',
+  'unsupported_phase',
+  'ambiguous_pauses',
+]);
+export const rbdFailureEvidenceSchema = z
+  .object({
+    applicability: rbdFailureApplicabilitySchema,
+    durationToFailureS: rbdTextWithinUtf8Bytes(64).max(64).nullable().default(null),
+    basis: rbdTextWithinUtf8Bytes(2_000).min(1).max(2_000),
+    failureObservationIds: z.array(entityIdSchema).max(64).default([]),
+    evidence: rbdEvidenceReferenceSchema.nullable().default(null),
+  })
+  .strict();
+export const rbdSourceInputsPayloadSchema = z
+  .object({ executionId: entityIdSchema, planSelection: rbdPlanSelectionSchema })
+  .strict();
+export const rbdCalculationCreateCommandSchema = rbdSourceInputsPayloadSchema
+  .extend({
+    analysisInputSnapshotId: entityIdSchema,
+    calculationSnapshotId: entityIdSchema,
+    selections: z.array(rbdFieldSelectionSchema).length(5),
+    failureEvidence: rbdFailureEvidenceSchema.nullable(),
+    actor: rbdTextWithinUtf8Bytes(200).min(1).max(200),
+    reason: rbdTextWithinUtf8Bytes(2_000).min(1).max(2_000),
+  })
+  .superRefine((value, context) => {
+    const fields = new Set(value.selections.map((item) => item.field));
+    if (fields.size !== 5) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Нужно выбрать происхождение всех пяти входов РБД.',
+      });
+    }
+  });
+export const rbdCalculationIdPayloadSchema = z
+  .object({ calculationSnapshotId: entityIdSchema })
+  .strict();
+
+const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/u);
+export const rbdPlanSourceSchema = z
+  .object({
+    executionId: entityIdSchema,
+    localImportId: entityIdSchema,
+    packageId: rbdSourceTextSchema(200),
+    runId: rbdSourceTextSchema(200),
+    exportRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    outerPackageSha256: sha256Schema,
+    sourceSnapshotSha256: sha256Schema,
+    producerName: rbdSourceTextSchema(200),
+    producerVersion: rbdSourceTextSchema(200),
+    producerBuildId: rbdSourceTextSchema(200),
+    producerGitCommit: rbdSourceTextSchema(200),
+    planSelection: rbdPlanSelectionSchema,
+    payloadPath: z.enum(['plan/original.json', 'plan/effective.json']),
+    payloadSha256: sha256Schema,
+    planId: rbdSourceTextSchema(200),
+    planRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    sourceValues: z
+      .object({
+        baseCycles: z.string().max(64).nullable(),
+        reserveFactor: z.string().max(64).nullable(),
+        nominalRpm: z.string().max(64).nullable(),
+        accelerationDurationS: z.string().max(64).nullable(),
+        decelerationDurationS: z.string().max(64).nullable(),
+      })
+      .strict(),
+    methodicalRequirements: z
+      .object({
+        requiredCyclesExact: z.string().max(64),
+        requiredSteadyDurationSExact: z.string().max(64),
+      })
+      .strict(),
+    executionTargets: z
+      .object({
+        targetCycles: z.string().regex(/^(?:0|[1-9][0-9]{0,63})$/u),
+        targetSteadyDurationS: z.string().max(64),
+        totalDurationS: z.string().max(64),
+        roundingPolicy: rbdSourceTextSchema(512),
+      })
+      .strict(),
+  })
+  .strict();
+const exactRationalSchema = z
+  .object({
+    numerator: z.string().regex(/^-?(?:0|[1-9][0-9]{0,63})$/u),
+    denominator: z.string().regex(/^[1-9][0-9]{0,63}$/u),
+    decimal: z.string().max(128).nullable(),
+    decimal_preview: z.string().min(1).max(128),
+  })
+  .strict();
+export const rbdResultSnapshotSchema = z
+  .object({
+    algorithm_id: z.literal('rbd_reference'),
+    algorithm_version: z.literal('1.0.0'),
+    numeric_policy: z.literal('exact_fraction_v1'),
+    maximum_rpm: exactRationalSchema,
+    required_cycles_exact: exactRationalSchema,
+    steady_duration_s_exact: exactRationalSchema,
+    cycle_duration_s_exact: exactRationalSchema,
+    total_duration_s_exact: exactRationalSchema,
+    failure_result: z
+      .object({
+        status: z.enum(['calculated', 'not_applicable']),
+        cycles_to_failure: z
+          .string()
+          .regex(/^(?:0|[1-9][0-9]{0,63})$/u)
+          .nullable(),
+        reason_code: z.string().max(100).nullable(),
+      })
+      .strict(),
+    phases: z
+      .array(
+        z
+          .object({
+            phase: z.enum(['acceleration', 'steady_rotation', 'deceleration']),
+            start_s: exactRationalSchema,
+            end_s: exactRationalSchema,
+            start_rpm: exactRationalSchema,
+            end_rpm: exactRationalSchema,
+          })
+          .strict(),
+      )
+      .length(3),
+    formula_references: z.array(z.string()).min(3).max(8),
+  })
+  .strict();
+export const rbdAnalysisInputSnapshotSchema = z
+  .object({
+    analysisInputSnapshotId: entityIdSchema,
+    executionId: entityIdSchema,
+    localImportId: entityIdSchema,
+    wheelModelId: entityIdSchema,
+    localSpecimenId: entityIdSchema,
+    sourceSpecimenId: z.string().min(1).max(200),
+    sourceRunId: z.string().min(1).max(200),
+    exportRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    planSelection: rbdPlanSelectionSchema,
+    planId: z.string().min(1).max(200),
+    planRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    planPayloadPath: z.enum(['plan/original.json', 'plan/effective.json']),
+    planPayloadSha256: sha256Schema,
+    sourceOuterPackageSha256: sha256Schema,
+    sourceSnapshotSha256: sha256Schema,
+    operationSha256: sha256Schema,
+    inputSnapshot: z.record(z.string(), z.unknown()),
+    contentSha256: sha256Schema,
+    actor: z.string().min(1).max(200),
+    decisionReason: z.string().min(1).max(2_000),
+    createdAtUtc: canonicalUtcTimestampSchema,
+  })
+  .strict();
+export const rbdCalculationSnapshotSchema = z
+  .object({
+    calculationSnapshotId: entityIdSchema,
+    analysisInputSnapshotId: entityIdSchema,
+    executionId: entityIdSchema,
+    wheelModelId: entityIdSchema,
+    algorithmId: z.literal('rbd_reference'),
+    algorithmVersion: z.literal('1.0.0'),
+    numericPolicy: z.literal('exact_fraction_v1'),
+    resultSnapshot: rbdResultSnapshotSchema,
+    inputContentSha256: sha256Schema,
+    operationSha256: sha256Schema,
+    contentSha256: sha256Schema,
+    createdAtUtc: canonicalUtcTimestampSchema,
+  })
+  .strict();
+export const rbdCalculationDetailSchema = z
+  .object({
+    inputSnapshot: rbdAnalysisInputSnapshotSchema,
+    calculationSnapshot: rbdCalculationSnapshotSchema,
+  })
+  .strict();
+export const rbdCalculationWriteResultSchema = z
+  .object({ disposition: z.enum(['created', 'existing']), detail: rbdCalculationDetailSchema })
+  .strict();
+export const rbdCalculationSummarySchema = z
+  .object({
+    calculationSnapshotId: entityIdSchema,
+    analysisInputSnapshotId: entityIdSchema,
+    executionId: entityIdSchema,
+    wheelModelId: entityIdSchema,
+    planSelection: rbdPlanSelectionSchema,
+    requiredCycles: z.string().min(1).max(128),
+    failureStatus: z.enum(['calculated', 'not_applicable']),
+    createdAtUtc: canonicalUtcTimestampSchema,
+  })
+  .strict();
+export const rbdCalculationPageSchema = z
+  .object({
+    items: z.array(rbdCalculationSummarySchema).max(50),
     nextCursor: z.string().max(512).nullable(),
   })
   .strict();
@@ -1259,6 +1516,11 @@ export type ReliabilityDatasetCreateVersionCommand = z.infer<
   typeof reliabilityDatasetCreateVersionCommandSchema
 >;
 export type ReliabilityDatasetWriteResult = z.infer<typeof reliabilityDatasetWriteResultSchema>;
+export type RbdPlanSource = z.infer<typeof rbdPlanSourceSchema>;
+export type RbdCalculationCreateCommand = z.infer<typeof rbdCalculationCreateCommandSchema>;
+export type RbdCalculationDetail = z.infer<typeof rbdCalculationDetailSchema>;
+export type RbdCalculationWriteResult = z.infer<typeof rbdCalculationWriteResultSchema>;
+export type RbdCalculationPage = z.infer<typeof rbdCalculationPageSchema>;
 
 export interface WorkerOperationMap {
   readonly 'system.handshake': {
@@ -1488,6 +1750,22 @@ export interface WorkerOperationMap {
   readonly 'reliabilityDataset.createVersion': {
     readonly request: ReliabilityDatasetCreateVersionCommand;
     readonly result: ReliabilityDatasetWriteResult;
+  };
+  readonly 'rbdCalculation.getSourceInputs': {
+    readonly request: z.infer<typeof rbdSourceInputsPayloadSchema>;
+    readonly result: RbdPlanSource;
+  };
+  readonly 'rbdCalculation.create': {
+    readonly request: RbdCalculationCreateCommand;
+    readonly result: RbdCalculationWriteResult;
+  };
+  readonly 'rbdCalculation.listPage': {
+    readonly request: z.infer<typeof reliabilityPagePayloadSchema>;
+    readonly result: RbdCalculationPage;
+  };
+  readonly 'rbdCalculation.getDetail': {
+    readonly request: z.infer<typeof rbdCalculationIdPayloadSchema>;
+    readonly result: RbdCalculationDetail;
   };
 }
 
@@ -1773,6 +2051,30 @@ export const workerRequestSchema = z.discriminatedUnion('operation', [
       payload: reliabilityDatasetCreateVersionCommandSchema,
     })
     .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('rbdCalculation.getSourceInputs'),
+      payload: rbdSourceInputsPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('rbdCalculation.create'),
+      payload: rbdCalculationCreateCommandSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('rbdCalculation.listPage'),
+      payload: reliabilityPagePayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('rbdCalculation.getDetail'),
+      payload: rbdCalculationIdPayloadSchema,
+    })
+    .strict(),
 ]);
 
 export const workerErrorSchema = z
@@ -1903,6 +2205,15 @@ export const reliabilityDatasetWriteSuccessResponseSchema = createSuccessRespons
 export const reliabilityDatasetPageSuccessResponseSchema = createSuccessResponseSchema(
   reliabilityDatasetPageSchema,
 );
+export const rbdPlanSourceSuccessResponseSchema = createSuccessResponseSchema(rbdPlanSourceSchema);
+export const rbdCalculationDetailSuccessResponseSchema = createSuccessResponseSchema(
+  rbdCalculationDetailSchema,
+);
+export const rbdCalculationWriteSuccessResponseSchema = createSuccessResponseSchema(
+  rbdCalculationWriteResultSchema,
+);
+export const rbdCalculationPageSuccessResponseSchema =
+  createSuccessResponseSchema(rbdCalculationPageSchema);
 export const workerErrorResponseSchema = responseBaseSchema
   .extend({
     ok: z.literal(false),
@@ -2026,6 +2337,22 @@ const reliabilityDatasetPageResponseSchema = z.union([
   reliabilityDatasetPageSuccessResponseSchema,
   workerErrorResponseSchema,
 ]);
+const rbdPlanSourceResponseSchema = z.union([
+  rbdPlanSourceSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const rbdCalculationDetailResponseSchema = z.union([
+  rbdCalculationDetailSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const rbdCalculationWriteResponseSchema = z.union([
+  rbdCalculationWriteSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const rbdCalculationPageResponseSchema = z.union([
+  rbdCalculationPageSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
 
 export type WorkerRequest = z.infer<typeof workerRequestSchema>;
 export type WorkerErrorResponse = z.infer<typeof workerErrorResponseSchema>;
@@ -2098,6 +2425,10 @@ export interface WorkerResponseMap {
   readonly 'reliabilityDataset.createVersion': z.infer<
     typeof reliabilityDatasetWriteResponseSchema
   >;
+  readonly 'rbdCalculation.getSourceInputs': z.infer<typeof rbdPlanSourceResponseSchema>;
+  readonly 'rbdCalculation.create': z.infer<typeof rbdCalculationWriteResponseSchema>;
+  readonly 'rbdCalculation.listPage': z.infer<typeof rbdCalculationPageResponseSchema>;
+  readonly 'rbdCalculation.getDetail': z.infer<typeof rbdCalculationDetailResponseSchema>;
 }
 
 export type WorkerResponseFor<TOperation extends WorkerOperation> = WorkerResponseMap[TOperation];
@@ -2236,6 +2567,14 @@ export function parseWorkerResponse(operation: WorkerOperation, input: unknown):
       return reliabilityDatasetVersionResponseSchema.parse(input);
     case 'reliabilityDataset.createVersion':
       return reliabilityDatasetWriteResponseSchema.parse(input);
+    case 'rbdCalculation.getSourceInputs':
+      return rbdPlanSourceResponseSchema.parse(input);
+    case 'rbdCalculation.create':
+      return rbdCalculationWriteResponseSchema.parse(input);
+    case 'rbdCalculation.listPage':
+      return rbdCalculationPageResponseSchema.parse(input);
+    case 'rbdCalculation.getDetail':
+      return rbdCalculationDetailResponseSchema.parse(input);
   }
 }
 
@@ -2442,5 +2781,18 @@ export interface ImpellerApi {
     createVersion(
       command: ReliabilityDatasetCreateVersionCommand,
     ): Promise<DesktopResult<ReliabilityDatasetWriteResult>>;
+  };
+  readonly rbdCalculation: {
+    getSourceInputs(
+      executionId: string,
+      planSelection: z.infer<typeof rbdPlanSelectionSchema>,
+    ): Promise<DesktopResult<RbdPlanSource>>;
+    create(command: RbdCalculationCreateCommand): Promise<DesktopResult<RbdCalculationWriteResult>>;
+    listPage(
+      wheelModelId: string,
+      cursor?: string | null,
+      limit?: number,
+    ): Promise<DesktopResult<RbdCalculationPage>>;
+    getDetail(calculationSnapshotId: string): Promise<DesktopResult<RbdCalculationDetail>>;
   };
 }

@@ -28,10 +28,23 @@ from impeller_reliability.integration.r130run.validator import (
     RunPackageValidator,
     ValidationControl,
 )
-from impeller_reliability.persistence import r130sh_sources as r130sh_sources_module, reliability_domain as reliability_domain_module
+from impeller_reliability.persistence import (
+    r130sh_sources as r130sh_sources_module,
+    rbd_calculations as rbd_calculations_module,
+    reliability_domain as reliability_domain_module,
+)
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.r130sh_sources import ImportedRunDetail, ImportedRunSummary
-from impeller_reliability.persistence.reliability_domain import ReliabilityDomainRepository
+from impeller_reliability.persistence.rbd_calculations import (
+    RbdCalculationRepository,
+    RbdEvidenceReference,
+    RbdFailureEvidence,
+    RbdFieldSelection,
+)
+from impeller_reliability.persistence.reliability_domain import (
+    ReliabilityDomainRepository,
+    TestExecution as ReliabilityTestExecution,
+)
 from impeller_reliability.worker.deadline import RequestDeadline
 from support.r130run_builder import build_synthetic_r130run
 
@@ -325,7 +338,10 @@ def test_binding_and_enrichment_resolution_are_optimistic_and_audited(tmp_path: 
     service.close()
 
 
-def test_materialized_reliability_execution_preserves_source_and_reopens(tmp_path: Path) -> None:
+def test_materialized_reliability_execution_preserves_source_and_reopens(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service, project_path = _project(tmp_path)
     imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
     wheel = service.create_wheel(
@@ -400,7 +416,7 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(tmp_pat
     assert original_plan.source_values.deceleration_duration_s == "5"
     assert original_plan.methodical_requirements.required_cycles_exact == "1500.3"
     assert original_plan.methodical_requirements.required_steady_duration_s_exact == "60.012"
-    assert original_plan.execution_targets.target_cycles == 1501
+    assert original_plan.execution_targets.target_cycles == "1501"
     assert original_plan.execution_targets.target_steady_duration_s == "60.04"
     assert original_plan.execution_targets.total_duration_s == "70.04"
     assert original_plan.payload_path == "plan/original.json"
@@ -411,6 +427,282 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(tmp_pat
     assert effective_plan.payload_sha256 != original_plan.payload_sha256
     assert effective_plan.source_values == original_plan.source_values
     assert effective_plan.execution_targets == original_plan.execution_targets
+    calculation_input_id = str(uuid4())
+    calculation_id = str(uuid4())
+    source_selections = tuple(
+        RbdFieldSelection(field=field, origin="source")
+        for field in (
+            "base_cycles",
+            "reserve_factor",
+            "nominal_rpm",
+            "acceleration_duration_s",
+            "deceleration_duration_s",
+        )
+    )
+    calculation = service.create_rbd_calculation(
+        analysis_input_snapshot_id=calculation_input_id,
+        calculation_snapshot_id=calculation_id,
+        execution_id=rounding_execution.execution_id,
+        selection="original",
+        selections=source_selections,
+        failure=None,
+        actor="local_user",
+        reason="Расчёт требований по исходной редакции плана",
+        deadline=None,
+    )
+    assert calculation.disposition == "created"
+    assert calculation.detail.input_snapshot.input_snapshot["fieldSelections"]
+    assert calculation.detail.calculation_snapshot.result_snapshot["required_cycles_exact"] == {
+        "decimal": "1500.3",
+        "decimal_preview": "1500.3",
+        "denominator": "10",
+        "numerator": "15003",
+    }
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as competing_writer, closing(sqlite3.connect(project_path / "project.sqlite")) as waiting_connection:
+        waiting_repository = RbdCalculationRepository(waiting_connection)
+        waiting_input_id = str(uuid4())
+        waiting_calculation_id = str(uuid4())
+        competing_writer.execute("BEGIN IMMEDIATE")
+        with pytest.raises(ProjectOperationError) as write_lock_timeout:
+            waiting_repository.create(
+                analysis_input_snapshot_id=waiting_input_id,
+                calculation_snapshot_id=waiting_calculation_id,
+                source=original_plan,
+                selections=source_selections,
+                failure=None,
+                actor="local_user",
+                reason="Проверка ограниченного ожидания записи",
+                operation_sha256=waiting_repository.operation_sha256(
+                    analysis_input_snapshot_id=waiting_input_id,
+                    calculation_snapshot_id=waiting_calculation_id,
+                    execution_id=rounding_execution.execution_id,
+                    plan_selection="original",
+                    selections=source_selections,
+                    failure=None,
+                    actor="local_user",
+                    reason="Проверка ограниченного ожидания записи",
+                ),
+                deadline=RequestDeadline.start(100),
+            )
+        assert write_lock_timeout.value.code == "timeout"
+        competing_writer.rollback()
+    repeated_calculation = service.create_rbd_calculation(
+        analysis_input_snapshot_id=calculation_input_id,
+        calculation_snapshot_id=calculation_id,
+        execution_id=rounding_execution.execution_id,
+        selection="original",
+        selections=source_selections,
+        failure=None,
+        actor="local_user",
+        reason="Расчёт требований по исходной редакции плана",
+        deadline=None,
+    )
+    assert repeated_calculation.disposition == "existing"
+    assert repeated_calculation.detail == calculation.detail
+    failed_input_id = str(uuid4())
+    failed_calculation_id = str(uuid4())
+    with monkeypatch.context() as patch_context:
+
+        def fail_audit(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("injected audit failure")
+
+        patch_context.setattr(
+            rbd_calculations_module,
+            "insert_audit",
+            fail_audit,
+        )
+        with pytest.raises(RuntimeError, match="injected audit failure"):
+            service.create_rbd_calculation(
+                analysis_input_snapshot_id=failed_input_id,
+                calculation_snapshot_id=failed_calculation_id,
+                execution_id=rounding_execution.execution_id,
+                selection="original",
+                selections=source_selections,
+                failure=None,
+                actor="local_user",
+                reason="Проверка атомарного rollback",
+                deadline=None,
+            )
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        input_count = connection.execute(
+            "SELECT count(*) FROM rbd_analysis_input_snapshots WHERE analysis_input_snapshot_id=?",
+            (failed_input_id,),
+        ).fetchone()
+        calculation_count = connection.execute(
+            "SELECT count(*) FROM rbd_calculation_snapshots WHERE calculation_snapshot_id=?",
+            (failed_calculation_id,),
+        ).fetchone()
+        assert input_count is not None and int(input_count[0]) == 0
+        assert calculation_count is not None and int(calculation_count[0]) == 0
+    with pytest.raises(ProjectOperationError) as conflicting_retry:
+        service.create_rbd_calculation(
+            analysis_input_snapshot_id=calculation_input_id,
+            calculation_snapshot_id=calculation_id,
+            execution_id=rounding_execution.execution_id,
+            selection="original",
+            selections=source_selections,
+            failure=None,
+            actor="local_user",
+            reason="Другое основание",
+            deadline=None,
+        )
+    assert conflicting_retry.value.code == "revision_conflict"
+    manual_input_id = str(uuid4())
+    manual_calculation_id = str(uuid4())
+    manual_selections = tuple(
+        RbdFieldSelection(
+            field=item.field,
+            origin="manual" if item.field == "reserve_factor" else "source",
+            manual_value="2" if item.field == "reserve_factor" else None,
+            basis="Коэффициент принят инженером для отдельного сценария" if item.field == "reserve_factor" else "",
+        )
+        for item in source_selections
+    )
+    failure_document_id = str(uuid4())
+    failure_document = service.create_case_document(
+        failure_document_id,
+        {
+            "documentKind": "measurement_or_attestation_record",
+            "title": "Протокол регистрации момента отказа",
+            "designation": "РБД-ОТК-01",
+            "revisionLabel": "01",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "",
+        },
+        (wheel.wheel_model_id,),
+        (specimen.specimen_id,),
+        None,
+    )
+    with pytest.raises(ProjectOperationError) as undocumented_failure:
+        service.create_rbd_calculation(
+            analysis_input_snapshot_id=str(uuid4()),
+            calculation_snapshot_id=str(uuid4()),
+            execution_id=rounding_execution.execution_id,
+            selection="original",
+            selections=source_selections,
+            failure=RbdFailureEvidence(
+                applicability="exact_supported",
+                duration_to_failure_s="60000",
+                basis="Указано число без документа",
+            ),
+            actor="local_user",
+            reason="Проверка документированного T_OTK",
+            deadline=None,
+        )
+    assert undocumented_failure.value.code == "validation_error"
+    unsupported_observation_selections = tuple(
+        RbdFieldSelection(
+            field=item.field,
+            origin="manual" if item.field == "base_cycles" else "source",
+            manual_value="1000" if item.field == "base_cycles" else None,
+            basis="Неверная ссылка" if item.field == "base_cycles" else "",
+            evidence=RbdEvidenceReference(observation_version_id=str(uuid4())) if item.field == "base_cycles" else None,
+        )
+        for item in source_selections
+    )
+    with pytest.raises(ProjectOperationError) as unsupported_observation:
+        service.create_rbd_calculation(
+            analysis_input_snapshot_id=str(uuid4()),
+            calculation_snapshot_id=str(uuid4()),
+            execution_id=rounding_execution.execution_id,
+            selection="original",
+            selections=unsupported_observation_selections,
+            failure=None,
+            actor="local_user",
+            reason="Проверка физического смысла свидетельства",
+            deadline=None,
+        )
+    assert unsupported_observation.value.code == "validation_error"
+    manual_calculation = service.create_rbd_calculation(
+        analysis_input_snapshot_id=manual_input_id,
+        calculation_snapshot_id=manual_calculation_id,
+        execution_id=rounding_execution.execution_id,
+        selection="original",
+        selections=manual_selections,
+        failure=RbdFailureEvidence(
+            applicability="exact_supported",
+            duration_to_failure_s="60000",
+            basis="Точное документированное время до отказа для простого запуска",
+            evidence=RbdEvidenceReference(
+                document_id=failure_document.case_document_id,
+                document_record_revision=failure_document.record_revision,
+                document_locator="раздел 3, время испытания до отказа и начало отсчёта",
+            ),
+        ),
+        actor="local_user",
+        reason="Новый снимок с документированным аналитическим дополнением",
+        deadline=None,
+    )
+    assert manual_calculation.detail.calculation_snapshot.result_snapshot["required_cycles_exact"] == {
+        "decimal": "2000",
+        "decimal_preview": "2000",
+        "denominator": "1",
+        "numerator": "2000",
+    }
+    assert manual_calculation.detail.calculation_snapshot.result_snapshot["failure_result"] == {
+        "cycles_to_failure": "1499875",
+        "reason_code": None,
+        "status": "calculated",
+    }
+    updated_failure_document = service.update_case_document(
+        failure_document.case_document_id,
+        failure_document.record_revision,
+        {
+            "documentKind": "measurement_or_attestation_record",
+            "title": "Уточнённый протокол регистрации момента отказа",
+            "designation": "РБД-ОТК-01",
+            "revisionLabel": "02",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "",
+        },
+        (wheel.wheel_model_id,),
+        (specimen.specimen_id,),
+        None,
+    )
+    assert updated_failure_document.record_revision == failure_document.record_revision + 1
+    assert service.get_rbd_calculation_detail(manual_calculation_id, None) == manual_calculation.detail
+    assert service.get_rbd_calculation_detail(calculation_id, None) == calculation.detail
+    calculation_page = service.list_rbd_calculation_page(wheel.wheel_model_id, None, 25, None)
+    assert {item.calculation_snapshot_id for item in calculation_page.items} == {
+        calculation_id,
+        manual_calculation_id,
+    }
+    assert calculation_page.next_cursor is None
+    with pytest.raises(ProjectOperationError) as invalid_page:
+        service.list_rbd_calculation_page(wheel.wheel_model_id, None, 0, None)
+    assert invalid_page.value.code == "validation_error"
+    with pytest.raises(ProjectOperationError) as missing_calculation:
+        service.get_rbd_calculation_detail(str(uuid4()), None)
+    assert missing_calculation.value.code == "entity_not_found"
+    history_ids = {calculation_id, manual_calculation_id}
+    for _ in range(49):
+        history_result_id = str(uuid4())
+        service.create_rbd_calculation(
+            analysis_input_snapshot_id=str(uuid4()),
+            calculation_snapshot_id=history_result_id,
+            execution_id=rounding_execution.execution_id,
+            selection="effective",
+            selections=source_selections,
+            failure=None,
+            actor="local_user",
+            reason="Проверка ограниченной страницы истории",
+            deadline=None,
+        )
+        history_ids.add(history_result_id)
+    first_history_page = service.list_rbd_calculation_page(wheel.wheel_model_id, None, 50, None)
+    assert len(first_history_page.items) == 50
+    assert first_history_page.next_cursor is not None
+    second_history_page = service.list_rbd_calculation_page(
+        wheel.wheel_model_id,
+        first_history_page.next_cursor,
+        50,
+        None,
+    )
+    assert len(second_history_page.items) == 1
+    assert second_history_page.next_cursor is None
+    assert {item.calculation_snapshot_id for item in (*first_history_page.items, *second_history_page.items)} == history_ids
     with pytest.raises(ProjectOperationError) as mismatched_execution_source:
         service.read_rbd_plan_source(
             execution.execution_id,
@@ -460,6 +752,8 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(tmp_pat
     service.close()
     service.open(path=str(project_path), application_instance_id="reopen")
     assert service.get_reliability_execution(execution.execution_id, None) == execution
+    assert service.get_rbd_calculation_detail(calculation_id, None) == calculation.detail
+    assert service.get_rbd_calculation_detail(manual_calculation_id, None) == manual_calculation.detail
     assert _source_snapshot(project_path, imported.local_import_id) == source_before
     service.close()
     with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
@@ -480,10 +774,9 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(tmp_pat
     assert corrupted.value.code == "corrupt_project"
 
 
-def test_rbd_plan_source_read_fails_typed_for_missing_modified_and_expired_deadline(
+def _project_with_rbd_execution(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+) -> tuple[ProjectService, Path, ImportedRunSummary, ReliabilityTestExecution]:
     service, project_path = _project(tmp_path)
     imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
     wheel = service.create_wheel(
@@ -505,7 +798,7 @@ def test_rbd_plan_source_read_fails_typed_for_missing_modified_and_expired_deadl
         {
             "specimenId": str(uuid4()),
             "wheelModelId": wheel.wheel_model_id,
-            "identificationNumber": "M04C-SOURCE-001",
+            "identificationNumber": "SOURCE-SPECIMEN-001",
             "batchNumber": "",
             "marking": "",
             "manufacturedOn": None,
@@ -525,6 +818,14 @@ def test_rbd_plan_source_read_fails_typed_for_missing_modified_and_expired_deadl
         deadline=None,
     )
     execution = service.materialize_reliability_execution(imported.local_import_id, None)
+    return service, project_path, imported, execution
+
+
+def test_rbd_plan_source_read_fails_typed_for_missing_modified_and_expired_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path)
     managed_path = _managed_path(project_path, imported)
 
     with pytest.raises(ProjectOperationError) as expired:
@@ -589,6 +890,71 @@ def test_rbd_plan_source_read_fails_typed_for_missing_modified_and_expired_deadl
         service.read_rbd_plan_source(execution.execution_id, imported.local_import_id, "original")
     assert modified.value.code == "file_integrity_mismatch"
     service.close()
+
+
+@pytest.mark.parametrize("damage", ["result_payload", "orphan_result", "oversized_input"])
+def test_saved_rbd_result_survives_source_loss_and_reopen_rejects_tampered_snapshots(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path)
+    source_selections = tuple(
+        RbdFieldSelection(field=field, origin="source")
+        for field in (
+            "base_cycles",
+            "reserve_factor",
+            "nominal_rpm",
+            "acceleration_duration_s",
+            "deceleration_duration_s",
+        )
+    )
+    input_snapshot_id = str(uuid4())
+    calculation_snapshot_id = str(uuid4())
+    saved = service.create_rbd_calculation(
+        analysis_input_snapshot_id=input_snapshot_id,
+        calculation_snapshot_id=calculation_snapshot_id,
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=source_selections,
+        failure=None,
+        actor="local_user",
+        reason="Расчёт из проверенной редакции источника",
+        deadline=None,
+    )
+    assert saved.disposition == "created"
+    service.close()
+    _managed_path(project_path, imported).write_bytes(b"source modified after calculation")
+    service.open(path=str(project_path), application_instance_id="source-changed")
+    assert service.get_rbd_calculation_detail(calculation_snapshot_id, None) == saved.detail
+    service.close()
+
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        if damage == "result_payload":
+            trigger = "rbd_calculation_snapshots_no_update"
+            statement = "UPDATE rbd_calculation_snapshots SET result_snapshot_json='{}' WHERE calculation_snapshot_id=?"
+            parameters: tuple[str, ...] = (calculation_snapshot_id,)
+        elif damage == "orphan_result":
+            trigger = "rbd_calculation_snapshots_no_delete"
+            statement = "DELETE FROM rbd_calculation_snapshots WHERE calculation_snapshot_id=?"
+            parameters = (calculation_snapshot_id,)
+        else:
+            trigger = "rbd_analysis_input_snapshots_no_update"
+            connection.execute("PRAGMA ignore_check_constraints = ON")
+            statement = "UPDATE rbd_analysis_input_snapshots SET input_snapshot_json=? WHERE analysis_input_snapshot_id=?"
+            parameters = (json.dumps({"padding": "Ж" * 40_000}, ensure_ascii=False), input_snapshot_id)
+        trigger_row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (trigger,),
+        ).fetchone()
+        assert trigger_row is not None
+        trigger_sql = str(trigger_row[0])
+        connection.execute(f"DROP TRIGGER {trigger}")
+        connection.execute(statement, parameters)
+        connection.execute(trigger_sql)
+        connection.commit()
+    with pytest.raises(ProjectOperationError) as corrupted:
+        service.open(path=str(project_path), application_instance_id="tampered-calculation")
+    assert corrupted.value.code == "corrupt_project"
 
 
 def test_reliability_failure_observation_does_not_turn_technical_stop_into_specimen_failure(tmp_path: Path) -> None:

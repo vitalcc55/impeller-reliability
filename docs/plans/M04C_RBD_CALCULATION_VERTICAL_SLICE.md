@@ -291,6 +291,12 @@ smoke.
 
 Clean schema v1 + atomic repository/reopen → four narrow operations through all
 typed boundaries → retry/tamper/process tests → review → commit.
+Статус: закрыт на ветке. Пара immutable снимков и audit сохраняются атомарно;
+exact retry, conflict, bounded history, повреждение на reopen и точное чтение
+исходного плана проверены. Профильные read-only review после исправлений не
+содержат findings. `pnpm verify -- --IncludePackaging` прошёл: 74 Vitest,
+474 Python tests (85.03%), 15 Electron E2E, worker build, WinUnpacked и Portable
+smoke. Эти smoke ещё не выполняют новый расчёт; это критерий C3.
 
 ### C3 — production UI and closure
 

@@ -33,6 +33,13 @@ from impeller_reliability.persistence.r130sh_sources import (
     SourceIntegrityStatus,
     SpecimenBinding,
 )
+from impeller_reliability.persistence.rbd_calculations import (
+    RbdCalculationDetail,
+    RbdCalculationPage,
+    RbdCalculationWriteResult,
+    RbdFailureEvidence,
+    RbdFieldSelection,
+)
 from impeller_reliability.persistence.reliability_domain import (
     ReliabilityDatasetPage,
     ReliabilityDatasetVersion,
@@ -511,6 +518,55 @@ class ProjectService:
         deadline: RequestDeadline | None,
     ) -> ReliabilityDatasetPage:
         return self._require_session().list_reliability_dataset_page(wheel_model_id, cursor, limit, deadline)
+
+    def get_rbd_source_inputs(
+        self,
+        execution_id: str,
+        selection: RbdPlanSelection,
+        deadline: RequestDeadline | None,
+    ) -> RbdPlanSourceSnapshot:
+        return self._require_session().get_rbd_source_inputs(execution_id, selection, deadline)
+
+    def create_rbd_calculation(
+        self,
+        *,
+        analysis_input_snapshot_id: str,
+        calculation_snapshot_id: str,
+        execution_id: str,
+        selection: RbdPlanSelection,
+        selections: tuple[RbdFieldSelection, ...],
+        failure: RbdFailureEvidence | None,
+        actor: str,
+        reason: str,
+        deadline: RequestDeadline | None,
+    ) -> RbdCalculationWriteResult:
+        return self._require_session().create_rbd_calculation(
+            analysis_input_snapshot_id=analysis_input_snapshot_id,
+            calculation_snapshot_id=calculation_snapshot_id,
+            execution_id=execution_id,
+            selection=selection,
+            selections=selections,
+            failure=failure,
+            actor=actor,
+            reason=reason,
+            deadline=deadline,
+        )
+
+    def get_rbd_calculation_detail(
+        self,
+        calculation_snapshot_id: str,
+        deadline: RequestDeadline | None,
+    ) -> RbdCalculationDetail:
+        return self._require_session().get_rbd_calculation_detail(calculation_snapshot_id, deadline)
+
+    def list_rbd_calculation_page(
+        self,
+        wheel_model_id: str,
+        cursor: str | None,
+        limit: int,
+        deadline: RequestDeadline | None,
+    ) -> RbdCalculationPage:
+        return self._require_session().list_rbd_calculation_page(wheel_model_id, cursor, limit, deadline)
 
     def close(self, *, deadline: RequestDeadline | None = None) -> bool:
         _check_deadline(deadline, "project_close")

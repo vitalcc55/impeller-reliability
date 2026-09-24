@@ -39,6 +39,14 @@ from impeller_reliability.persistence.r130sh_sources import (
     SourceIntegrityStatus,
     SpecimenBinding,
 )
+from impeller_reliability.persistence.rbd_calculations import (
+    RbdCalculationDetail,
+    RbdCalculationPage,
+    RbdCalculationRepository,
+    RbdCalculationWriteResult,
+    RbdFailureEvidence,
+    RbdFieldSelection,
+)
 from impeller_reliability.persistence.reliability_domain import (
     ReliabilityDatasetPage,
     ReliabilityDatasetVersion,
@@ -88,6 +96,7 @@ class ProjectSession:
         self._r130sh_sources = R130shSourceRepository(connection, path)
         self._r130sh_sources.recover_managed_files(deadline)
         self._reliability_domain = ReliabilityDomainRepository(connection)
+        self._rbd_calculations = RbdCalculationRepository(connection)
 
     def overview(self) -> ProjectOverview:
         row = self._connection.execute(
@@ -620,6 +629,78 @@ class ProjectSession:
         deadline: RequestDeadline | None,
     ) -> ReliabilityDatasetPage:
         return self._reliability_domain.list_dataset_page(wheel_model_id, cursor, limit, deadline)
+
+    def get_rbd_source_inputs(
+        self,
+        execution_id: str,
+        selection: RbdPlanSelection,
+        deadline: RequestDeadline | None,
+    ) -> RbdPlanSourceSnapshot:
+        return self._r130sh_sources.read_rbd_plan_source_for_execution(
+            execution_id,
+            selection,
+            deadline=deadline,
+        )
+
+    def create_rbd_calculation(
+        self,
+        *,
+        analysis_input_snapshot_id: str,
+        calculation_snapshot_id: str,
+        execution_id: str,
+        selection: RbdPlanSelection,
+        selections: tuple[RbdFieldSelection, ...],
+        failure: RbdFailureEvidence | None,
+        actor: str,
+        reason: str,
+        deadline: RequestDeadline | None,
+    ) -> RbdCalculationWriteResult:
+        operation_sha256 = self._rbd_calculations.operation_sha256(
+            analysis_input_snapshot_id=analysis_input_snapshot_id,
+            calculation_snapshot_id=calculation_snapshot_id,
+            execution_id=execution_id,
+            plan_selection=selection,
+            selections=selections,
+            failure=failure,
+            actor=actor,
+            reason=reason,
+        )
+        existing = self._rbd_calculations.resolve_idempotent_retry(
+            analysis_input_snapshot_id,
+            calculation_snapshot_id,
+            operation_sha256,
+            deadline,
+        )
+        if existing is not None:
+            return existing
+        source = self.get_rbd_source_inputs(execution_id, selection, deadline)
+        return self._rbd_calculations.create(
+            analysis_input_snapshot_id=analysis_input_snapshot_id,
+            calculation_snapshot_id=calculation_snapshot_id,
+            source=source,
+            selections=selections,
+            failure=failure,
+            actor=actor,
+            reason=reason,
+            operation_sha256=operation_sha256,
+            deadline=deadline,
+        )
+
+    def get_rbd_calculation_detail(
+        self,
+        calculation_snapshot_id: str,
+        deadline: RequestDeadline | None,
+    ) -> RbdCalculationDetail:
+        return self._rbd_calculations.get_detail(calculation_snapshot_id, deadline)
+
+    def list_rbd_calculation_page(
+        self,
+        wheel_model_id: str,
+        cursor: str | None,
+        limit: int,
+        deadline: RequestDeadline | None,
+    ) -> RbdCalculationPage:
+        return self._rbd_calculations.list_page(wheel_model_id, cursor, limit, deadline)
 
     def validate(self, deadline: RequestDeadline | None = None) -> None:
         validate_project_database(self._connection, self.manifest, deadline)

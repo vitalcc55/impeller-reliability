@@ -433,6 +433,67 @@ CREATE TABLE reliability_dataset_members (
     CHECK (inclusion_decision != 'included' OR policy_eligibility = 'eligible')
 )
 """
+RBD_ANALYSIS_INPUT_SNAPSHOTS_TABLE_SQL: Final = """
+CREATE TABLE rbd_analysis_input_snapshots (
+    analysis_input_snapshot_id TEXT PRIMARY KEY,
+    execution_id TEXT NOT NULL REFERENCES reliability_test_executions(execution_id),
+    local_import_id TEXT NOT NULL REFERENCES r130sh_sources(local_import_id),
+    wheel_model_id TEXT NOT NULL REFERENCES wheel_models(wheel_model_id),
+    local_specimen_id TEXT NOT NULL REFERENCES specimens(specimen_id),
+    source_specimen_id TEXT NOT NULL REFERENCES r130sh_specimen_bindings(source_specimen_id),
+    source_run_id TEXT NOT NULL CHECK (length(CAST(source_run_id AS BLOB)) BETWEEN 1 AND 200),
+    export_revision INTEGER NOT NULL CHECK (typeof(export_revision) = 'integer' AND export_revision >= 1),
+    plan_selection TEXT NOT NULL CHECK (plan_selection IN ('original', 'effective')),
+    plan_id TEXT NOT NULL CHECK (length(CAST(plan_id AS BLOB)) BETWEEN 1 AND 200),
+    plan_revision INTEGER NOT NULL CHECK (typeof(plan_revision) = 'integer' AND plan_revision >= 1),
+    plan_payload_path TEXT NOT NULL CHECK (plan_payload_path IN ('plan/original.json', 'plan/effective.json')),
+    plan_payload_sha256 TEXT NOT NULL CHECK (length(plan_payload_sha256) = 64),
+    source_outer_package_sha256 TEXT NOT NULL CHECK (length(source_outer_package_sha256) = 64),
+    source_snapshot_sha256 TEXT NOT NULL CHECK (length(source_snapshot_sha256) = 64),
+    operation_sha256 TEXT NOT NULL CHECK (length(operation_sha256) = 64),
+    input_snapshot_json TEXT NOT NULL CHECK (json_valid(input_snapshot_json) AND length(CAST(input_snapshot_json AS BLOB)) BETWEEN 2 AND 65536),
+    content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+    actor TEXT NOT NULL CHECK (length(CAST(actor AS BLOB)) BETWEEN 1 AND 200),
+    decision_reason TEXT NOT NULL CHECK (length(CAST(decision_reason AS BLOB)) BETWEEN 1 AND 2000),
+    created_at_utc TEXT NOT NULL
+)
+"""
+RBD_CALCULATION_SNAPSHOTS_TABLE_SQL: Final = """
+CREATE TABLE rbd_calculation_snapshots (
+    calculation_snapshot_id TEXT PRIMARY KEY,
+    analysis_input_snapshot_id TEXT NOT NULL UNIQUE REFERENCES rbd_analysis_input_snapshots(analysis_input_snapshot_id),
+    execution_id TEXT NOT NULL REFERENCES reliability_test_executions(execution_id),
+    wheel_model_id TEXT NOT NULL REFERENCES wheel_models(wheel_model_id),
+    algorithm_id TEXT NOT NULL CHECK (algorithm_id = 'rbd_reference'),
+    algorithm_version TEXT NOT NULL CHECK (algorithm_version = '1.0.0'),
+    numeric_policy TEXT NOT NULL CHECK (numeric_policy = 'exact_fraction_v1'),
+    required_cycles_exact TEXT NOT NULL CHECK (length(CAST(required_cycles_exact AS BLOB)) BETWEEN 1 AND 128),
+    failure_status TEXT NOT NULL CHECK (failure_status IN ('calculated', 'not_applicable')),
+    result_snapshot_json TEXT NOT NULL CHECK (json_valid(result_snapshot_json) AND length(CAST(result_snapshot_json AS BLOB)) BETWEEN 2 AND 65536),
+    input_content_sha256 TEXT NOT NULL CHECK (length(input_content_sha256) = 64),
+    operation_sha256 TEXT NOT NULL CHECK (length(operation_sha256) = 64),
+    content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+    created_at_utc TEXT NOT NULL
+)
+"""
+RBD_ANALYSIS_INPUTS_NO_UPDATE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER rbd_analysis_input_snapshots_no_update BEFORE UPDATE ON rbd_analysis_input_snapshots BEGIN SELECT RAISE(ABORT, 'rbd_analysis_input_snapshot_immutable'); END"
+)
+RBD_ANALYSIS_INPUTS_NO_DELETE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER rbd_analysis_input_snapshots_no_delete BEFORE DELETE ON rbd_analysis_input_snapshots BEGIN SELECT RAISE(ABORT, 'rbd_analysis_input_snapshot_immutable'); END"
+)
+RBD_CALCULATIONS_NO_UPDATE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER rbd_calculation_snapshots_no_update BEFORE UPDATE ON rbd_calculation_snapshots BEGIN SELECT RAISE(ABORT, 'rbd_calculation_snapshot_immutable'); END"
+)
+RBD_CALCULATIONS_NO_DELETE_TRIGGER_SQL: Final = (
+    "CREATE TRIGGER rbd_calculation_snapshots_no_delete BEFORE DELETE ON rbd_calculation_snapshots BEGIN SELECT RAISE(ABORT, 'rbd_calculation_snapshot_immutable'); END"
+)
+RBD_ANALYSIS_INPUTS_HISTORY_INDEX_SQL: Final = "CREATE INDEX rbd_analysis_input_snapshots_history_idx ON rbd_analysis_input_snapshots(wheel_model_id, created_at_utc DESC, analysis_input_snapshot_id)"
+RBD_ANALYSIS_INPUTS_EXECUTION_INDEX_SQL: Final = "CREATE INDEX rbd_analysis_input_snapshots_execution_idx ON rbd_analysis_input_snapshots(execution_id, created_at_utc DESC)"
+RBD_CALCULATIONS_HISTORY_INDEX_SQL: Final = "CREATE INDEX rbd_calculation_snapshots_history_idx ON rbd_calculation_snapshots(wheel_model_id, created_at_utc DESC, calculation_snapshot_id)"
+RBD_CALCULATIONS_AUDIT_INDEX_SQL: Final = (
+    "CREATE INDEX rbd_calculation_audit_id_idx ON project_audit_events(json_extract(payload_json, '$.calculationSnapshotId')) WHERE event_type='rbd_calculation.created'"
+)
 RELIABILITY_EXECUTIONS_NO_UPDATE_TRIGGER_SQL: Final = (
     "CREATE TRIGGER reliability_test_executions_no_update BEFORE UPDATE ON reliability_test_executions BEGIN SELECT RAISE(ABORT, 'reliability_execution_immutable'); END"
 )
@@ -586,6 +647,16 @@ SCHEMA_V1_OBJECTS: Final = (
     SchemaObject("index", "reliability_dataset_members_observation_idx", RELIABILITY_DATASET_MEMBERS_OBSERVATION_INDEX_SQL),
     SchemaObject("index", "reliability_dataset_included_specimen_idx", RELIABILITY_DATASET_INCLUDED_SPECIMEN_INDEX_SQL),
     SchemaObject("index", "reliability_dataset_included_run_idx", RELIABILITY_DATASET_INCLUDED_RUN_INDEX_SQL),
+    SchemaObject("table", "rbd_analysis_input_snapshots", RBD_ANALYSIS_INPUT_SNAPSHOTS_TABLE_SQL),
+    SchemaObject("table", "rbd_calculation_snapshots", RBD_CALCULATION_SNAPSHOTS_TABLE_SQL),
+    SchemaObject("trigger", "rbd_analysis_input_snapshots_no_update", RBD_ANALYSIS_INPUTS_NO_UPDATE_TRIGGER_SQL),
+    SchemaObject("trigger", "rbd_analysis_input_snapshots_no_delete", RBD_ANALYSIS_INPUTS_NO_DELETE_TRIGGER_SQL),
+    SchemaObject("trigger", "rbd_calculation_snapshots_no_update", RBD_CALCULATIONS_NO_UPDATE_TRIGGER_SQL),
+    SchemaObject("trigger", "rbd_calculation_snapshots_no_delete", RBD_CALCULATIONS_NO_DELETE_TRIGGER_SQL),
+    SchemaObject("index", "rbd_analysis_input_snapshots_history_idx", RBD_ANALYSIS_INPUTS_HISTORY_INDEX_SQL),
+    SchemaObject("index", "rbd_analysis_input_snapshots_execution_idx", RBD_ANALYSIS_INPUTS_EXECUTION_INDEX_SQL),
+    SchemaObject("index", "rbd_calculation_snapshots_history_idx", RBD_CALCULATIONS_HISTORY_INDEX_SQL),
+    SchemaObject("index", "rbd_calculation_audit_id_idx", RBD_CALCULATIONS_AUDIT_INDEX_SQL),
 )
 SCHEMA_V1_CONTRACT: Final = PublishedSchemaContract(
     version=1,
@@ -785,6 +856,7 @@ def _validate_audit_stream(connection: sqlite3.Connection, deadline: RequestDead
         "reliability_execution.materialized",
         "reliability_observation.version_created",
         "reliability_dataset.version_created",
+        "rbd_calculation.created",
     }
     rows = sqlite_query_rows_with_deadline(
         connection,

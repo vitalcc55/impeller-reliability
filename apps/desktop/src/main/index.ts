@@ -35,6 +35,9 @@ import {
   reliabilityObservationCreateVersionCommandSchema,
   reliabilityObservationVersionIdPayloadSchema,
   reliabilityPagePayloadSchema,
+  rbdCalculationCreateCommandSchema,
+  rbdCalculationIdPayloadSchema,
+  rbdSourceInputsPayloadSchema,
   runPackageImportJobPayloadSchema,
   runPackageImportStartCommandSchema,
   runPackageValidationJobPayloadSchema,
@@ -688,6 +691,34 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
     if (!parsed.success) return validationFailure();
     return runProjectOperation(workerClient, async (client) =>
       client.request('reliabilityDataset.createVersion', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.rbdCalculationGetSourceInputs, (_event, raw: unknown) => {
+    const parsed = rbdSourceInputsPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('rbdCalculation.getSourceInputs', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.rbdCalculationCreate, (_event, raw: unknown) => {
+    const parsed = rbdCalculationCreateCommandSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('rbdCalculation.create', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.rbdCalculationListPage, (_event, raw: unknown) => {
+    const parsed = reliabilityPagePayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('rbdCalculation.listPage', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.rbdCalculationGetDetail, (_event, raw: unknown) => {
+    const parsed = rbdCalculationIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('rbdCalculation.getDetail', parsed.data),
     );
   });
 }

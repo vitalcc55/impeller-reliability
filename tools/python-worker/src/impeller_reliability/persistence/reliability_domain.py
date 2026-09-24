@@ -806,17 +806,17 @@ class ReliabilityDomainRepository:
         wheel_model_id = _uuid4(wheel_model_id)
         expected_previous_version_id = None if expected_previous_version_id is None else _uuid4(expected_previous_version_id)
         method_value, metric_kind_value, metric_unit_value = _normalize_dataset_metric(method, metric_kind, metric_unit)
-        title = _bounded_text(title, 200, "Название выборки")
-        population_basis = _bounded_text(population_basis, 2000, "Граница совокупности", multiline=True)
-        methodology_basis = _bounded_text(methodology_basis, 2000, "Основание методики", multiline=True)
-        comparability_basis = _bounded_text(
+        title = bounded_text(title, 200, "Название выборки")
+        population_basis = bounded_text(population_basis, 2000, "Граница совокупности", multiline=True)
+        methodology_basis = bounded_text(methodology_basis, 2000, "Основание методики", multiline=True)
+        comparability_basis = bounded_text(
             comparability_basis,
             2000,
             "Основание сопоставимости",
             multiline=True,
         )
-        actor = _bounded_text(actor, 200, "Автор решения")
-        reason = _bounded_text(reason, 2000, "Основание версии выборки", multiline=True)
+        actor = bounded_text(actor, 200, "Автор решения")
+        reason = bounded_text(reason, 2000, "Основание версии выборки", multiline=True)
         normalized_decisions = _normalize_dataset_decisions(decisions)
         existing = self._dataset_version_by_id(dataset_version_id, deadline)
         if existing is not None:
@@ -1182,8 +1182,8 @@ class ReliabilityDomainRepository:
             raise ProjectOperationError("validation_error", "Документ не относится к выбранному исполнению.")
         return AnalystDocumentSnapshot(
             document_id=document_id,
-            document_kind=_bounded_text(str(row[0]), 100, "Вид документа"),
-            title=_bounded_text(str(row[1]), 300, "Название документа"),
+            document_kind=bounded_text(str(row[0]), 100, "Вид документа"),
+            title=bounded_text(str(row[1]), 300, "Название документа"),
             designation=_bounded_optional_text(str(row[2]), 200, "Обозначение документа"),
             revision_label=_bounded_optional_text(str(row[3]), 200, "Редакция документа"),
             record_revision=int(row[4]),
@@ -2336,11 +2336,11 @@ def normalize_observation_values(
         unit_value,
         normalized_lower,
         normalized_upper,
-        _bounded_text(origin_basis, 1000, "Начало отсчёта", multiline=True),
-        _bounded_text(endpoint_basis, 1000, "Основание границы", multiline=True),
-        _bounded_text(document_locator, 1000, "Локатор документа"),
-        _bounded_text(actor, 200, "Автор решения"),
-        _bounded_text(reason, 2000, "Основание решения", multiline=True),
+        bounded_text(origin_basis, 1000, "Начало отсчёта", multiline=True),
+        bounded_text(endpoint_basis, 1000, "Основание границы", multiline=True),
+        bounded_text(document_locator, 1000, "Локатор документа"),
+        bounded_text(actor, 200, "Автор решения"),
+        bounded_text(reason, 2000, "Основание решения", multiline=True),
     )
 
 
@@ -2400,7 +2400,7 @@ def _normalize_dataset_decisions(
             (
                 _uuid4(_required_string(item["observationVersionId"])),
                 parse_inclusion_decision(_required_string(item["decision"])),
-                _bounded_text(_required_string(item["reason"]), 2000, "Причина включения или исключения"),
+                bounded_text(_required_string(item["reason"]), 2000, "Причина включения или исключения"),
             )
         )
     if len({item[0] for item in normalized}) != len(normalized):
@@ -2444,7 +2444,7 @@ def _validate_included_uniqueness(members: tuple[ReliabilityDatasetMember, ...])
         raise ProjectOperationError("validation_error", "В выборке допускается одна включённая export revision исходного запуска.")
 
 
-def _bounded_text(value: str, maximum_bytes: int, label: str, *, multiline: bool = False) -> str:
+def bounded_text(value: str, maximum_bytes: int, label: str, *, multiline: bool = False) -> str:
     normalized_newlines = value.replace("\r\n", "\n").replace("\r", "\n") if multiline else value
     if _contains_forbidden_control(normalized_newlines, multiline=multiline):
         raise ProjectOperationError("validation_error", f"{label}: значение отсутствует или превышает лимит.")
@@ -2476,7 +2476,7 @@ def _utf8_size(value: str, label: str) -> int:
 
 def _stored_text(value: str, maximum_bytes: int, *, multiline: bool = False) -> str:
     try:
-        normalized = _bounded_text(value, maximum_bytes, "Сохранённый текст", multiline=multiline)
+        normalized = bounded_text(value, maximum_bytes, "Сохранённый текст", multiline=multiline)
     except ProjectOperationError as error:
         raise _corrupt_evidence() from error
     if normalized != value:

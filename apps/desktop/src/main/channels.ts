@@ -64,4 +64,8 @@ export const IPC_CHANNELS = {
   reliabilityDatasetListPage: 'impeller:reliability-dataset:list-page',
   reliabilityDatasetGetVersion: 'impeller:reliability-dataset:get-version',
   reliabilityDatasetCreateVersion: 'impeller:reliability-dataset:create-version',
+  rbdCalculationGetSourceInputs: 'impeller:rbd-calculation:get-source-inputs',
+  rbdCalculationCreate: 'impeller:rbd-calculation:create',
+  rbdCalculationListPage: 'impeller:rbd-calculation:list-page',
+  rbdCalculationGetDetail: 'impeller:rbd-calculation:get-detail',
 } as const;

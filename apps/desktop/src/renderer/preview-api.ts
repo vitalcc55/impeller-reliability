@@ -890,6 +890,12 @@ export function createPreviewApi(mode: PreviewMode): ImpellerApi {
         return Promise.resolve(success({ disposition: 'created' as const, version }));
       },
     },
+    rbdCalculation: {
+      getSourceInputs: () => Promise.resolve(noProject()),
+      create: () => Promise.resolve(noProject()),
+      listPage: () => Promise.resolve(noProject()),
+      getDetail: () => Promise.resolve(noProject()),
+    },
   };
 }
 

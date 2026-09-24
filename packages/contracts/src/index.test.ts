@@ -13,6 +13,9 @@ import {
   projectIdSchema,
   projectBackupResultSchema,
   projectOverviewSchema,
+  rbdCalculationCreateCommandSchema,
+  rbdPlanSourceSchema,
+  rbdResultSnapshotSchema,
   reliabilityDatasetCreateVersionCommandSchema,
   reliabilityExecutionPageSchema,
   reliabilityObservationCreateVersionCommandSchema,
@@ -29,6 +32,128 @@ import {
 } from './index';
 
 describe('worker contracts', () => {
+  it('requires the five RBD input choices and well-formed Unicode without client results', () => {
+    const command = {
+      analysisInputSnapshotId: '113ec2c8-9439-4ce8-823d-3e2b0de8f001',
+      calculationSnapshotId: '223ec2c8-9439-4ce8-823d-3e2b0de8f002',
+      executionId: '333ec2c8-9439-4ce8-823d-3e2b0de8f003',
+      planSelection: 'original',
+      selections: [
+        'base_cycles',
+        'reserve_factor',
+        'nominal_rpm',
+        'acceleration_duration_s',
+        'deceleration_duration_s',
+      ].map((field) => ({ field, origin: 'source' })),
+      failureEvidence: null,
+      actor: 'Инженер',
+      reason: 'Расчёт 🔧',
+    };
+    expect(rbdCalculationCreateCommandSchema.safeParse(command).success).toBe(true);
+    const withoutFailureEvidence: Record<string, unknown> = { ...command };
+    delete withoutFailureEvidence['failureEvidence'];
+    expect(rbdCalculationCreateCommandSchema.safeParse(withoutFailureEvidence).success).toBe(false);
+    expect(
+      rbdCalculationCreateCommandSchema.safeParse({ ...command, reason: '\ud800' }).success,
+    ).toBe(false);
+    expect(
+      rbdCalculationCreateCommandSchema.safeParse({ ...command, reason: '🔧'.repeat(501) }).success,
+    ).toBe(false);
+    expect(
+      rbdCalculationCreateCommandSchema.safeParse({ ...command, reason: '🔧'.repeat(400) }).success,
+    ).toBe(true);
+    expect(
+      rbdCalculationCreateCommandSchema.safeParse({ ...command, calculatedOutputs: {} }).success,
+    ).toBe(false);
+    expect(
+      rbdCalculationCreateCommandSchema.safeParse({
+        ...command,
+        selections: Array.from({ length: 5 }, () => command.selections[0]),
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects malformed exact RBD result fields at the TypeScript boundary', () => {
+    const exact = { numerator: '0', denominator: '1', decimal: '0', decimal_preview: '0' };
+    const phase = {
+      phase: 'acceleration',
+      start_s: exact,
+      end_s: exact,
+      start_rpm: exact,
+      end_rpm: exact,
+    };
+    const result = {
+      algorithm_id: 'rbd_reference',
+      algorithm_version: '1.0.0',
+      numeric_policy: 'exact_fraction_v1',
+      maximum_rpm: exact,
+      required_cycles_exact: exact,
+      steady_duration_s_exact: exact,
+      cycle_duration_s_exact: exact,
+      total_duration_s_exact: exact,
+      failure_result: {
+        status: 'not_applicable',
+        cycles_to_failure: null,
+        reason_code: 'failure_duration_unavailable',
+      },
+      phases: [phase, { ...phase, phase: 'steady_rotation' }, { ...phase, phase: 'deceleration' }],
+      formula_references: ['ПМИ, формула 1', 'ПМИ, формула 2', 'ПМИ, формула 3'],
+    };
+    expect(rbdResultSnapshotSchema.safeParse(result).success).toBe(true);
+    expect(
+      rbdResultSnapshotSchema.safeParse({
+        ...result,
+        required_cycles_exact: { ...exact, numerator: '01' },
+      }).success,
+    ).toBe(false);
+    expect(rbdResultSnapshotSchema.safeParse({ ...result, formula_references: [] }).success).toBe(
+      false,
+    );
+  });
+  it('accepts source Unicode code points consistently with the Python response boundary', () => {
+    const source = {
+      executionId: '333ec2c8-9439-4ce8-823d-3e2b0de8f003',
+      localImportId: '113ec2c8-9439-4ce8-823d-3e2b0de8f001',
+      packageId: 'package-1',
+      runId: 'run-1',
+      exportRevision: 1,
+      outerPackageSha256: 'a'.repeat(64),
+      sourceSnapshotSha256: 'b'.repeat(64),
+      producerName: '🔧'.repeat(101),
+      producerVersion: '1',
+      producerBuildId: 'build-1',
+      producerGitCommit: 'commit-1',
+      planSelection: 'original',
+      payloadPath: 'plan/original.json',
+      payloadSha256: 'c'.repeat(64),
+      planId: 'plan-1',
+      planRevision: 1,
+      sourceValues: {
+        baseCycles: '1000',
+        reserveFactor: '1.5',
+        nominalRpm: '1500',
+        accelerationDurationS: '5',
+        decelerationDurationS: '5',
+      },
+      methodicalRequirements: {
+        requiredCyclesExact: '1500',
+        requiredSteadyDurationSExact: '60',
+      },
+      executionTargets: {
+        targetCycles: '1500',
+        targetSteadyDurationS: '60',
+        totalDurationS: '70',
+        roundingPolicy: '🔧'.repeat(101),
+      },
+    };
+    expect(rbdPlanSourceSchema.safeParse(source).success).toBe(true);
+    expect(
+      rbdPlanSourceSchema.safeParse({ ...source, producerName: 'x'.repeat(201) }).success,
+    ).toBe(false);
+    expect(rbdPlanSourceSchema.safeParse({ ...source, producerName: '\ud800' }).success).toBe(
+      false,
+    );
+  });
   it('accepts canonical RFC 4122 project IDs across versions without weakening entity IDs', () => {
     const projectId = '019c89f0-0b57-7ef5-9656-595184fcb272';
     expect(projectIdSchema.parse(projectId)).toBe(projectId);
