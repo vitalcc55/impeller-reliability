@@ -20,6 +20,7 @@ import {
   replaceDatasetCandidateVersion,
   type DatasetCandidateDecision,
 } from './reliability-dataset-draft';
+import { classifyMissingVersionAfterReattach } from './reliability-write-reconciliation';
 
 interface ReliabilityPreparationProps {
   readonly desktopApi: ImpellerApi;
@@ -650,53 +651,63 @@ export const ReliabilityPreparation = forwardRef<
           const observationProbe =
             await desktopApi.reliabilityObservation.getVersion(observationVersionId);
           if (!observationProbe.ok) {
-            setError(
-              observationProbe.error.code === 'entity_not_found'
-                ? unresolvedWriteError('интерпретации')
-                : observationProbe.error,
+            if (
+              classifyMissingVersionAfterReattach(true, observationProbe.error.code) ===
+              'retry_same_id'
+            ) {
+              setObservationWriteUnresolved(false);
+              setError(null);
+              setMessage(
+                'Версия интерпретации не была записана. Черновик и ID сохранены; повторите сохранение.',
+              );
+              reconciled = true;
+            } else {
+              setError(observationProbe.error);
+              return false;
+            }
+          }
+          if (observationProbe.ok) {
+            const restored = observationProbe.result;
+            if (
+              execution === null ||
+              !observationResponseMatches(restored, observationVersionId, execution.executionId)
+            ) {
+              setError(contractError());
+              return false;
+            }
+            setVersions((current) => [
+              restored,
+              ...current.filter(
+                (item) => item.observationVersionId !== restored.observationVersionId,
+              ),
+            ]);
+            setSelectedVersion(restored);
+            setObservationDraft(versionToDraft(restored));
+            setObservationVersionId(crypto.randomUUID());
+            setObservationDirty(false);
+            setObservationWriteUnresolved(false);
+            setExecutions((current) =>
+              current.map((item) =>
+                item.executionId === restored.executionId
+                  ? {
+                      ...item,
+                      currentObservationVersionId: restored.observationVersionId,
+                      currentObservationVersionNumber: restored.versionNumber,
+                      currentClassification: restored.classification,
+                    }
+                  : item,
+              ),
             );
-            return false;
+            setCandidateLatestVersions((current) => ({
+              ...current,
+              [restored.executionId]: {
+                observationVersionId: restored.observationVersionId,
+                versionNumber: restored.versionNumber,
+                classification: restored.classification,
+              },
+            }));
+            reconciled = true;
           }
-          const restored = observationProbe.result;
-          if (
-            execution === null ||
-            !observationResponseMatches(restored, observationVersionId, execution.executionId)
-          ) {
-            setError(contractError());
-            return false;
-          }
-          setVersions((current) => [
-            restored,
-            ...current.filter(
-              (item) => item.observationVersionId !== restored.observationVersionId,
-            ),
-          ]);
-          setSelectedVersion(restored);
-          setObservationDraft(versionToDraft(restored));
-          setObservationVersionId(crypto.randomUUID());
-          setObservationDirty(false);
-          setObservationWriteUnresolved(false);
-          setExecutions((current) =>
-            current.map((item) =>
-              item.executionId === restored.executionId
-                ? {
-                    ...item,
-                    currentObservationVersionId: restored.observationVersionId,
-                    currentObservationVersionNumber: restored.versionNumber,
-                    currentClassification: restored.classification,
-                  }
-                : item,
-            ),
-          );
-          setCandidateLatestVersions((current) => ({
-            ...current,
-            [restored.executionId]: {
-              observationVersionId: restored.observationVersionId,
-              versionNumber: restored.versionNumber,
-              classification: restored.classification,
-            },
-          }));
-          reconciled = true;
         }
         const datasetProbeId = datasetWriteUnresolved
           ? datasetVersionId
@@ -706,29 +717,41 @@ export const ReliabilityPreparation = forwardRef<
         if (datasetProbeId !== null) {
           const datasetProbe = await desktopApi.reliabilityDataset.getVersion(datasetProbeId);
           if (!datasetProbe.ok) {
-            setError(
-              datasetProbe.error.code === 'entity_not_found'
-                ? unresolvedWriteError('выборки')
-                : datasetProbe.error,
-            );
-            return false;
+            if (
+              classifyMissingVersionAfterReattach(
+                datasetWriteUnresolved,
+                datasetProbe.error.code,
+              ) === 'retry_same_id'
+            ) {
+              setDatasetWriteUnresolved(false);
+              setError(null);
+              setMessage(
+                'Версия выборки не была записана. Черновик и ID сохранены; повторите сохранение.',
+              );
+              reconciled = true;
+            } else {
+              setError(datasetProbe.error);
+              return false;
+            }
           }
-          const restored = datasetProbe.result;
-          if (
-            restored.datasetVersionId !== datasetProbeId ||
-            restored.wheelModelId !== wheelModelId ||
-            !hasUniqueDatasetMembers(restored.members)
-          ) {
-            setError(contractError());
-            return false;
+          if (datasetProbe.ok) {
+            const restored = datasetProbe.result;
+            if (
+              restored.datasetVersionId !== datasetProbeId ||
+              restored.wheelModelId !== wheelModelId ||
+              !hasUniqueDatasetMembers(restored.members)
+            ) {
+              setError(contractError());
+              return false;
+            }
+            if (!(await selectDatasetVersion(restored))) return false;
+            setDatasets((current) => [
+              restored,
+              ...current.filter((item) => item.datasetVersionId !== restored.datasetVersionId),
+            ]);
+            setDatasetWriteUnresolved(false);
+            reconciled = true;
           }
-          if (!(await selectDatasetVersion(restored))) return false;
-          setDatasets((current) => [
-            restored,
-            ...current.filter((item) => item.datasetVersionId !== restored.datasetVersionId),
-          ]);
-          setDatasetWriteUnresolved(false);
-          reconciled = true;
         }
         if (reconciled || dirty) return true;
         return wheelModelId === null ? true : loadWheel(wheelModelId);
@@ -1656,15 +1679,6 @@ function contractError(): DesktopError {
   return {
     code: 'contract_error',
     message: 'Полученные сведения не относятся к выбранному исполнению. Обновите раздел.',
-    details: {},
-    retryable: true,
-  };
-}
-
-function unresolvedWriteError(entityLabel: string): DesktopError {
-  return {
-    code: 'revision_conflict',
-    message: `Не удалось подтвердить сохранение ${entityLabel} после перезапуска. Черновик и идентификатор повтора сохранены; повторите сверку или сохранение.`,
     details: {},
     retryable: true,
   };

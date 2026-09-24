@@ -270,7 +270,11 @@ Characterization → tests → implementation → профильный review �
 closure → narrow checks → commit. Статус: закрыт на ветке
 `codex/m04c-rbd-calculation`: все четыре findings подтверждены и исправлены,
 reattach-гипотеза уточнена и закрыта fail-closed сверкой, финальные профильные
-review не содержат findings. `pnpm verify -- --IncludePackaging` прошёл: 71
+review не содержат findings. Review объединённого PR выявил крайний случай:
+подтверждённое отсутствие ещё не записанной версии после потери ответа должно
+разрешать повтор с прежним ID; ошибки чтения и отсутствие уже сохранённой
+версии остаются блокирующими. Исправление проходит узкие тесты и повторный
+полный локальный gate. Первоначальный `pnpm verify -- --IncludePackaging` прошёл: 71
 Vitest, 438 Python tests (85.55%), 15 Electron E2E, worker build, WinUnpacked и
 Portable smoke; Browser ready/unavailable и detector выполнены.
 
@@ -313,8 +317,11 @@ Impeccable detector отметил только ранее существова�
 `pnpm verify -- --IncludePackaging` завершился успешно: 76 Vitest, 474 Python
 tests (85.05%), 15 Electron E2E, worker build, WinUnpacked и Portable smoke;
 оба packaged smoke действительно выполнили расчёт frozen exact-rounding RBD,
-проверили отличия от producer targets и тот же hash после reopen. Commit,
-push, PR и review итогового SHA отмечаются только после фактического выполнения.
+проверили отличия от producer targets и тот же hash после reopen. После
+исправления reattach-сценария повторный полный gate прошёл: 77 Vitest, 474
+Python tests (85.04%), 15 Electron E2E, оба packaged smoke с расчётом.
+Текущий PR — #9; статус review нового head отмечается только после его
+фактического выполнения.
 
 Завершение этапа означает один прослеживаемый production-сценарий от exact
 managed R130SH source до сохранённого результата после reopen. Это не
