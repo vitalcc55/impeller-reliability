@@ -1298,6 +1298,92 @@ export const rbdResultSnapshotSchema = z
     formula_references: z.array(z.string()).min(3).max(8),
   })
   .strict();
+const rbdOperationEvidenceReferenceSchema = z
+  .object({
+    document_id: entityIdSchema.nullable(),
+    document_record_revision: z.number().int().positive().nullable(),
+    document_locator: z.string().max(1_000),
+    observation_version_id: entityIdSchema.nullable(),
+  })
+  .strict();
+const rbdOperationFieldSelectionSchema = z
+  .object({
+    field: rbdInputFieldSchema,
+    origin: z.enum(['source', 'manual']),
+    manual_value: z.string().max(64).nullable(),
+    basis: z.string().max(2_000),
+    evidence: rbdOperationEvidenceReferenceSchema.nullable(),
+  })
+  .strict();
+const rbdOperationFailureEvidenceSchema = z
+  .object({
+    applicability: rbdFailureApplicabilitySchema,
+    duration_to_failure_s: z.string().max(64).nullable(),
+    basis: z.string().max(2_000),
+    failure_observation_ids: z
+      .array(entityIdSchema)
+      .max(64)
+      .refine((ids) => new Set(ids).size === ids.length),
+    evidence: rbdOperationEvidenceReferenceSchema.nullable(),
+  })
+  .strict();
+const rbdOperationSnapshotSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    analysisInputSnapshotId: entityIdSchema,
+    calculationSnapshotId: entityIdSchema,
+    executionId: entityIdSchema,
+    planSelection: rbdPlanSelectionSchema,
+    selections: z
+      .array(rbdOperationFieldSelectionSchema)
+      .length(5)
+      .refine((items) => new Set(items.map((item) => item.field)).size === items.length),
+    failureEvidence: rbdOperationFailureEvidenceSchema.nullable(),
+    actor: z.string().min(1).max(200),
+    reason: z.string().max(2_000),
+    algorithmId: z.literal('rbd_reference'),
+    algorithmVersion: z.literal('1.0.0'),
+    numericPolicy: z.literal('exact_fraction_v1'),
+  })
+  .strict();
+const rbdSourceSnapshotSchema = z
+  .object({
+    executionId: entityIdSchema,
+    localImportId: entityIdSchema,
+    packageId: z.string().min(1).max(200),
+    runId: z.string().min(1).max(200),
+    exportRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    outerPackageSha256: sha256Schema,
+    sourceSnapshotSha256: sha256Schema,
+    producer: z
+      .object({
+        name: z.string().min(1).max(200),
+        version: z.string().min(1).max(200),
+        buildId: z.string().min(1).max(200),
+        gitCommit: z.string().min(1).max(200),
+      })
+      .strict(),
+    planSelection: rbdPlanSelectionSchema,
+    payloadPath: z.enum(['plan/original.json', 'plan/effective.json']),
+    payloadSha256: sha256Schema,
+    planId: z.string().min(1).max(200),
+    planRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    methodicalRequirements: z
+      .object({
+        required_cycles_exact: z.string().max(128),
+        required_steady_duration_s_exact: z.string().max(128),
+      })
+      .strict(),
+    executionTargets: z
+      .object({
+        target_cycles: z.string().regex(/^(?:0|[1-9][0-9]{0,63})$/u),
+        target_steady_duration_s: z.string().max(128),
+        total_duration_s: z.string().max(128),
+        rounding_policy: z.string().min(1).max(512),
+      })
+      .strict(),
+  })
+  .strict();
 const rbdSavedEvidenceSchema = z
   .object({
     document: z
@@ -1305,21 +1391,34 @@ const rbdSavedEvidenceSchema = z
         documentId: entityIdSchema,
         recordRevision: z.number().int().positive(),
         documentKind: caseDocumentKindSchema,
-        title: z.string(),
-        designation: z.string(),
-        revisionLabel: z.string(),
+        title: z.string().max(300),
+        designation: z.string().max(200),
+        revisionLabel: z.string().max(200),
         fileSha256: sha256Schema.nullable(),
-        locator: z.string(),
+        locator: z.string().max(1_000),
       })
       .strict()
       .nullable(),
-    observation: z.record(z.string(), z.unknown()).nullable(),
+    observation: z
+      .object({
+        observationVersionId: entityIdSchema,
+        versionNumber: z.number().int().positive(),
+        classification: z.enum(['failure', 'right_censored', 'withdrawn', 'invalid']),
+        endpointKind: z.enum(['exact', 'right_bound', 'interval', 'unavailable']),
+        metricKind: z.enum(['rbd_steady_rotation_time', 'rpt_start_stop_cycles']).nullable(),
+        metricUnit: z.enum(['hours', 'count']).nullable(),
+        lowerValue: z.string().max(64).nullable(),
+        upperValue: z.string().max(64).nullable(),
+        contentSha256: sha256Schema,
+      })
+      .strict()
+      .nullable(),
   })
   .strict();
 export const rbdSavedFieldSelectionSchema = z
   .object({
     field: rbdInputFieldSchema,
-    unit: z.string().min(1).max(32),
+    unit: z.enum(['cycle', '1', 'rpm', 's']),
     origin: z.enum(['source', 'manual']),
     value: z.string().min(1).max(64),
     rawSourceValue: z.string().max(128).nullable(),
@@ -1333,16 +1432,40 @@ export const rbdSavedFailureEvidenceSchema = z
     applicability: rbdFailureApplicabilitySchema,
     durationToFailureS: z.string().max(64).nullable(),
     basis: z.string().min(1).max(2_000),
-    failureObservations: z.array(z.record(z.string(), z.unknown())).max(64),
+    failureObservations: z
+      .array(
+        z
+          .object({
+            failureObservationId: entityIdSchema,
+            failureType: z.enum(['specimen_outcome', 'technical_interruption']),
+            subjectKind: z.enum(['specimen', 'equipment', 'unknown']),
+            sourceEventReference: z.string().min(1).max(512),
+            sourceFieldReference: z.string().min(1).max(512),
+            durationS: z.string().max(64).nullable(),
+            rpm: z.string().max(64).nullable(),
+            observedAtUtc: z.string().max(64).nullable(),
+            sourceOuterPackageSha256: sha256Schema,
+          })
+          .strict(),
+      )
+      .max(64)
+      .refine(
+        (items) => new Set(items.map((item) => item.failureObservationId)).size === items.length,
+      ),
     evidence: rbdSavedEvidenceSchema.nullable(),
   })
   .strict();
 export const rbdInputSnapshotPayloadSchema = z
   .object({
     schemaVersion: z.literal(1),
-    operation: z.record(z.string(), z.unknown()),
-    source: z.record(z.string(), z.unknown()),
-    fieldSelections: z.array(rbdSavedFieldSelectionSchema).length(5),
+    operation: rbdOperationSnapshotSchema,
+    source: rbdSourceSnapshotSchema,
+    fieldSelections: z
+      .array(rbdSavedFieldSelectionSchema)
+      .length(5)
+      .refine((items) =>
+        items.every((item, index) => item.field === rbdInputFieldSchema.options[index]),
+      ),
     failureEvidence: rbdSavedFailureEvidenceSchema.nullable(),
   })
   .strict();

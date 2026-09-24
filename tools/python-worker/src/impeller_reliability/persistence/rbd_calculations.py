@@ -22,6 +22,11 @@ from impeller_reliability.calculations.rbd import (
     RbdReferenceInput,
     calculate_rbd_reference,
 )
+from impeller_reliability.calculations.rbd_input_snapshot import (
+    RbdInputSnapshotModel,
+    RbdOperationEvidenceReferenceModel,
+    RbdSavedEvidenceSnapshotModel,
+)
 from impeller_reliability.calculations.rbd_result_snapshot import RbdReferenceResultModel
 from impeller_reliability.persistence.audit import audit_now, insert_audit
 from impeller_reliability.persistence.project_errors import ProjectOperationError
@@ -423,7 +428,7 @@ class RbdCalculationRepository:
         _check_deadline(deadline, "rbd_calculation_detail")
         if row is None:
             raise ProjectOperationError("entity_not_found", "Снимок расчёта РБД не найден.")
-        return _detail_from_row(row)
+        return _detail_from_row(row, self._connection, deadline)
 
     def list_page(
         self,
@@ -738,7 +743,11 @@ JOIN rbd_analysis_input_snapshots i
 """
 
 
-def _detail_from_row(row: Sequence[object]) -> RbdCalculationDetail:
+def _detail_from_row(
+    row: Sequence[object],
+    connection: sqlite3.Connection,
+    deadline: RequestDeadline | None,
+) -> RbdCalculationDetail:
     input_payload = _load_canonical_json_object(row[16], "input")
     result_payload = _load_canonical_json_object(row[25], "result")
     input_snapshot = RbdAnalysisInputSnapshot(
@@ -780,11 +789,12 @@ def _detail_from_row(row: Sequence[object]) -> RbdCalculationDetail:
     )
     if _uuid4(str(row[30])) != input_snapshot.execution_id or _uuid4(str(row[31])) != input_snapshot.wheel_model_id:
         raise _corrupt()
-    _validate_snapshot_shapes(input_payload, result_payload)
     try:
-        RbdReferenceResultModel.model_validate(result_payload)
+        validated_input = RbdInputSnapshotModel.model_validate(input_payload)
+        validated_result = RbdReferenceResultModel.model_validate(result_payload)
     except ValidationError as error:
         raise _corrupt() from error
+    _validate_input_snapshot_links(validated_input, validated_result, input_snapshot, calculation_snapshot, connection, deadline)
     required_cycles = _required_mapping(result_payload["required_cycles_exact"], "required cycles")
     failure = _required_mapping(result_payload["failure_result"], "failure result")
     if required_cycles.get("decimal") != row[32] or failure.get("status") != row[33]:
@@ -829,7 +839,7 @@ def validate_rbd_calculation_evidence(
     count = 0
     with closing(stream):
         for row in stream:
-            detail = _detail_from_row(row)
+            detail = _detail_from_row(row, connection, deadline)
             input_snapshot = detail.input_snapshot
             calculation = detail.calculation_snapshot
             if input_snapshot.operation_sha256 != calculation.operation_sha256:
@@ -1010,7 +1020,7 @@ def _load_canonical_json_object(value: object, label: str, *, maximum_bytes: int
         if len(value.encode("utf-8")) > maximum_bytes:
             raise _corrupt()
         decoded: object = json.loads(value)
-    except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
+    except (UnicodeError, ValueError, RecursionError) as error:
         raise _corrupt() from error
     if not isinstance(decoded, dict):
         raise _corrupt()
@@ -1026,84 +1036,250 @@ def _required_mapping(value: object, label: str) -> dict[str, object]:
     return cast(dict[str, object], value)
 
 
-def _validate_snapshot_shapes(input_payload: dict[str, object], result_payload: dict[str, object]) -> None:
-    if set(input_payload) != {"schemaVersion", "operation", "source", "fieldSelections", "failureEvidence"}:
+def _validate_input_snapshot_links(
+    payload: RbdInputSnapshotModel,
+    result: RbdReferenceResultModel,
+    analysis_input: RbdAnalysisInputSnapshot,
+    calculation: RbdCalculationSnapshot,
+    connection: sqlite3.Connection,
+    deadline: RequestDeadline | None,
+) -> None:
+    operation = payload.operation
+    source = payload.source
+    if (
+        operation.analysisInputSnapshotId != analysis_input.analysis_input_snapshot_id
+        or operation.calculationSnapshotId != calculation.calculation_snapshot_id
+        or operation.executionId != analysis_input.execution_id
+        or operation.planSelection != analysis_input.plan_selection
+        or operation.actor != analysis_input.actor
+        or operation.reason != analysis_input.decision_reason
+        or source.executionId != analysis_input.execution_id
+        or source.localImportId != analysis_input.local_import_id
+        or source.runId != analysis_input.source_run_id
+        or source.exportRevision != analysis_input.export_revision
+        or source.outerPackageSha256 != analysis_input.source_outer_package_sha256
+        or source.sourceSnapshotSha256 != analysis_input.source_snapshot_sha256
+        or source.planSelection != analysis_input.plan_selection
+        or source.payloadPath != analysis_input.plan_payload_path
+        or source.payloadSha256 != analysis_input.plan_payload_sha256
+        or source.planId != analysis_input.plan_id
+        or source.planRevision != analysis_input.plan_revision
+        or source.payloadPath != f"plan/{source.planSelection}.json"
+    ):
         raise _corrupt()
-    if input_payload["schemaVersion"] != 1:
+    summary_column = "p.original_plan_summary_json" if source.planSelection == "original" else "p.effective_plan_summary_json"
+    source_row = connection.execute(
+        f"""
+        SELECT s.package_id, s.producer_name, s.producer_version,
+               s.producer_build_id, s.producer_git_commit,
+               p.original_plan_id, p.original_plan_revision, p.original_plan_sha256,
+               p.effective_plan_id, p.effective_plan_revision, p.effective_plan_sha256,
+               CASE WHEN typeof({summary_column})='text'
+                         AND length(CAST({summary_column} AS BLOB))<=65536
+                    THEN {summary_column} END
+        FROM r130sh_sources s
+        JOIN r130sh_run_projections p ON p.local_import_id=s.local_import_id
+        WHERE s.local_import_id=? AND p.mode='rbd'
+        """,
+        (analysis_input.local_import_id,),
+    ).fetchone()
+    _check_deadline(deadline, "rbd_source_snapshot_provenance")
+    if source_row is None or (
+        source.packageId,
+        source.producer.name,
+        source.producer.version,
+        source.producer.buildId,
+        source.producer.gitCommit,
+    ) != tuple(source_row[:5]):
         raise _corrupt()
-    operation = _required_mapping(input_payload["operation"], "operation")
-    if set(operation) != {
-        "schemaVersion",
-        "analysisInputSnapshotId",
-        "calculationSnapshotId",
-        "executionId",
-        "planSelection",
-        "selections",
-        "failureEvidence",
-        "actor",
-        "reason",
-        "algorithmId",
-        "algorithmVersion",
-        "numericPolicy",
-    }:
+    plan_values = source_row[5:8] if source.planSelection == "original" else source_row[8:11]
+    if (source.planId, source.planRevision, source.payloadSha256) != tuple(plan_values):
         raise _corrupt()
-    source = _required_mapping(input_payload["source"], "source")
-    if set(source) != {
-        "executionId",
-        "localImportId",
-        "packageId",
-        "runId",
-        "exportRevision",
-        "outerPackageSha256",
-        "sourceSnapshotSha256",
-        "producer",
-        "planSelection",
-        "payloadPath",
-        "payloadSha256",
-        "planId",
-        "planRevision",
-        "methodicalRequirements",
-        "executionTargets",
-    }:
+    plan_summary = _load_canonical_json_object(source_row[11], "source plan summary")
+    source_values = _required_mapping(plan_summary.get("source_values"), "source values")
+    nominal_rpm = source_values.get("nominal_rpm")
+    if nominal_rpm is not None and not isinstance(nominal_rpm, str):
         raise _corrupt()
-    fields = input_payload["fieldSelections"]
-    if not isinstance(fields, list) or len(cast(list[object], fields)) != len(_FIELD_ORDER):
+    requirements = _required_mapping(plan_summary.get("methodical_requirements"), "source requirements")
+    targets = _required_mapping(plan_summary.get("execution_targets"), "source targets")
+    target_cycles = targets.get("target_cycles")
+    if (
+        not isinstance(target_cycles, int)
+        or isinstance(target_cycles, bool)
+        or (
+            requirements.get("required_cycles_exact") != source.methodicalRequirements.required_cycles_exact
+            or requirements.get("required_steady_duration_s_exact") != source.methodicalRequirements.required_steady_duration_s_exact
+            or str(target_cycles) != source.executionTargets.target_cycles
+            or targets.get("target_steady_duration_s") != source.executionTargets.target_steady_duration_s
+            or targets.get("total_duration_s") != source.executionTargets.total_duration_s
+            or targets.get("rounding_policy") != source.executionTargets.rounding_policy
+        )
+    ):
         raise _corrupt()
-    observed_fields: list[object] = []
-    for value in cast(list[object], fields):
-        field = _required_mapping(value, "field selection")
-        if set(field) != {
-            "field",
-            "unit",
-            "origin",
-            "value",
-            "rawSourceValue",
-            "sourceReference",
-            "basis",
-            "evidence",
-        }:
+    commands_by_field = {selection.field: selection for selection in operation.selections}
+    if len(commands_by_field) != len(_FIELD_ORDER) or set(commands_by_field) != set(_FIELD_ORDER):
+        raise _corrupt()
+    if [selection.field for selection in payload.fieldSelections] != list(_FIELD_ORDER):
+        raise _corrupt()
+    for selected in payload.fieldSelections:
+        command = commands_by_field[selected.field]
+        if (
+            command.field != selected.field
+            or command.origin != selected.origin
+            or selected.unit != _FIELD_UNITS[selected.field]
+            or selected.sourceReference != f"{source.payloadPath}#/source_values/{selected.field}"
+            or (selected.field == "nominal_rpm" and selected.rawSourceValue != nominal_rpm)
+        ):
             raise _corrupt()
-        observed_fields.append(field["field"])
-    if observed_fields != list(_FIELD_ORDER):
+        if command.origin == "source":
+            if (
+                command.manual_value is not None
+                or command.basis != ""
+                or command.evidence is not None
+                or selected.rawSourceValue is None
+                or selected.value != selected.rawSourceValue
+                or selected.basis != ""
+                or selected.evidence is not None
+            ):
+                raise _corrupt()
+        elif (
+            command.manual_value != selected.value
+            or _normalized_snapshot_text(command.basis, 2000, "Основание расчёта", multiline=True) != selected.basis
+            or (command.evidence is not None and command.evidence.observation_version_id is not None)
+        ):
+            raise _corrupt()
+        elif command.origin == "manual":
+            _validate_saved_evidence_link(
+                command.evidence,
+                selected.evidence,
+                analysis_input.execution_id,
+                connection,
+                deadline,
+            )
+    command_failure = operation.failureEvidence
+    saved_failure = payload.failureEvidence
+    expected_failure_status = "calculated" if command_failure is not None and command_failure.applicability == "exact_supported" else "not_applicable"
+    if result.failure_result.status != expected_failure_status:
         raise _corrupt()
-    if set(result_payload) != {
-        "algorithm_id",
-        "algorithm_version",
-        "numeric_policy",
-        "maximum_rpm",
-        "required_cycles_exact",
-        "steady_duration_s_exact",
-        "cycle_duration_s_exact",
-        "total_duration_s_exact",
-        "failure_result",
-        "phases",
-        "diagram_points",
-        "formula_references",
-    }:
+    if (command_failure is None) != (saved_failure is None):
         raise _corrupt()
-    phases = result_payload["phases"]
-    if not isinstance(phases, list) or len(cast(list[object], phases)) != 3:
+    if command_failure is not None and saved_failure is not None:
+        if len(set(command_failure.failure_observation_ids)) != len(command_failure.failure_observation_ids):
+            raise _corrupt()
+        if (
+            command_failure.applicability != saved_failure.applicability
+            or command_failure.duration_to_failure_s != saved_failure.durationToFailureS
+            or _normalized_snapshot_text(command_failure.basis, 2000, "Основание отказа", multiline=True) != saved_failure.basis
+            or command_failure.failure_observation_ids != [observation.failureObservationId for observation in saved_failure.failureObservations]
+            or any(observation.sourceOuterPackageSha256 != source.outerPackageSha256 for observation in saved_failure.failureObservations)
+        ):
+            raise _corrupt()
+        if command_failure.applicability == "exact_supported" and (
+            command_failure.duration_to_failure_s is None
+            or command_failure.evidence is None
+            or command_failure.evidence.document_id is None
+            or command_failure.evidence.observation_version_id is not None
+        ):
+            raise _corrupt()
+        if command_failure.applicability == "exact_supported" and any(
+            observation.failureType != "specimen_outcome" or observation.subjectKind != "specimen" or observation.durationS != command_failure.duration_to_failure_s
+            for observation in saved_failure.failureObservations
+        ):
+            raise _corrupt()
+        for observed in saved_failure.failureObservations:
+            observation_row = connection.execute(
+                """
+                SELECT failure_type, subject_kind, source_event_reference,
+                       source_field_reference, duration_s, rpm, observed_at_utc,
+                       source_outer_package_sha256
+                FROM failure_observations
+                WHERE failure_id=? AND execution_id=?
+                """,
+                (observed.failureObservationId, analysis_input.execution_id),
+            ).fetchone()
+            _check_deadline(deadline, "rbd_failure_observation_provenance")
+            if observation_row is None or (
+                observed.failureType,
+                observed.subjectKind,
+                observed.sourceEventReference,
+                observed.sourceFieldReference,
+                observed.durationS,
+                observed.rpm,
+                observed.observedAtUtc,
+                observed.sourceOuterPackageSha256,
+            ) != tuple(observation_row):
+                raise _corrupt()
+        _validate_saved_evidence_link(
+            command_failure.evidence,
+            saved_failure.evidence,
+            analysis_input.execution_id,
+            connection,
+            deadline,
+        )
+    _check_deadline(deadline, "rbd_input_snapshot_links")
+
+
+def _validate_saved_evidence_link(
+    reference: RbdOperationEvidenceReferenceModel | None,
+    saved: RbdSavedEvidenceSnapshotModel | None,
+    execution_id: str,
+    connection: sqlite3.Connection,
+    deadline: RequestDeadline | None,
+) -> None:
+    if reference is None:
+        if saved is not None:
+            raise _corrupt()
+        return
+    if saved is None:
         raise _corrupt()
+    document = saved.document
+    observation = saved.observation
+    if reference.document_id is None:
+        if reference.document_record_revision is not None or reference.document_locator or document is not None:
+            raise _corrupt()
+    elif (
+        document is None
+        or document.documentId != reference.document_id
+        or document.recordRevision != reference.document_record_revision
+        or document.locator != _normalized_snapshot_text(reference.document_locator, 1000, "Локатор документа")
+    ):
+        raise _corrupt()
+    if reference.observation_version_id is None:
+        if observation is not None:
+            raise _corrupt()
+    elif observation is None or observation.observationVersionId != reference.observation_version_id:
+        raise _corrupt()
+    else:
+        observation_row = connection.execute(
+            """
+            SELECT v.version_number, v.classification, v.endpoint_kind,
+                   v.metric_kind, v.metric_unit, v.lower_value, v.upper_value,
+                   v.content_sha256
+            FROM reliability_observation_versions v
+            JOIN reliability_observations o ON o.observation_id=v.observation_id
+            WHERE v.observation_version_id=? AND o.execution_id=?
+            """,
+            (reference.observation_version_id, execution_id),
+        ).fetchone()
+        _check_deadline(deadline, "rbd_observation_snapshot_provenance")
+        if observation_row is None or (
+            observation.versionNumber,
+            observation.classification,
+            observation.endpointKind,
+            observation.metricKind,
+            observation.metricUnit,
+            observation.lowerValue,
+            observation.upperValue,
+            observation.contentSha256,
+        ) != tuple(observation_row):
+            raise _corrupt()
+
+
+def _normalized_snapshot_text(value: str, maximum_bytes: int, label: str, *, multiline: bool = False) -> str:
+    try:
+        return bounded_text(value, maximum_bytes, label, multiline=multiline)
+    except ProjectOperationError as error:
+        raise _corrupt() from error
 
 
 def _uuid4(value: str) -> str:

@@ -320,16 +320,26 @@ tests (85.05%), 15 Electron E2E, worker build, WinUnpacked и Portable smoke;
 проверили отличия от producer targets и тот же hash после reopen. После
 исправления reattach-сценария повторный полный gate прошёл: 77 Vitest, 474
 Python tests (85.04%), 15 Electron E2E, оба packaged smoke с расчётом.
-Текущий PR — #9; статус review нового head отмечается только после его
-фактического выполнения.
+Текущий PR — #9; последующие findings и исправления зафиксированы ниже.
 Review `5f130e5` выявил два дополнительных пограничных случая: source-ответ
 должен сохранять допустимую для импортёра длинную числовую лексему, а reopen
 должен отвергать повреждённую вложенную структуру результата даже после
 пересчёта хеша. Оба исправления проходят узкие регрессионные тесты и повторный
 профильный review без остаточных findings. Повторный полный gate прошёл: 77
 Vitest, 483 Python tests (85.03%), 15 Electron E2E, worker build,
-WinUnpacked и Portable smoke с `rbdCalculationPassed=true`. Review следующего
-head ещё предстоит.
+WinUnpacked и Portable smoke с `rbdCalculationPassed=true`. Следующее
+замечание к входному снимку отражено ниже.
+Review `7e4dbf6` выявил неполную сверку вложенного входного снимка и его
+provenance. Текущая дельта вводит строгую схему входа, проверяет связи с
+operation, импортным источником и выбранной проекцией плана, immutable
+наблюдениями/отказами и применимостью результата. Resealed-тесты меняют
+согласованные hash/audit и подтверждают `corrupt_project`; положительный тест
+сохраняет допустимые перестановки выбора и нормализацию текста. Профильные
+read-only review после исправлений не содержат findings. Финальный локальный
+`pnpm verify -- --IncludePackaging` прошёл: 78 Vitest, 494 Python tests
+(85.26%), 15 Electron E2E, worker build, WinUnpacked и Portable smoke с
+`rbdCalculationPassed=true`. Обновлённый Browser preview проверен в
+ready/unavailable, экран РБД доступен через AX, ошибок консоли нет.
 
 Завершение этапа означает один прослеживаемый production-сценарий от exact
 managed R130SH source до сохранённого результата после reopen. Это не

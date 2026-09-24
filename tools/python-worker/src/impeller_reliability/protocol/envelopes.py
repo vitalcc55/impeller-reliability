@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, cast
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from impeller_reliability.calculations.rbd_input_snapshot import RbdInputSnapshotModel
 from impeller_reliability.calculations.rbd_result_snapshot import RbdReferenceResultModel as RbdReferenceResultModel
 from impeller_reliability.integration.r130run.import_models import (
     ImportedRunDetailModel,
@@ -1459,7 +1460,7 @@ class RbdAnalysisInputSnapshotResult(BaseModel):
     sourceOuterPackageSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     sourceSnapshotSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     operationSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    inputSnapshot: dict[str, JsonValue]
+    inputSnapshot: RbdInputSnapshotModel
     contentSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     actor: str = Field(min_length=1, max_length=200)
     decisionReason: str = Field(min_length=1, max_length=2_000)

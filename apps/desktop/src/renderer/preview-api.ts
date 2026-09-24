@@ -1324,13 +1324,42 @@ function previewRbdCalculationDetail(
   const rpm = rational('1500', '1', '1500');
   const steadyEnd = rational('16253', '250', '65.012');
   const cycleEnd = rational('17503', '250', '70.012');
-  const fieldValues = {
-    nominal_rpm: ['1500', 'rpm'],
-    base_cycles: ['1000', 'cycles'],
-    reserve_factor: ['1.5003', 'dimensionless'],
-    acceleration_duration_s: ['5', 'seconds'],
-    deceleration_duration_s: ['5', 'seconds'],
+  const sourceFieldValues = {
+    nominal_rpm: source.sourceValues.nominalRpm,
+    base_cycles: source.sourceValues.baseCycles,
+    reserve_factor: source.sourceValues.reserveFactor,
+    acceleration_duration_s: source.sourceValues.accelerationDurationS,
+    deceleration_duration_s: source.sourceValues.decelerationDurationS,
   };
+  const fieldUnits = {
+    nominal_rpm: 'rpm',
+    base_cycles: 'cycle',
+    reserve_factor: '1',
+    acceleration_duration_s: 's',
+    deceleration_duration_s: 's',
+  };
+  const orderedFields = [
+    'base_cycles',
+    'reserve_factor',
+    'nominal_rpm',
+    'acceleration_duration_s',
+    'deceleration_duration_s',
+  ] as const;
+  const fieldSelections = orderedFields.map((field) => {
+    const selected = command.selections.find((item) => item.field === field);
+    if (selected === undefined) throw new Error('preview_rbd_selection_missing');
+    const rawSourceValue = sourceFieldValues[field];
+    return {
+      field,
+      unit: fieldUnits[field],
+      origin: selected.origin,
+      value: selected.origin === 'manual' ? (selected.manualValue ?? '') : (rawSourceValue ?? ''),
+      rawSourceValue,
+      sourceReference: `${source.payloadPath}#/source_values/${field}`,
+      basis: selected.origin === 'manual' ? selected.basis : '',
+      evidence: null,
+    };
+  });
   return rbdCalculationDetailSchema.parse({
     inputSnapshot: {
       analysisInputSnapshotId: command.analysisInputSnapshotId,
@@ -1351,18 +1380,58 @@ function previewRbdCalculationDetail(
       operationSha256: 'b'.repeat(64),
       inputSnapshot: {
         schemaVersion: 1,
-        operation: {},
-        source: {},
-        fieldSelections: command.selections.map((item) => ({
-          field: item.field,
-          unit: fieldValues[item.field][1],
-          origin: 'source',
-          value: fieldValues[item.field][0],
-          rawSourceValue: fieldValues[item.field][0],
-          sourceReference: `${source.payloadPath}#/source_values/${item.field}`,
-          basis: '',
-          evidence: null,
-        })),
+        operation: {
+          schemaVersion: 1,
+          analysisInputSnapshotId: command.analysisInputSnapshotId,
+          calculationSnapshotId: command.calculationSnapshotId,
+          executionId: execution.executionId,
+          planSelection: source.planSelection,
+          selections: command.selections.map((item) => ({
+            field: item.field,
+            origin: item.origin,
+            manual_value: item.origin === 'manual' ? item.manualValue : null,
+            basis: item.origin === 'manual' ? item.basis : '',
+            evidence: null,
+          })),
+          failureEvidence: null,
+          actor: command.actor,
+          reason: command.reason,
+          algorithmId: 'rbd_reference',
+          algorithmVersion: '1.0.0',
+          numericPolicy: 'exact_fraction_v1',
+        },
+        source: {
+          executionId: execution.executionId,
+          localImportId: source.localImportId,
+          packageId: source.packageId,
+          runId: source.runId,
+          exportRevision: source.exportRevision,
+          outerPackageSha256: source.outerPackageSha256,
+          sourceSnapshotSha256: source.sourceSnapshotSha256,
+          producer: {
+            name: source.producerName,
+            version: source.producerVersion,
+            buildId: source.producerBuildId,
+            gitCommit: source.producerGitCommit,
+          },
+          planSelection: source.planSelection,
+          payloadPath: source.payloadPath,
+          payloadSha256: source.payloadSha256,
+          planId: source.planId,
+          planRevision: source.planRevision,
+          methodicalRequirements: {
+            required_cycles_exact: source.methodicalRequirements.requiredCyclesExact,
+            required_steady_duration_s_exact:
+              source.methodicalRequirements.requiredSteadyDurationSExact,
+          },
+          executionTargets: {
+            target_cycles: source.executionTargets.targetCycles,
+            target_steady_duration_s: source.executionTargets.targetSteadyDurationS,
+            total_duration_s: source.executionTargets.totalDurationS,
+            rounding_policy: source.executionTargets.roundingPolicy,
+          },
+        },
+        fieldSelections,
         failureEvidence: null,
       },
       contentSha256: 'c'.repeat(64),

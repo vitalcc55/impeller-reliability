@@ -16,6 +16,7 @@ import {
   rbdCalculationCreateCommandSchema,
   rbdPlanSourceSchema,
   rbdResultSnapshotSchema,
+  rbdInputSnapshotPayloadSchema,
   rbdSavedFieldSelectionSchema,
   reliabilityDatasetCreateVersionCommandSchema,
   reliabilityExecutionPageSchema,
@@ -205,6 +206,125 @@ describe('worker contracts', () => {
     expect(
       rbdSavedFieldSelectionSchema.safeParse({ ...selection, rawSourceValue: `${importedNumber}0` })
         .success,
+    ).toBe(false);
+  });
+  it('rejects untyped provenance inside a saved RBD input snapshot', () => {
+    const fields = [
+      ['base_cycles', 'cycle'],
+      ['reserve_factor', '1'],
+      ['nominal_rpm', 'rpm'],
+      ['acceleration_duration_s', 's'],
+      ['deceleration_duration_s', 's'],
+    ] as const;
+    const selections = fields.map(([field, unit]) => ({
+      field,
+      unit,
+      origin: 'source',
+      value: '100',
+      rawSourceValue: '100',
+      sourceReference: `plan/original.json#/source_values/${field}`,
+      basis: '',
+      evidence: null,
+    }));
+    expect(
+      rbdInputSnapshotPayloadSchema.safeParse({
+        schemaVersion: 1,
+        operation: { schemaVersion: 1 },
+        source: { planId: 'incomplete' },
+        fieldSelections: selections,
+        failureEvidence: null,
+      }).success,
+    ).toBe(false);
+    const executionId = '333ec2c8-9439-4ce8-823d-3e2b0de8f003';
+    const analysisInputSnapshotId = '333ec2c8-9439-4ce8-823d-3e2b0de8f004';
+    const calculationSnapshotId = '333ec2c8-9439-4ce8-823d-3e2b0de8f005';
+    const operationSelections = fields.map(([field]) => ({
+      field,
+      origin: 'source',
+      manual_value: null,
+      basis: '',
+      evidence: null,
+    }));
+    const operation = {
+      schemaVersion: 1,
+      analysisInputSnapshotId,
+      calculationSnapshotId,
+      executionId,
+      planSelection: 'original',
+      selections: operationSelections,
+      failureEvidence: null,
+      actor: 'local_user',
+      reason: 'Документированный расчёт',
+      algorithmId: 'rbd_reference',
+      algorithmVersion: '1.0.0',
+      numericPolicy: 'exact_fraction_v1',
+    };
+    const source = {
+      executionId,
+      localImportId: '113ec2c8-9439-4ce8-823d-3e2b0de8f001',
+      packageId: 'source-package',
+      runId: 'source-run',
+      exportRevision: 1,
+      outerPackageSha256: 'a'.repeat(64),
+      sourceSnapshotSha256: 'b'.repeat(64),
+      producer: { name: 'R130SH', version: '1', buildId: 'build', gitCommit: 'commit' },
+      planSelection: 'original',
+      payloadPath: 'plan/original.json',
+      payloadSha256: 'c'.repeat(64),
+      planId: 'source-plan',
+      planRevision: 1,
+      methodicalRequirements: {
+        required_cycles_exact: '100',
+        required_steady_duration_s_exact: '4',
+      },
+      executionTargets: {
+        target_cycles: '100',
+        target_steady_duration_s: '4',
+        total_duration_s: '8',
+        rounding_policy: 'ceiling',
+      },
+    };
+    const validSnapshot = {
+      schemaVersion: 1,
+      operation,
+      source,
+      fieldSelections: selections,
+      failureEvidence: null,
+    };
+    expect(rbdInputSnapshotPayloadSchema.safeParse(validSnapshot).success).toBe(true);
+    expect(
+      rbdInputSnapshotPayloadSchema.safeParse({
+        ...validSnapshot,
+        fieldSelections: [selections[0], selections[0], ...selections.slice(2)],
+      }).success,
+    ).toBe(false);
+    expect(
+      rbdInputSnapshotPayloadSchema.safeParse({
+        ...validSnapshot,
+        operation: {
+          ...operation,
+          selections: [
+            operationSelections[0],
+            operationSelections[0],
+            ...operationSelections.slice(2),
+          ],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      rbdInputSnapshotPayloadSchema.safeParse({
+        ...validSnapshot,
+        operation: {
+          ...operation,
+          failureEvidence: {
+            applicability: 'unavailable',
+            duration_to_failure_s: null,
+            basis: 'Нет документированного времени',
+            failure_observation_ids: [executionId, executionId],
+            evidence: null,
+          },
+        },
+      }).success,
     ).toBe(false);
   });
   it('accepts canonical RFC 4122 project IDs across versions without weakening entity IDs', () => {
