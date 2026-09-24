@@ -16,6 +16,7 @@ import {
   rbdCalculationCreateCommandSchema,
   rbdPlanSourceSchema,
   rbdResultSnapshotSchema,
+  rbdSavedFieldSelectionSchema,
   reliabilityDatasetCreateVersionCommandSchema,
   reliabilityExecutionPageSchema,
   reliabilityObservationCreateVersionCommandSchema,
@@ -159,6 +160,52 @@ describe('worker contracts', () => {
     expect(rbdPlanSourceSchema.safeParse({ ...source, producerName: '\ud800' }).success).toBe(
       false,
     );
+    const importedNumber = `${'0'.repeat(124)}1000`;
+    for (const field of Object.keys(source.sourceValues)) {
+      expect(
+        rbdPlanSourceSchema.safeParse({
+          ...source,
+          sourceValues: { ...source.sourceValues, [field]: importedNumber },
+        }).success,
+      ).toBe(true);
+      expect(
+        rbdPlanSourceSchema.safeParse({
+          ...source,
+          sourceValues: { ...source.sourceValues, [field]: `${importedNumber}0` },
+        }).success,
+      ).toBe(false);
+    }
+    for (const field of Object.keys(source.methodicalRequirements)) {
+      expect(
+        rbdPlanSourceSchema.safeParse({
+          ...source,
+          methodicalRequirements: { ...source.methodicalRequirements, [field]: importedNumber },
+        }).success,
+      ).toBe(true);
+    }
+    for (const field of ['targetSteadyDurationS', 'totalDurationS']) {
+      expect(
+        rbdPlanSourceSchema.safeParse({
+          ...source,
+          executionTargets: { ...source.executionTargets, [field]: importedNumber },
+        }).success,
+      ).toBe(true);
+    }
+    const selection = {
+      field: 'base_cycles',
+      unit: 'cycle',
+      origin: 'manual',
+      value: '1000',
+      rawSourceValue: importedNumber,
+      sourceReference: 'plan/original.json:source_values.base_cycles',
+      basis: 'Документированное уточнение',
+      evidence: null,
+    };
+    expect(rbdSavedFieldSelectionSchema.safeParse(selection).success).toBe(true);
+    expect(
+      rbdSavedFieldSelectionSchema.safeParse({ ...selection, rawSourceValue: `${importedNumber}0` })
+        .success,
+    ).toBe(false);
   });
   it('accepts canonical RFC 4122 project IDs across versions without weakening entity IDs', () => {
     const projectId = '019c89f0-0b57-7ef5-9656-595184fcb272';

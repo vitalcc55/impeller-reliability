@@ -322,6 +322,14 @@ tests (85.05%), 15 Electron E2E, worker build, WinUnpacked и Portable smoke;
 Python tests (85.04%), 15 Electron E2E, оба packaged smoke с расчётом.
 Текущий PR — #9; статус review нового head отмечается только после его
 фактического выполнения.
+Review `5f130e5` выявил два дополнительных пограничных случая: source-ответ
+должен сохранять допустимую для импортёра длинную числовую лексему, а reopen
+должен отвергать повреждённую вложенную структуру результата даже после
+пересчёта хеша. Оба исправления проходят узкие регрессионные тесты и повторный
+профильный review без остаточных findings. Повторный полный gate прошёл: 77
+Vitest, 483 Python tests (85.03%), 15 Electron E2E, worker build,
+WinUnpacked и Portable smoke с `rbdCalculationPassed=true`. Review следующего
+head ещё предстоит.
 
 Завершение этапа означает один прослеживаемый production-сценарий от exact
 managed R130SH source до сохранённого результата после reopen. Это не

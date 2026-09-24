@@ -45,6 +45,7 @@ from impeller_reliability.persistence.reliability_domain import (
     ReliabilityDomainRepository,
     TestExecution as ReliabilityTestExecution,
 )
+from impeller_reliability.protocol.envelopes import RbdPlanSourceValuesResult
 from impeller_reliability.worker.deadline import RequestDeadline
 from support.r130run_builder import build_synthetic_r130run
 
@@ -776,9 +777,10 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(
 
 def _project_with_rbd_execution(
     tmp_path: Path,
+    package_path: Path | None = None,
 ) -> tuple[ProjectService, Path, ImportedRunSummary, ReliabilityTestExecution]:
     service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
+    imported = _import(service, project_path, package_path or _package("normal_final_rbd.r130run"))
     wheel = service.create_wheel(
         {
             "wheelModelId": str(uuid4()),
@@ -819,6 +821,73 @@ def _project_with_rbd_execution(
     )
     execution = service.materialize_reliability_execution(imported.local_import_id, None)
     return service, project_path, imported, execution
+
+
+def test_imported_numeric_lexeme_is_available_for_documented_manual_replacement(
+    tmp_path: Path,
+) -> None:
+    base_package = _package("normal_final_rbd.r130run")
+    long_base_cycles = "0" * 62 + "100"
+    with ZipFile(base_package) as archive:
+        original = OBJECT_ADAPTER.validate_json(archive.read("plan/original.json"))
+        effective = OBJECT_ADAPTER.validate_json(archive.read("plan/effective.json"))
+    original_values = OBJECT_ADAPTER.validate_python(original["source_values"])
+    original_values["base_cycles"] = long_base_cycles
+    original["source_values"] = original_values
+    effective_outer = OBJECT_ADAPTER.validate_python(effective["effective_plan"])
+    effective_plan = OBJECT_ADAPTER.validate_python(effective_outer["effective_plan"])
+    effective_values = OBJECT_ADAPTER.validate_python(effective_plan["source_values"])
+    effective_values["base_cycles"] = long_base_cycles
+    effective_plan["source_values"] = effective_values
+    effective_outer["effective_plan"] = effective_plan
+    original_bytes = (json.dumps(original, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    effective_outer["original_plan_sha256"] = hashlib.sha256(original_bytes).hexdigest()
+    effective["effective_plan"] = effective_outer
+    effective_bytes = (json.dumps(effective, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    package_path = build_synthetic_r130run(
+        tmp_path / "long-imported-numeric-text.r130run",
+        payload_overrides={
+            "plan/original.json": original_bytes,
+            "plan/effective.json": effective_bytes,
+        },
+    )
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, package_path)
+    source = service.read_rbd_plan_source(execution.execution_id, imported.local_import_id, "original")
+    response_values = RbdPlanSourceValuesResult(baseCycles=source.source_values.base_cycles)
+    assert response_values.baseCycles == long_base_cycles
+    saved = service.create_rbd_calculation(
+        analysis_input_snapshot_id=str(uuid4()),
+        calculation_snapshot_id=str(uuid4()),
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=tuple(
+            RbdFieldSelection(
+                field=field_name,
+                origin="manual" if field_name == "base_cycles" else "source",
+                manual_value="100" if field_name == "base_cycles" else None,
+                basis="Исходная запись содержит неканонические ведущие нули" if field_name == "base_cycles" else "",
+            )
+            for field_name in (
+                "base_cycles",
+                "reserve_factor",
+                "nominal_rpm",
+                "acceleration_duration_s",
+                "deceleration_duration_s",
+            )
+        ),
+        failure=None,
+        actor="local_user",
+        reason="Документированное замещение исходной записи",
+        deadline=None,
+    )
+    saved_selections = saved.detail.input_snapshot.input_snapshot["fieldSelections"]
+    assert isinstance(saved_selections, list)
+    first_selection = OBJECT_ADAPTER.validate_python(saved_selections[0])
+    assert first_selection.get("rawSourceValue") == long_base_cycles
+    service.close()
+    service.open(path=str(project_path), application_instance_id="long-lexeme-reopen")
+    assert service.get_rbd_calculation_detail(saved.detail.calculation_snapshot.calculation_snapshot_id, None) == saved.detail
+    service.close()
 
 
 def test_rbd_plan_source_read_fails_typed_for_missing_modified_and_expired_deadline(
@@ -954,6 +1023,95 @@ def test_saved_rbd_result_survives_source_loss_and_reopen_rejects_tampered_snaps
         connection.commit()
     with pytest.raises(ProjectOperationError) as corrupted:
         service.open(path=str(project_path), application_instance_id="tampered-calculation")
+    assert corrupted.value.code == "corrupt_project"
+
+
+@pytest.mark.parametrize(
+    ("field", "malformed_value"),
+    [
+        ("maximum_rpm", {"numerator": "1500", "denominator": "0", "decimal": "1500", "decimal_preview": "1500"}),
+        ("maximum_rpm", {"numerator": "1500", "denominator": "1", "decimal_preview": "1500"}),
+        ("phases", ["bad", None, 3]),
+        ("failure_result", {"status": "not_applicable", "cycles_to_failure": [], "reason_code": None}),
+        ("failure_result", {"status": "not_applicable", "cycles_to_failure": None}),
+        ("diagram_points", [None, None, None, None]),
+        ("formula_references", [None, None, None]),
+    ],
+)
+def test_reopen_rejects_resealed_rbd_result_with_malformed_nested_structure(
+    tmp_path: Path,
+    field: str,
+    malformed_value: object,
+) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path)
+    source_selections = tuple(
+        RbdFieldSelection(field=field_name, origin="source")
+        for field_name in (
+            "base_cycles",
+            "reserve_factor",
+            "nominal_rpm",
+            "acceleration_duration_s",
+            "deceleration_duration_s",
+        )
+    )
+    input_snapshot_id = str(uuid4())
+    calculation_snapshot_id = str(uuid4())
+    saved = service.create_rbd_calculation(
+        analysis_input_snapshot_id=input_snapshot_id,
+        calculation_snapshot_id=calculation_snapshot_id,
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=source_selections,
+        failure=None,
+        actor="local_user",
+        reason="Проверка структуры сохранённого результата",
+        deadline=None,
+    )
+    service.close()
+
+    result = dict(saved.detail.calculation_snapshot.result_snapshot)
+    result[field] = malformed_value
+    calculation_content = {
+        "calculationSnapshotId": calculation_snapshot_id,
+        "analysisInputSnapshotId": input_snapshot_id,
+        "inputContentSha256": saved.detail.input_snapshot.content_sha256,
+        "result": result,
+        "createdAtUtc": saved.detail.calculation_snapshot.created_at_utc,
+    }
+
+    def canonical_json(value: object) -> str:
+        return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+
+    content_sha256 = hashlib.sha256(canonical_json(calculation_content).encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        for trigger_name in ("rbd_calculation_snapshots_no_update", "project_audit_events_no_update"):
+            trigger_row = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                (trigger_name,),
+            ).fetchone()
+            assert trigger_row is not None
+            connection.execute(f"DROP TRIGGER {trigger_name}")
+            if trigger_name == "rbd_calculation_snapshots_no_update":
+                connection.execute(
+                    "UPDATE rbd_calculation_snapshots SET result_snapshot_json=?, content_sha256=? WHERE calculation_snapshot_id=?",
+                    (canonical_json(result), content_sha256, calculation_snapshot_id),
+                )
+            else:
+                audit_row = connection.execute(
+                    "SELECT payload_json FROM project_audit_events WHERE event_type='rbd_calculation.created' AND json_extract(payload_json, '$.calculationSnapshotId')=?",
+                    (calculation_snapshot_id,),
+                ).fetchone()
+                assert audit_row is not None
+                audit_payload = OBJECT_ADAPTER.validate_json(str(audit_row[0]))
+                audit_payload["calculationContentSha256"] = content_sha256
+                connection.execute(
+                    "UPDATE project_audit_events SET payload_json=? WHERE event_type='rbd_calculation.created' AND json_extract(payload_json, '$.calculationSnapshotId')=?",
+                    (canonical_json(audit_payload), calculation_snapshot_id),
+                )
+            connection.execute(str(trigger_row[0]))
+        connection.commit()
+    with pytest.raises(ProjectOperationError) as corrupted:
+        service.open(path=str(project_path), application_instance_id="malformed-result")
     assert corrupted.value.code == "corrupt_project"
 
 

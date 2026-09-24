@@ -212,7 +212,24 @@ def test_rbd_calculation_command_is_fixed_bounded_and_does_not_accept_outputs() 
         )
 
 
-def test_rbd_source_response_accepts_unicode_code_points_without_surrogates() -> None:
+def test_rbd_source_response_preserves_imported_text_with_unicode_and_bounds() -> None:
+    source_values: dict[str, str] = {
+        "baseCycles": "1000",
+        "reserveFactor": "1.5",
+        "nominalRpm": "1500",
+        "accelerationDurationS": "5",
+        "decelerationDurationS": "5",
+    }
+    methodical_requirements: dict[str, str] = {
+        "requiredCyclesExact": "1500",
+        "requiredSteadyDurationSExact": "60",
+    }
+    execution_targets: dict[str, str] = {
+        "targetCycles": "1500",
+        "targetSteadyDurationS": "60",
+        "totalDurationS": "70",
+        "roundingPolicy": "🔧" * 101,
+    }
     response = {
         "executionId": "333ec2c8-9439-4ce8-823d-3e2b0de8f003",
         "localImportId": "113ec2c8-9439-4ce8-823d-3e2b0de8f001",
@@ -230,26 +247,25 @@ def test_rbd_source_response_accepts_unicode_code_points_without_surrogates() ->
         "payloadSha256": "c" * 64,
         "planId": "plan-1",
         "planRevision": 1,
-        "sourceValues": {
-            "baseCycles": "1000",
-            "reserveFactor": "1.5",
-            "nominalRpm": "1500",
-            "accelerationDurationS": "5",
-            "decelerationDurationS": "5",
-        },
-        "methodicalRequirements": {
-            "requiredCyclesExact": "1500",
-            "requiredSteadyDurationSExact": "60",
-        },
-        "executionTargets": {
-            "targetCycles": "1500",
-            "targetSteadyDurationS": "60",
-            "totalDurationS": "70",
-            "roundingPolicy": "🔧" * 101,
-        },
+        "sourceValues": source_values,
+        "methodicalRequirements": methodical_requirements,
+        "executionTargets": execution_targets,
     }
     assert RbdPlanSourceResult.model_validate(response).producerName == "🔧" * 101
     with pytest.raises(ValidationError):
         RbdPlanSourceResult.model_validate({**response, "producerName": "x" * 201})
     with pytest.raises(ValidationError):
         RbdPlanSourceResult.model_validate({**response, "producerName": "\ud800"})
+    long_imported_number = "0" * 124 + "1000"
+    for field in source_values:
+        changed_source_values = {**source_values, field: long_imported_number}
+        assert RbdPlanSourceResult.model_validate({**response, "sourceValues": changed_source_values}).sourceValues.model_dump()[field] == long_imported_number
+        with pytest.raises(ValidationError):
+            RbdPlanSourceResult.model_validate({**response, "sourceValues": {**changed_source_values, field: long_imported_number + "0"}})
+    for field in methodical_requirements:
+        assert (
+            RbdPlanSourceResult.model_validate({**response, "methodicalRequirements": {**methodical_requirements, field: long_imported_number}}).methodicalRequirements.model_dump()[field]
+            == long_imported_number
+        )
+    for field in ("targetSteadyDurationS", "totalDurationS"):
+        assert RbdPlanSourceResult.model_validate({**response, "executionTargets": {**execution_targets, field: long_imported_number}}).executionTargets.model_dump()[field] == long_imported_number

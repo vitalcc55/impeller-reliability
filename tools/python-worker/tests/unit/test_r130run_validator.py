@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from decimal import Decimal
 import hashlib
 import io
 import json
@@ -18,6 +19,7 @@ import pytest
 from impeller_reliability.integration.r130run.m9a import (
     MEASUREMENT_COLUMNS,
     M9aContractError,
+    parse_bounded_decimal,
     validate_measurement_row,
 )
 from impeller_reliability.integration.r130run.models import JobPhase
@@ -30,6 +32,15 @@ from impeller_reliability.integration.r130run.validator import (
     ValidationTimeoutError,
 )
 from support.r130run_builder import RUN_ID, JsonValue, build_synthetic_r130run, write_r130run
+
+
+def test_imported_decimal_text_retains_its_bounded_lexeme() -> None:
+    long_numeric_text = "0" * 124 + "1000"
+    assert parse_bounded_decimal(long_numeric_text) == Decimal("1000")
+    with pytest.raises(ValueError):
+        parse_bounded_decimal(long_numeric_text + "0")
+    with pytest.raises(ValueError):
+        parse_bounded_decimal("1" * 65)
 
 
 def test_validates_downstream_synthetic_package_without_extraction(tmp_path: Path) -> None:

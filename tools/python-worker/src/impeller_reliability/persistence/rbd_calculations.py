@@ -10,6 +10,8 @@ import sqlite3
 from typing import Final, Literal, cast
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from impeller_reliability.calculations.rbd import (
     ALGORITHM_ID,
     ALGORITHM_VERSION,
@@ -20,6 +22,7 @@ from impeller_reliability.calculations.rbd import (
     RbdReferenceInput,
     calculate_rbd_reference,
 )
+from impeller_reliability.calculations.rbd_result_snapshot import RbdReferenceResultModel
 from impeller_reliability.persistence.audit import audit_now, insert_audit
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_schema import MAX_AUDIT_PAYLOAD_BYTES
@@ -778,6 +781,10 @@ def _detail_from_row(row: Sequence[object]) -> RbdCalculationDetail:
     if _uuid4(str(row[30])) != input_snapshot.execution_id or _uuid4(str(row[31])) != input_snapshot.wheel_model_id:
         raise _corrupt()
     _validate_snapshot_shapes(input_payload, result_payload)
+    try:
+        RbdReferenceResultModel.model_validate(result_payload)
+    except ValidationError as error:
+        raise _corrupt() from error
     required_cycles = _required_mapping(result_payload["required_cycles_exact"], "required cycles")
     failure = _required_mapping(result_payload["failure_result"], "failure result")
     if required_cycles.get("decimal") != row[32] or failure.get("status") != row[33]:

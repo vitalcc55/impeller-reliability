@@ -1220,24 +1220,24 @@ export const rbdPlanSourceSchema = z
     planRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     sourceValues: z
       .object({
-        baseCycles: z.string().max(64).nullable(),
-        reserveFactor: z.string().max(64).nullable(),
-        nominalRpm: z.string().max(64).nullable(),
-        accelerationDurationS: z.string().max(64).nullable(),
-        decelerationDurationS: z.string().max(64).nullable(),
+        baseCycles: z.string().max(128).nullable(),
+        reserveFactor: z.string().max(128).nullable(),
+        nominalRpm: z.string().max(128).nullable(),
+        accelerationDurationS: z.string().max(128).nullable(),
+        decelerationDurationS: z.string().max(128).nullable(),
       })
       .strict(),
     methodicalRequirements: z
       .object({
-        requiredCyclesExact: z.string().max(64),
-        requiredSteadyDurationSExact: z.string().max(64),
+        requiredCyclesExact: z.string().max(128),
+        requiredSteadyDurationSExact: z.string().max(128),
       })
       .strict(),
     executionTargets: z
       .object({
         targetCycles: z.string().regex(/^(?:0|[1-9][0-9]{0,63})$/u),
-        targetSteadyDurationS: z.string().max(64),
-        totalDurationS: z.string().max(64),
+        targetSteadyDurationS: z.string().max(128),
+        totalDurationS: z.string().max(128),
         roundingPolicy: rbdSourceTextSchema(512),
       })
       .strict(),
@@ -1322,7 +1322,7 @@ export const rbdSavedFieldSelectionSchema = z
     unit: z.string().min(1).max(32),
     origin: z.enum(['source', 'manual']),
     value: z.string().min(1).max(64),
-    rawSourceValue: z.string().max(64).nullable(),
+    rawSourceValue: z.string().max(128).nullable(),
     sourceReference: z.string().min(1).max(200),
     basis: z.string().max(2_000),
     evidence: rbdSavedEvidenceSchema.nullable(),
