@@ -32,7 +32,7 @@ from impeller_reliability.persistence.audit import audit_now, insert_audit
 from impeller_reliability.persistence.case_documents import case_document_for_new_decision
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_schema import MAX_AUDIT_PAYLOAD_BYTES
-from impeller_reliability.persistence.r130sh_sources import RbdPlanSourceSnapshot, rbd_plan_field_reference
+from impeller_reliability.persistence.r130sh_sources import RbdPlanSourceSnapshot, plan_source_field_reference
 from impeller_reliability.persistence.reliability_domain import bounded_text
 from impeller_reliability.persistence.sqlite_deadline import sqlite_deadline_guard, sqlite_query_rows_with_deadline
 from impeller_reliability.persistence.timestamps import require_canonical_utc_timestamp
@@ -567,7 +567,7 @@ class RbdCalculationRepository:
                     "origin": choice.origin,
                     "value": value,
                     "rawSourceValue": raw_source,
-                    "sourceReference": rbd_plan_field_reference(source.selection, field),
+                    "sourceReference": plan_source_field_reference(source.selection, field),
                     "basis": basis,
                     "evidence": evidence,
                 }
@@ -1123,7 +1123,8 @@ def _validate_input_snapshot_links(
             command.field != selected.field
             or command.origin != selected.origin
             or selected.unit != _FIELD_UNITS[selected.field]
-            or selected.sourceReference != (f"{source.payloadPath}#/source_values/{selected.field}" if payload.schemaVersion == 1 else rbd_plan_field_reference(source.planSelection, selected.field))
+            or selected.sourceReference
+            != (f"{source.payloadPath}#/source_values/{selected.field}" if payload.schemaVersion == 1 else plan_source_field_reference(source.planSelection, selected.field))
             or (selected.field == "nominal_rpm" and selected.rawSourceValue != nominal_rpm)
         ):
             raise _corrupt()

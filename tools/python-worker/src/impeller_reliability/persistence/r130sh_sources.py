@@ -26,6 +26,7 @@ from impeller_reliability.integration.r130run.models import (
     RunPackageValidationReport,
 )
 from impeller_reliability.integration.r130run.validator import (
+    MAX_JSON_BYTES,
     RunPackageValidator,
     SourceChangedError,
     ValidationControl,
@@ -42,7 +43,8 @@ from impeller_reliability.worker.deadline import RequestDeadline
 
 SourceIntegrityStatus = Literal["verified", "missing", "modified", "verification_error"]
 ImportDisposition = Literal["created", "existing"]
-RbdPlanSelection = Literal["original", "effective"]
+PlanSelection = Literal["original", "effective"]
+RptLowerPointPolicy = Literal["one_percent", "full_stop", "explicit_rpm"]
 
 SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 FINAL_PATH_RE: Final = re.compile(
@@ -50,8 +52,8 @@ FINAL_PATH_RE: Final = re.compile(
 )
 STAGING_NAME_RE: Final = re.compile(r"^[0-9a-f-]{36}\.part$")
 STREAM_CHUNK_BYTES: Final = 1024 * 1024
-WINDOWS_REPARSE_POINT_ATTRIBUTE: Final = 0x0400
 RBD_PLAN_MAX_BYTES: Final = 64 * 1024
+WINDOWS_REPARSE_POINT_ATTRIBUTE: Final = 0x0400
 MAX_SAFE_JSON_INTEGER: Final = 9_007_199_254_740_991
 
 
@@ -146,7 +148,7 @@ class RbdPlanSourceSnapshot:
     producer_version: str
     producer_build_id: str
     producer_git_commit: str
-    selection: RbdPlanSelection
+    selection: PlanSelection
     payload_path: Literal["plan/original.json", "plan/effective.json"]
     payload_sha256: str
     plan_id: str
@@ -154,6 +156,80 @@ class RbdPlanSourceSnapshot:
     source_values: RbdPlanSourceValues
     methodical_requirements: RbdMethodicalRequirements
     execution_targets: RbdExecutionTargets
+
+
+@dataclass(frozen=True, slots=True)
+class RptPlanSourceValues:
+    nominal_rpm: str | None
+    design_cycles: str | None
+    reserve_factor: str | None
+    acceleration_duration_s: str | None
+    steady_duration_s: str | None
+    deceleration_duration_s: str | None
+    lower_point_policy: RptLowerPointPolicy
+    explicit_lower_rpm: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RptMethodicalRequirements:
+    required_cycles_exact: str
+    cycle_duration_s_exact: str
+    required_total_duration_s_exact: str
+
+
+@dataclass(frozen=True, slots=True)
+class RptExecutionTargets:
+    target_cycles: str
+    upper_rpm: str
+    lower_rpm: str
+    cycle_duration_s: str
+    total_duration_s: str
+    lower_point_policy: RptLowerPointPolicy
+    rounding_policy: str
+
+
+@dataclass(frozen=True, slots=True)
+class RptPlanSourceSnapshot:
+    execution_id: str
+    local_import_id: str
+    package_id: str
+    run_id: str
+    export_revision: int
+    outer_package_sha256: str
+    source_snapshot_sha256: str
+    producer_name: str
+    producer_version: str
+    producer_build_id: str
+    producer_git_commit: str
+    selection: PlanSelection
+    payload_path: Literal["plan/original.json", "plan/effective.json"]
+    payload_sha256: str
+    plan_id: str
+    plan_revision: int
+    source_values: RptPlanSourceValues
+    methodical_requirements: RptMethodicalRequirements
+    execution_targets: RptExecutionTargets
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedPlan:
+    execution_id: str
+    local_import_id: str
+    package_id: str
+    run_id: str
+    export_revision: int
+    outer_package_sha256: str
+    source_snapshot_sha256: str
+    producer_name: str
+    producer_version: str
+    producer_build_id: str
+    producer_git_commit: str
+    selection: PlanSelection
+    payload_path: Literal["plan/original.json", "plan/effective.json"]
+    payload_sha256: str
+    plan_id: str
+    plan_revision: int
+    plan: dict[str, object]
 
 
 class R130shSourceRepository:
@@ -565,14 +641,15 @@ class R130shSourceRepository:
         self._integrity_cache[local_import_id] = (status, signature, verified_outer_sha256)
         return status
 
-    def read_rbd_plan_source(
+    def _read_verified_plan(
         self,
         execution_id: str,
         local_import_id: str,
-        selection: RbdPlanSelection,
+        selection: PlanSelection,
+        method: Literal["rbd", "rpt"],
         *,
         deadline: RequestDeadline | None = None,
-    ) -> RbdPlanSourceSnapshot:
+    ) -> _VerifiedPlan:
         effective_deadline = deadline or RequestDeadline.start(30_000)
         execution_id = _uuid4(execution_id)
         local_import_id = _uuid4(local_import_id)
@@ -609,8 +686,9 @@ class R130shSourceRepository:
             raise _corrupt_source()
         if not 1 <= int(row[4]) <= MAX_SAFE_JSON_INTEGER:
             raise _corrupt_source()
-        if str(row[12]) != "rbd":
-            raise ProjectOperationError("validation_error", "Выбранное исполнение не относится к РБД.")
+        if str(row[12]) != method:
+            raise ProjectOperationError("validation_error", "Выбранное исполнение относится к другому методу испытания.")
+        max_plan_bytes = RBD_PLAN_MAX_BYTES if method == "rbd" else MAX_JSON_BYTES
         payload_path: Literal["plan/original.json", "plan/effective.json"] = "plan/original.json" if selection == "original" else "plan/effective.json"
         plan_id = str(row[13] if selection == "original" else row[16])
         plan_revision = int(row[14] if selection == "original" else row[17])
@@ -624,7 +702,7 @@ class R130shSourceRepository:
             """,
             (local_import_id, payload_path),
         ).fetchone()
-        if inventory is None or int(inventory[0]) > RBD_PLAN_MAX_BYTES or str(inventory[1]) != projected_sha256:
+        if inventory is None or int(inventory[0]) > max_plan_bytes or str(inventory[1]) != projected_sha256:
             raise _corrupt_source()
         try:
             managed_path = _managed_path(self._project_path, str(row[11]))
@@ -639,10 +717,10 @@ class R130shSourceRepository:
                     raise OSError("managed_source_replaced")
                 with ZipFile(package_stream, mode="r") as archive:
                     info = archive.getinfo(payload_path)
-                    if info.file_size != int(inventory[0]) or info.file_size > RBD_PLAN_MAX_BYTES:
+                    if info.file_size != int(inventory[0]) or info.file_size > max_plan_bytes:
                         raise _corrupt_source()
                     with archive.open(info, mode="r") as stream:
-                        payload_bytes = stream.read(RBD_PLAN_MAX_BYTES + 1)
+                        payload_bytes = stream.read(max_plan_bytes + 1)
                 if _file_signature_from_stat(os.fstat(package_stream.fileno())) != signature_before:
                     raise OSError("managed_source_changed")
         except ProjectOperationError:
@@ -659,25 +737,22 @@ class R130shSourceRepository:
             zlib.error,
         ) as error:
             raise ProjectOperationError("file_integrity_mismatch", "Расчётный план недоступен в managed archive.") from error
-        _check_deadline(effective_deadline, "rbd_plan_source_read")
+        _check_deadline(effective_deadline, "calculation_plan_source_read")
         if len(payload_bytes) != int(inventory[0]) or hashlib.sha256(payload_bytes).hexdigest() != projected_sha256:
             raise ProjectOperationError("file_integrity_mismatch", "Расчётный план изменён после импорта.")
         try:
-            payload = json.loads(payload_bytes.decode("utf-8"))
+            payload = json.loads(payload_bytes.decode("utf-8"), parse_float=str if method == "rpt" else float)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ProjectOperationError("file_integrity_mismatch", "Расчётный план повреждён.") from error
-        plan = _rbd_plan_object(cast(object, payload), selection)
+        plan = _plan_object(cast(object, payload), selection)
         if (
-            _plan_required_text(plan, "mode") != "rbd"
+            _plan_required_text(plan, "mode") != method
             or _plan_required_text(plan, "plan_id") != plan_id
             or _plan_required_integer(plan, "plan_revision") != plan_revision
             or _plan_required_text(plan, "run_id") != str(row[3])
         ):
             raise _corrupt_source()
-        source_values = _plan_required_object(plan, "source_values")
-        requirements = _plan_required_object(plan, "methodical_requirements")
-        targets = _plan_required_object(plan, "execution_targets")
-        return RbdPlanSourceSnapshot(
+        return _VerifiedPlan(
             execution_id=execution_id,
             local_import_id=local_import_id,
             package_id=str(row[2]),
@@ -694,6 +769,38 @@ class R130shSourceRepository:
             payload_sha256=projected_sha256,
             plan_id=plan_id,
             plan_revision=plan_revision,
+            plan=plan,
+        )
+
+    def read_rbd_plan_source(
+        self,
+        execution_id: str,
+        local_import_id: str,
+        selection: PlanSelection,
+        *,
+        deadline: RequestDeadline | None = None,
+    ) -> RbdPlanSourceSnapshot:
+        verified = self._read_verified_plan(execution_id, local_import_id, selection, "rbd", deadline=deadline)
+        source_values = _plan_required_object(verified.plan, "source_values")
+        requirements = _plan_required_object(verified.plan, "methodical_requirements")
+        targets = _plan_required_object(verified.plan, "execution_targets")
+        return RbdPlanSourceSnapshot(
+            execution_id=verified.execution_id,
+            local_import_id=verified.local_import_id,
+            package_id=verified.package_id,
+            run_id=verified.run_id,
+            export_revision=verified.export_revision,
+            outer_package_sha256=verified.outer_package_sha256,
+            source_snapshot_sha256=verified.source_snapshot_sha256,
+            producer_name=verified.producer_name,
+            producer_version=verified.producer_version,
+            producer_build_id=verified.producer_build_id,
+            producer_git_commit=verified.producer_git_commit,
+            selection=verified.selection,
+            payload_path=verified.payload_path,
+            payload_sha256=verified.payload_sha256,
+            plan_id=verified.plan_id,
+            plan_revision=verified.plan_revision,
             source_values=RbdPlanSourceValues(
                 base_cycles=_plan_optional_text(source_values, "base_cycles"),
                 reserve_factor=_plan_optional_text(source_values, "reserve_factor"),
@@ -716,10 +823,65 @@ class R130shSourceRepository:
             ),
         )
 
+    def read_rpt_plan_source(
+        self,
+        execution_id: str,
+        local_import_id: str,
+        selection: PlanSelection,
+        *,
+        deadline: RequestDeadline | None = None,
+    ) -> RptPlanSourceSnapshot:
+        verified = self._read_verified_plan(execution_id, local_import_id, selection, "rpt", deadline=deadline)
+        source_values = _plan_required_object(verified.plan, "source_values")
+        requirements = _plan_required_object(verified.plan, "methodical_requirements")
+        targets = _plan_required_object(verified.plan, "execution_targets")
+        return RptPlanSourceSnapshot(
+            execution_id=verified.execution_id,
+            local_import_id=verified.local_import_id,
+            package_id=verified.package_id,
+            run_id=verified.run_id,
+            export_revision=verified.export_revision,
+            outer_package_sha256=verified.outer_package_sha256,
+            source_snapshot_sha256=verified.source_snapshot_sha256,
+            producer_name=verified.producer_name,
+            producer_version=verified.producer_version,
+            producer_build_id=verified.producer_build_id,
+            producer_git_commit=verified.producer_git_commit,
+            selection=verified.selection,
+            payload_path=verified.payload_path,
+            payload_sha256=verified.payload_sha256,
+            plan_id=verified.plan_id,
+            plan_revision=verified.plan_revision,
+            source_values=RptPlanSourceValues(
+                nominal_rpm=_plan_optional_scalar_text(source_values, "nominal_rpm"),
+                design_cycles=_plan_optional_scalar_text(source_values, "design_cycles"),
+                reserve_factor=_plan_optional_scalar_text(source_values, "reserve_factor"),
+                acceleration_duration_s=_plan_optional_scalar_text(source_values, "acceleration_duration_s"),
+                steady_duration_s=_plan_optional_scalar_text(source_values, "steady_duration_s"),
+                deceleration_duration_s=_plan_optional_scalar_text(source_values, "deceleration_duration_s"),
+                lower_point_policy=_rpt_lower_point_policy(source_values, "lower_point_policy"),
+                explicit_lower_rpm=_plan_optional_scalar_text(source_values, "explicit_lower_rpm"),
+            ),
+            methodical_requirements=RptMethodicalRequirements(
+                required_cycles_exact=_plan_required_scalar_text(requirements, "required_cycles_exact"),
+                cycle_duration_s_exact=_plan_required_scalar_text(requirements, "cycle_duration_s_exact"),
+                required_total_duration_s_exact=_plan_required_scalar_text(requirements, "required_total_duration_s_exact"),
+            ),
+            execution_targets=RptExecutionTargets(
+                target_cycles=str(_plan_required_integer(targets, "target_cycles", maximum=10**64 - 1)),
+                upper_rpm=_plan_required_scalar_text(targets, "upper_rpm"),
+                lower_rpm=_plan_required_scalar_text(targets, "lower_rpm"),
+                cycle_duration_s=_plan_required_scalar_text(targets, "cycle_duration_s"),
+                total_duration_s=_plan_required_scalar_text(targets, "total_duration_s"),
+                lower_point_policy=_rpt_lower_point_policy(targets, "lower_point_policy"),
+                rounding_policy=_plan_required_text(targets, "rounding_policy"),
+            ),
+        )
+
     def read_rbd_plan_source_for_execution(
         self,
         execution_id: str,
-        selection: RbdPlanSelection,
+        selection: PlanSelection,
         *,
         deadline: RequestDeadline | None = None,
     ) -> RbdPlanSourceSnapshot:
@@ -732,6 +894,28 @@ class R130shSourceRepository:
         if row is None:
             raise ProjectOperationError("entity_not_found", "Исполнение РБД не найдено.")
         return self.read_rbd_plan_source(
+            execution_id,
+            _uuid4(str(row[0])),
+            selection,
+            deadline=deadline,
+        )
+
+    def read_rpt_plan_source_for_execution(
+        self,
+        execution_id: str,
+        selection: PlanSelection,
+        *,
+        deadline: RequestDeadline | None = None,
+    ) -> RptPlanSourceSnapshot:
+        execution_id = _uuid4(execution_id)
+        row = self._connection.execute(
+            "SELECT local_import_id FROM reliability_test_executions WHERE execution_id=? AND method='rpt'",
+            (execution_id,),
+        ).fetchone()
+        _check_deadline(deadline, "rpt_execution_source_lookup")
+        if row is None:
+            raise ProjectOperationError("entity_not_found", "Исполнение РПТ не найдено.")
+        return self.read_rpt_plan_source(
             execution_id,
             _uuid4(str(row[0])),
             selection,
@@ -1631,7 +1815,7 @@ def _managed_relative_path(facts: M9aPackageFacts) -> str:
     return value
 
 
-def _rbd_plan_object(value: object, selection: RbdPlanSelection) -> dict[str, object]:
+def _plan_object(value: object, selection: PlanSelection) -> dict[str, object]:
     envelope = _plan_object_value(value)
     if selection == "original":
         return envelope
@@ -1639,10 +1823,21 @@ def _rbd_plan_object(value: object, selection: RbdPlanSelection) -> dict[str, ob
     return _plan_required_object(effective, "effective_plan")
 
 
-def rbd_plan_field_reference(selection: RbdPlanSelection, field: str) -> str:
+def plan_source_field_reference(selection: PlanSelection, field: str) -> str:
     if selection == "original":
         return f"plan/original.json#/source_values/{field}"
     return f"plan/effective.json#/effective_plan/effective_plan/source_values/{field}"
+
+
+def _rpt_lower_point_policy(value: dict[str, object], key: str) -> RptLowerPointPolicy:
+    policy = _plan_required_text(value, key)
+    if policy == "one_percent":
+        return "one_percent"
+    if policy == "full_stop":
+        return "full_stop"
+    if policy == "explicit_rpm":
+        return "explicit_rpm"
+    raise _corrupt_source()
 
 
 def _plan_required_object(value: dict[str, object], key: str) -> dict[str, object]:
@@ -1671,6 +1866,22 @@ def _plan_optional_text(value: dict[str, object], key: str) -> str | None:
     if key not in value or value[key] is None:
         return None
     return _plan_required_text(value, key)
+
+
+def _plan_required_scalar_text(value: dict[str, object], key: str) -> str:
+    item = value.get(key)
+    if isinstance(item, bool) or not isinstance(item, (str, int)):
+        raise _corrupt_source()
+    text = str(item)
+    if not text or len(text.encode("utf-8")) > 512:
+        raise _corrupt_source()
+    return text
+
+
+def _plan_optional_scalar_text(value: dict[str, object], key: str) -> str | None:
+    if key not in value or value[key] is None:
+        return None
+    return _plan_required_scalar_text(value, key)
 
 
 def _plan_required_integer(value: dict[str, object], key: str, *, maximum: int = MAX_SAFE_JSON_INTEGER) -> int:

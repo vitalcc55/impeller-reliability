@@ -27,6 +27,7 @@ from impeller_reliability.integration.r130run.import_models import ImportedRunPl
 from impeller_reliability.integration.r130run.m9a import M9aPackageFacts, read_m9a_package_facts
 from impeller_reliability.integration.r130run.models import RunPackageValidationReport
 from impeller_reliability.integration.r130run.validator import (
+    MAX_JSON_BYTES,
     RunPackageValidator,
     ValidationControl,
 )
@@ -911,6 +912,199 @@ def _project_with_rbd_execution(
     )
     execution = service.materialize_reliability_execution(imported.local_import_id, None)
     return service, project_path, imported, execution
+
+
+@pytest.mark.parametrize("selection", ["original", "effective"])
+@pytest.mark.parametrize(
+    ("package_name", "policy", "lower_rpm"),
+    [
+        ("normal_final_rpt_one_percent.r130run", "one_percent", "15"),
+        ("normal_final_rpt_full_stop.r130run", "full_stop", "0"),
+    ],
+)
+def test_rpt_source_inputs_keep_original_fields_requirements_targets_and_coordinates(
+    tmp_path: Path,
+    selection: Literal["original", "effective"],
+    package_name: str,
+    policy: str,
+    lower_rpm: str,
+) -> None:
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package(package_name))
+    source = service.get_rpt_source_inputs(execution.execution_id, selection, None)
+    assert source.execution_id == execution.execution_id
+    assert source.local_import_id == imported.local_import_id
+    assert source.selection == selection
+    assert source.source_values.steady_duration_s == "0"
+    assert source.source_values.lower_point_policy == policy
+    assert source.source_values.explicit_lower_rpm is None
+    assert source.methodical_requirements.required_cycles_exact == "2"
+    assert source.methodical_requirements.cycle_duration_s_exact == "4"
+    assert source.methodical_requirements.required_total_duration_s_exact == "8"
+    assert source.execution_targets.target_cycles == "2"
+    assert source.execution_targets.lower_rpm == lower_rpm
+    assert source.execution_targets.lower_point_policy == policy
+    assert source.execution_targets.rounding_policy == "ceiling"
+
+    expected_member = "plan/original.json" if selection == "original" else "plan/effective.json"
+    expected_prefix = "/source_values/" if selection == "original" else "/effective_plan/effective_plan/source_values/"
+    assert source.payload_path == expected_member
+    with ZipFile(_managed_path(project_path, imported)) as archive:
+        payload = archive.read(expected_member)
+        assert hashlib.sha256(payload).hexdigest() == source.payload_sha256
+        for field in (
+            "nominal_rpm",
+            "design_cycles",
+            "reserve_factor",
+            "acceleration_duration_s",
+            "steady_duration_s",
+            "deceleration_duration_s",
+        ):
+            reference = r130sh_sources_module.plan_source_field_reference(selection, field)
+            member, pointer = reference.split("#", 1)
+            assert member == expected_member
+            assert pointer == f"{expected_prefix}{field}"
+            current: object = OBJECT_ADAPTER.validate_json(archive.read(member))
+            for segment in pointer[1:].split("/"):
+                current = OBJECT_ADAPTER.validate_python(current)[segment]
+            assert current == getattr(source.source_values, field)
+    service.close()
+
+
+def test_rpt_source_reader_rejects_rbd_method_and_wrong_import_pair(tmp_path: Path) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    other = _import(service, project_path, _package("normal_final_rpt_full_stop.r130run"))
+    with pytest.raises(ProjectOperationError) as wrong_import:
+        service.read_rpt_plan_source(execution.execution_id, other.local_import_id, "original", None)
+    assert wrong_import.value.code == "entity_not_found"
+    service.close()
+
+    rbd_project_root = tmp_path / "rbd"
+    rbd_project_root.mkdir()
+    rbd_service, _, _, rbd_execution = _project_with_rbd_execution(rbd_project_root)
+    with pytest.raises(ProjectOperationError) as wrong_method:
+        rbd_service.get_rpt_source_inputs(rbd_execution.execution_id, "original", None)
+    assert wrong_method.value.code == "entity_not_found"
+    rbd_service.close()
+
+
+@pytest.mark.parametrize("selection", ["original", "effective"])
+def test_rpt_source_reader_preserves_explicit_lower_point(tmp_path: Path, selection: Literal["original", "effective"]) -> None:
+    synthetic = _package_with_explicit_rpt_lower_point(tmp_path)
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    source = service.get_rpt_source_inputs(execution.execution_id, selection, None)
+    assert source.source_values.lower_point_policy == "explicit_rpm"
+    assert source.source_values.explicit_lower_rpm == "125.5"
+    assert source.execution_targets.lower_point_policy == "explicit_rpm"
+    assert source.execution_targets.lower_rpm == "125.5"
+    assert source.methodical_requirements.required_cycles_exact == "2"
+    service.close()
+
+
+def test_rpt_source_reader_keeps_importer_valid_lexeme_outside_analytic_range(tmp_path: Path) -> None:
+    design_cycles = "1000000000001"
+    synthetic = _package_with_rpt_plan_values(
+        tmp_path,
+        suffix="large-design-cycles",
+        source_updates={"design_cycles": design_cycles},
+        requirement_updates={"required_cycles_exact": design_cycles, "required_total_duration_s_exact": "4000000000004"},
+        target_updates={"target_cycles": 1000000000001, "total_duration_s": "4000000000004"},
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    source = service.get_rpt_source_inputs(execution.execution_id, "effective", None)
+    assert source.source_values.design_cycles == design_cycles
+    assert source.methodical_requirements.required_cycles_exact == design_cycles
+    service.close()
+
+
+def test_rpt_source_reader_preserves_importer_valid_numeric_json_scalars(tmp_path: Path) -> None:
+    synthetic = _package_with_rpt_plan_values(
+        tmp_path,
+        suffix="numeric-scalars",
+        source_updates={"reserve_factor": 1.25, "steady_duration_s": 0},
+        requirement_updates={"required_cycles_exact": "2.5", "required_total_duration_s_exact": "10"},
+        target_updates={"target_cycles": 3, "total_duration_s": "12"},
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    source = service.get_rpt_source_inputs(execution.execution_id, "effective", None)
+    assert source.source_values.reserve_factor == "1.25"
+    assert source.source_values.steady_duration_s == "0"
+    assert source.methodical_requirements.required_cycles_exact == "2.5"
+    assert source.execution_targets.target_cycles == "3"
+    service.close()
+
+
+def test_rpt_source_reader_preserves_numeric_json_lexeme_without_float_rounding(tmp_path: Path) -> None:
+    base = _package("normal_final_rpt_full_stop.r130run")
+    with ZipFile(base) as archive:
+        original_bytes = archive.read("plan/original.json")
+        effective = OBJECT_ADAPTER.validate_json(archive.read("plan/effective.json"))
+    old_lexeme = b'"reserve_factor":"1"'
+    new_lexeme = b'"reserve_factor":0.10000000000000001'
+    assert original_bytes.count(old_lexeme) == 1
+    original_bytes = original_bytes.replace(old_lexeme, new_lexeme)
+    effective_container = OBJECT_ADAPTER.validate_python(effective["effective_plan"])
+    effective_container["original_plan_sha256"] = hashlib.sha256(original_bytes).hexdigest()
+    effective["effective_plan"] = effective_container
+    effective_bytes = _canonical_package_json(effective)
+    assert effective_bytes.count(old_lexeme) == 1
+    effective_bytes = effective_bytes.replace(old_lexeme, new_lexeme)
+    synthetic = build_synthetic_r130run(
+        tmp_path / "rpt-raw-numeric-lexeme.r130run",
+        base_package=base,
+        payload_overrides={"plan/original.json": original_bytes, "plan/effective.json": effective_bytes},
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    for selection in ("original", "effective"):
+        source = service.get_rpt_source_inputs(execution.execution_id, selection, None)
+        assert source.source_values.reserve_factor == "0.10000000000000001"
+    service.close()
+
+
+def test_rpt_source_reader_keeps_bounded_access_to_importer_valid_large_plan(tmp_path: Path) -> None:
+    synthetic = _package_with_rpt_plan_values(
+        tmp_path,
+        suffix="large-plan",
+        source_updates={"unrelated_note": "x" * 70_000},
+        requirement_updates={},
+        target_updates={},
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    source = service.get_rpt_source_inputs(execution.execution_id, "original", None)
+    assert source.source_values.design_cycles == "2"
+    service.close()
+
+
+@pytest.mark.parametrize("damage", ["missing_archive", "modified_archive", "plan_id", "plan_hash", "oversized_plan"])
+def test_rpt_source_reader_rejects_missing_modified_or_conflicting_evidence(tmp_path: Path, damage: str) -> None:
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    assert service.get_rpt_source_inputs(execution.execution_id, "original", None).execution_id == execution.execution_id
+    managed_path = _managed_path(project_path, imported)
+    if damage == "missing_archive":
+        managed_path.unlink()
+    elif damage == "modified_archive":
+        managed_path.write_bytes(b"modified")
+    elif damage == "oversized_plan":
+        with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+            connection.execute("DROP TRIGGER r130sh_source_inventory_no_update")
+            connection.execute(
+                "UPDATE r130sh_source_inventory SET size_bytes=? WHERE local_import_id=? AND path='plan/original.json'",
+                (MAX_JSON_BYTES + 1, imported.local_import_id),
+            )
+            connection.commit()
+    else:
+        column = "original_plan_id" if damage == "plan_id" else "original_plan_sha256"
+        value = "wrong-plan" if damage == "plan_id" else "0" * 64
+        with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+            connection.execute("DROP TRIGGER r130sh_run_projections_no_update")
+            connection.execute(
+                f"UPDATE r130sh_run_projections SET {column}=? WHERE local_import_id=?",
+                (value, imported.local_import_id),
+            )
+            connection.commit()
+    with pytest.raises(ProjectOperationError) as rejected:
+        service.get_rpt_source_inputs(execution.execution_id, "original", None)
+    assert rejected.value.code == ("file_integrity_mismatch" if damage in {"missing_archive", "modified_archive"} else "corrupt_project")
+    service.close()
 
 
 @pytest.mark.parametrize("selection", ["original", "effective"])
@@ -3367,6 +3561,60 @@ def _package_with_nullable_plan_references(tmp_path: Path) -> Path:
             "plan/original.json": _canonical_package_json(original),
             "plan/effective.json": _canonical_package_json(effective),
             "run-summary.json": _canonical_package_json(summary),
+        },
+    )
+
+
+def _package_with_explicit_rpt_lower_point(tmp_path: Path) -> Path:
+    return _package_with_rpt_plan_values(
+        tmp_path,
+        suffix="explicit-lower-point",
+        source_updates={"lower_point_policy": "explicit_rpm", "explicit_lower_rpm": "125.5"},
+        requirement_updates={},
+        target_updates={"lower_point_policy": "explicit_rpm", "lower_rpm": "125.5"},
+    )
+
+
+def _package_with_rpt_plan_values(
+    tmp_path: Path,
+    *,
+    suffix: str,
+    source_updates: dict[str, object],
+    requirement_updates: dict[str, object],
+    target_updates: dict[str, object],
+) -> Path:
+    base = _package("normal_final_rpt_full_stop.r130run")
+    with ZipFile(base) as archive:
+        original = OBJECT_ADAPTER.validate_json(archive.read("plan/original.json"))
+        effective = OBJECT_ADAPTER.validate_json(archive.read("plan/effective.json"))
+    for key, updates in (
+        ("source_values", source_updates),
+        ("methodical_requirements", requirement_updates),
+        ("execution_targets", target_updates),
+    ):
+        values = OBJECT_ADAPTER.validate_python(original[key])
+        values.update(updates)
+        original[key] = values
+
+    effective_container = OBJECT_ADAPTER.validate_python(effective["effective_plan"])
+    effective_plan = OBJECT_ADAPTER.validate_python(effective_container["effective_plan"])
+    for key, updates in (
+        ("source_values", source_updates),
+        ("methodical_requirements", requirement_updates),
+        ("execution_targets", target_updates),
+    ):
+        values = OBJECT_ADAPTER.validate_python(effective_plan[key])
+        values.update(updates)
+        effective_plan[key] = values
+    effective_container["effective_plan"] = effective_plan
+    effective_container["original_plan_sha256"] = hashlib.sha256(_canonical_package_json(original)).hexdigest()
+    effective["effective_plan"] = effective_container
+    return build_synthetic_r130run(
+        tmp_path / f"rpt-{suffix}.r130run",
+        base_package=base,
+        payload_overrides={
+            "plan/original.json": _canonical_package_json(original),
+            "plan/effective.json": _canonical_package_json(effective),
         },
     )
 

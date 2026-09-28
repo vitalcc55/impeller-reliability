@@ -19,13 +19,16 @@ ManifestMutator = Callable[[dict[str, JsonValue]], None]
 def build_synthetic_r130run(
     destination: Path,
     *,
+    base_package: Path = M9A_BASE_PACKAGE,
     manifest_mutator: ManifestMutator | None = None,
     extra_entries: Iterable[tuple[str, bytes]] = (),
     payload_overrides: Mapping[str, bytes] | None = None,
     payload_removals: Iterable[str] = (),
     compression: int = ZIP_STORED,
 ) -> Path:
-    payloads = _payloads()
+    payloads = _payloads(base_package)
+    with ZipFile(base_package, mode="r") as archive:
+        base_manifest = json.loads(archive.read("manifest.json"))
     if payload_overrides is not None:
         payloads.update(payload_overrides)
     for path in payload_removals:
@@ -47,9 +50,9 @@ def build_synthetic_r130run(
     files_value: list[JsonValue] = [item for item in sorted_files]
     manifest: dict[str, JsonValue] = {
         "schema_version": "r130sh.run-package.v1",
-        "package_id": PACKAGE_ID,
+        "package_id": PACKAGE_ID if base_package == M9A_BASE_PACKAGE else base_manifest["package_id"],
         "export_revision": 1,
-        "run_id": RUN_ID,
+        "run_id": base_manifest["run_id"],
         "package_kind": "final",
         "created_at_utc": "2026-08-29T12:00:00Z",
         "source_snapshot_sha256": "0" * 64,
@@ -100,8 +103,8 @@ def write_r130run(destination: Path, entries: Iterable[tuple[str, bytes]], *, co
             archive.writestr(info, content)
 
 
-def _payloads() -> dict[str, bytes]:
-    with ZipFile(M9A_BASE_PACKAGE, mode="r") as archive:
+def _payloads(base_package: Path) -> dict[str, bytes]:
+    with ZipFile(base_package, mode="r") as archive:
         manifest = json.loads(archive.read("manifest.json"))
         return {str(item["path"]): archive.read(str(item["path"])) for item in manifest["files"]}
 

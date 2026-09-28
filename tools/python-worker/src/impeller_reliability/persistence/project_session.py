@@ -33,9 +33,10 @@ from impeller_reliability.persistence.project_values import (
 from impeller_reliability.persistence.r130sh_sources import (
     ImportedRunDetail,
     ImportedRunSummary,
+    PlanSelection,
     R130shSourceRepository,
-    RbdPlanSelection,
     RbdPlanSourceSnapshot,
+    RptPlanSourceSnapshot,
     SourceIntegrityStatus,
     SpecimenBinding,
 )
@@ -418,10 +419,24 @@ class ProjectSession:
         self,
         execution_id: str,
         local_import_id: str,
-        selection: RbdPlanSelection,
+        selection: PlanSelection,
         deadline: RequestDeadline | None = None,
     ) -> RbdPlanSourceSnapshot:
         return self._r130sh_sources.read_rbd_plan_source(
+            execution_id,
+            local_import_id,
+            selection,
+            deadline=deadline,
+        )
+
+    def read_rpt_plan_source(
+        self,
+        execution_id: str,
+        local_import_id: str,
+        selection: PlanSelection,
+        deadline: RequestDeadline | None = None,
+    ) -> RptPlanSourceSnapshot:
+        return self._r130sh_sources.read_rpt_plan_source(
             execution_id,
             local_import_id,
             selection,
@@ -633,10 +648,22 @@ class ProjectSession:
     def get_rbd_source_inputs(
         self,
         execution_id: str,
-        selection: RbdPlanSelection,
+        selection: PlanSelection,
         deadline: RequestDeadline | None,
     ) -> RbdPlanSourceSnapshot:
         return self._r130sh_sources.read_rbd_plan_source_for_execution(
+            execution_id,
+            selection,
+            deadline=deadline,
+        )
+
+    def get_rpt_source_inputs(
+        self,
+        execution_id: str,
+        selection: PlanSelection,
+        deadline: RequestDeadline | None,
+    ) -> RptPlanSourceSnapshot:
+        return self._r130sh_sources.read_rpt_plan_source_for_execution(
             execution_id,
             selection,
             deadline=deadline,
@@ -648,7 +675,7 @@ class ProjectSession:
         analysis_input_snapshot_id: str,
         calculation_snapshot_id: str,
         execution_id: str,
-        selection: RbdPlanSelection,
+        selection: PlanSelection,
         selections: tuple[RbdFieldSelection, ...],
         failure: RbdFailureEvidence | None,
         actor: str,
