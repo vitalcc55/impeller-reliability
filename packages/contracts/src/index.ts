@@ -728,6 +728,20 @@ export const importedRunSummarySchema = z
     importedExisting: z.boolean(),
   })
   .strict();
+// Match the producer's Python str.strip(); JavaScript trim() differs for U+FEFF and U+0085.
+const producerWhitespace = /\p{White_Space}/u;
+const nullablePlanReferenceSchema = z
+  .string()
+  .refine((value) => {
+    for (const character of value) {
+      const code = character.charCodeAt(0);
+      if (!producerWhitespace.test(character) && (code < 0x1c || code > 0x1f)) {
+        return true;
+      }
+    }
+    return false;
+  })
+  .nullable();
 export const importedRunPlanSchema = z
   .object({
     planId: planIdSchema,
@@ -735,8 +749,8 @@ export const importedRunPlanSchema = z
     mode: z.enum(['pmn', 'rpt', 'rbd']),
     specimenId: specimenSourceIdSchema,
     wheelIdentifier: z.string(),
-    laboratoryCaseReference: z.string(),
-    customerOrderReference: z.string(),
+    laboratoryCaseReference: nullablePlanReferenceSchema,
+    customerOrderReference: nullablePlanReferenceSchema,
     nominalRpm: z.string().nullable(),
     targetCycles: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
     targetMaxRpm: z.string().nullable(),

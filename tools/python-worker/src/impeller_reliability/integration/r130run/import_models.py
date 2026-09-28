@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from impeller_reliability.integration.r130run.models import (
     RunPackageFinding,
@@ -89,8 +89,8 @@ class ImportedRunPlanModel(BaseModel):
     mode: Literal["pmn", "rpt", "rbd"]
     specimenId: str
     wheelIdentifier: str
-    laboratoryCaseReference: str
-    customerOrderReference: str
+    laboratoryCaseReference: str | None
+    customerOrderReference: str | None
     nominalRpm: str | None
     targetCycles: int | None = Field(default=None, ge=0, le=9_007_199_254_740_991)
     targetMaxRpm: str | None
@@ -105,6 +105,13 @@ class ImportedRunPlanModel(BaseModel):
     requiredTotalDurationSExact: str | None
     cycleDurationSExact: str | None
     targetMaxRpmExact: str | None
+
+    @field_validator("laboratoryCaseReference", "customerOrderReference")
+    @classmethod
+    def validate_optional_reference(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("plan_reference_required")
+        return value
 
 
 class ImportedRunEnvironmentModel(BaseModel):
@@ -370,8 +377,8 @@ def _plan_model(value: dict[str, object], _label: str) -> ImportedRunPlanModel:
         mode=cast(Literal["pmn", "rpt", "rbd"], _string(value.get("mode"))),
         specimenId=_string(value.get("specimen_id")),
         wheelIdentifier=_string(value.get("wheel_identifier")),
-        laboratoryCaseReference=_string(value.get("laboratory_case_reference")),
-        customerOrderReference=_string(value.get("customer_order_reference")),
+        laboratoryCaseReference=_optional_string(value["laboratory_case_reference"]),
+        customerOrderReference=_optional_string(value["customer_order_reference"]),
         nominalRpm=_optional_scalar_string(source_values.get("nominal_rpm")),
         targetCycles=_optional_integer(targets.get("target_cycles")),
         targetMaxRpm=_optional_scalar_string(targets.get("target_max_rpm")),

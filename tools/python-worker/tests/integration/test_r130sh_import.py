@@ -23,7 +23,7 @@ import pytest
 from impeller_reliability.application.project_service import ProjectService
 from impeller_reliability.calculations.rbd_input_snapshot import RbdSavedFieldSelectionModel
 from impeller_reliability.integration.r130run.import_jobs import RunPackageImportJobManager
-from impeller_reliability.integration.r130run.import_models import imported_run_detail_model
+from impeller_reliability.integration.r130run.import_models import ImportedRunPlanModel, imported_run_detail_model
 from impeller_reliability.integration.r130run.m9a import M9aPackageFacts, read_m9a_package_facts
 from impeller_reliability.integration.r130run.models import RunPackageValidationReport
 from impeller_reliability.integration.r130run.validator import (
@@ -213,6 +213,49 @@ def test_exact_repeat_is_noop_without_duplicate_audit(tmp_path: Path) -> None:
     assert repeated.imported_existing is True
     assert len(service.list_imported_runs()) == 1
     assert _audit_count(project_path) == audit_before
+    service.close()
+
+
+def test_nullable_plan_references_survive_import_detail_retry_and_reopen(tmp_path: Path) -> None:
+    service, project_path = _project(tmp_path)
+    source = _package_with_nullable_plan_references(tmp_path)
+
+    first = _import_via_job(
+        service,
+        project_path,
+        source,
+        allow_diagnostic_partial=False,
+    )
+    detail = imported_run_detail_model(service.get_imported_run(first.local_import_id))
+    assert detail.projection.originalPlan.laboratoryCaseReference is None
+    assert detail.projection.originalPlan.customerOrderReference is None
+    assert detail.projection.effectivePlan.laboratoryCaseReference is None
+    assert detail.projection.effectivePlan.customerOrderReference is None
+    for field in ("laboratoryCaseReference", "customerOrderReference"):
+        for invalid in ("", "   ", "\u0085"):
+            payload = detail.projection.originalPlan.model_dump()
+            payload[field] = invalid
+            with pytest.raises(ValueError, match="plan_reference_required"):
+                ImportedRunPlanModel.model_validate(payload)
+    format_mark_plan = detail.projection.originalPlan.model_dump()
+    format_mark_plan["laboratoryCaseReference"] = "\ufeff"
+    assert ImportedRunPlanModel.model_validate(format_mark_plan).laboratoryCaseReference == "\ufeff"
+
+    audit_before_retry = _audit_count(project_path)
+    repeated = _import_via_job(
+        service,
+        project_path,
+        source,
+        allow_diagnostic_partial=False,
+    )
+    assert repeated.local_import_id == first.local_import_id
+    assert _audit_count(project_path) == audit_before_retry
+    service.close()
+
+    service.open(path=str(project_path), application_instance_id="nullable-reopen")
+    reopened = imported_run_detail_model(service.get_imported_run(first.local_import_id))
+    assert reopened == detail
+    assert len(service.list_imported_runs()) == 1
     service.close()
 
 
@@ -912,6 +955,49 @@ def test_saved_rbd_plan_field_references_resolve_to_source_lexemes(
             for segment in pointer[1:].split("/"):
                 current = OBJECT_ADAPTER.validate_python(current)[segment]
             assert current == stored["rawSourceValue"] == stored["value"]
+    service.close()
+
+
+@pytest.mark.parametrize("selection", ["original", "effective"])
+def test_rbd_calculation_reopens_with_nullable_plan_references(
+    tmp_path: Path,
+    selection: Literal["original", "effective"],
+) -> None:
+    source = _package_with_nullable_plan_references(tmp_path)
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, source)
+    for plan_name in ("originalPlan", "effectivePlan"):
+        plan = OBJECT_ADAPTER.validate_python(execution.planned_parameters_snapshot[plan_name])
+        assert plan["laboratory_case_reference"] is None
+        assert plan["customer_order_reference"] is None
+
+    calculation = service.create_rbd_calculation(
+        analysis_input_snapshot_id=str(uuid4()),
+        calculation_snapshot_id=str(uuid4()),
+        execution_id=execution.execution_id,
+        selection=selection,
+        selections=tuple(
+            RbdFieldSelection(field=field, origin="source")
+            for field in (
+                "base_cycles",
+                "reserve_factor",
+                "nominal_rpm",
+                "acceleration_duration_s",
+                "deceleration_duration_s",
+            )
+        ),
+        failure=None,
+        actor="local_user",
+        reason="Проверка сохранения расчёта при пустых ссылках плана",
+        deadline=None,
+    )
+    assert calculation.disposition == "created"
+    calculation_source = OBJECT_ADAPTER.validate_python(calculation.detail.input_snapshot.input_snapshot["source"])
+    assert calculation_source["localImportId"] == imported.local_import_id
+    service.close()
+
+    service.open(path=str(project_path), application_instance_id="nullable-rbd-reopen")
+    assert service.get_reliability_execution(execution.execution_id, None) == execution
+    assert service.get_rbd_calculation_detail(calculation.detail.calculation_snapshot.calculation_snapshot_id, None) == calculation.detail
     service.close()
 
 
@@ -3251,6 +3337,42 @@ def _integer(value: object) -> int:
 
 def _package(name: str) -> Path:
     return M9A_ROOT / "packages" / name
+
+
+def _package_with_nullable_plan_references(tmp_path: Path) -> Path:
+    source = _package("normal_final_rbd.r130run")
+    with ZipFile(source) as archive:
+        original = OBJECT_ADAPTER.validate_json(archive.read("plan/original.json"))
+        effective = OBJECT_ADAPTER.validate_json(archive.read("plan/effective.json"))
+        summary = OBJECT_ADAPTER.validate_json(archive.read("run-summary.json"))
+    for key in ("laboratory_case_reference", "customer_order_reference"):
+        original[key] = None
+    effective_container = OBJECT_ADAPTER.validate_python(effective["effective_plan"])
+    effective_plan = OBJECT_ADAPTER.validate_python(effective_container["effective_plan"])
+    for key in ("laboratory_case_reference", "customer_order_reference"):
+        effective_plan[key] = None
+    effective_container["effective_plan"] = effective_plan
+    effective_container["original_plan_sha256"] = hashlib.sha256(
+        _canonical_package_json(original),
+    ).hexdigest()
+    effective["effective_plan"] = effective_container
+    run_card = OBJECT_ADAPTER.validate_python(summary["run_card"])
+    for key in ("laboratory_case_reference", "customer_order_reference"):
+        run_card[key] = None
+    summary["run_card"] = run_card
+
+    return build_synthetic_r130run(
+        tmp_path / "nullable-plan-references.r130run",
+        payload_overrides={
+            "plan/original.json": _canonical_package_json(original),
+            "plan/effective.json": _canonical_package_json(effective),
+            "run-summary.json": _canonical_package_json(summary),
+        },
+    )
+
+
+def _canonical_package_json(value: dict[str, object]) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 
 
 def _validated(path: Path) -> tuple[RunPackageValidationReport, M9aPackageFacts]:

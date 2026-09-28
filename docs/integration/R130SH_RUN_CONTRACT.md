@@ -10,6 +10,8 @@ M02.2B CaseDocument остаётся редактируемым `analyst_enrichm
 
 M03B принимает `final` и, после отдельного подтверждения, `diagnostic_partial`. Для partial `resume_available=true` является допустимым producer fact: downstream сохраняет его без подмены, не превращает source в final, не продолжает run и не создаёт eligibility. Exact `package_id + export_revision + outer SHA-256` повтор является no-op; другой SHA даёт `import_integrity_conflict`; новая revision сосуществует. UUID producer-а (v4/v7) и bounded source identities отделены от local UUIDv4. Imported outcome/validity/completeness не означают analysis eligibility; `supportedPlanSchemas` пуст.
 
+В original/effective планах ключи `laboratory_case_reference` и `customer_order_reference` обязательны, а значения могут быть `null` либо строкой с хотя бы одним непробельным символом по правилу Python `str.strip()` у R130SH. Импорт сохраняет `null` без замены на пустую строку; отсутствие ключа, неверный тип и строка только из пробельных символов отклоняются.
+
 В `measurements.csv` действует единственная формула v1:
 
 ```text

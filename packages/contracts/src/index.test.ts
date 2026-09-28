@@ -514,6 +514,27 @@ describe('worker contracts', () => {
       targetMaxRpmExact: null,
     } as const;
     expect(importedRunPlanSchema.parse(plan).targetCycles).toBe(100);
+    const nullableReferences = {
+      ...plan,
+      laboratoryCaseReference: null,
+      customerOrderReference: null,
+    } as const;
+    expect(importedRunPlanSchema.parse(nullableReferences)).toMatchObject({
+      laboratoryCaseReference: null,
+      customerOrderReference: null,
+    });
+    expect(
+      importedRunPlanSchema.safeParse({ ...plan, laboratoryCaseReference: '\uFEFF' }).success,
+    ).toBe(true);
+    for (const field of ['laboratoryCaseReference', 'customerOrderReference'] as const) {
+      const missingReference = { ...plan };
+      delete (missingReference as Partial<typeof plan>)[field];
+      expect(importedRunPlanSchema.safeParse(missingReference).success).toBe(false);
+      expect(importedRunPlanSchema.safeParse({ ...plan, [field]: undefined }).success).toBe(false);
+      expect(importedRunPlanSchema.safeParse({ ...plan, [field]: 42 }).success).toBe(false);
+      expect(importedRunPlanSchema.safeParse({ ...plan, [field]: '   ' }).success).toBe(false);
+      expect(importedRunPlanSchema.safeParse({ ...plan, [field]: '\u0085' }).success).toBe(false);
+    }
     expect(
       importedRunPlanSchema.safeParse({ ...plan, targetCycles: Number.MAX_SAFE_INTEGER + 1 })
         .success,
