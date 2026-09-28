@@ -171,6 +171,16 @@ test('imports RPT, saves documented inputs and table 4, then reopens the exact s
     await expect(historicalResult).toContainText('Методическое требование источника');
     await expect(historicalResult).toContainText('Уставка источника');
     await expect(historicalResult).toContainText('полная остановка');
+    await expect(historicalResult).toContainText('1/300 (≈ 0.003333333333…) ч');
+    await expect(historicalResult).toContainText('T_ОТК: 8 с');
+    await expect(historicalResult).toContainText(
+      'Применимость: Точное документированное время до отказа',
+    );
+    await expect(historicalResult).toContainText('Принято: 1.5 безразмерный');
+    await expect(historicalResult).toContainText('исходное значение плана: 1 безразмерный');
+    await expect(historicalResult).toContainText(
+      'Протокол времени до отказа, редакция записи 1 (01), раздел 3, начало и отказ',
+    );
     const reopened = await page.evaluate(async (calculationId) => {
       const api = window.impeller;
       if (api === undefined) throw new Error('preload_api_missing');

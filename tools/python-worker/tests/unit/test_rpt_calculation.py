@@ -171,3 +171,11 @@ def test_exact_failure_requires_documented_duration_and_accepts_zero() -> None:
     assert missing.value.reason_code == "failure_duration_required"
     zero = calculate_rpt_reference(_input(failure=RptFailureInput(applicability="exact_supported", duration_to_failure_s="0")))
     assert zero.failure_result.cycles_to_failure == "0"
+
+
+def test_nested_failure_type_error_remains_typed() -> None:
+    values = _input()
+    object.__setattr__(values, "failure", object())
+    with pytest.raises(RptCalculationError) as raised:
+        calculate_rpt_reference(values)
+    assert raised.value.reason_code == "invalid_input_type"

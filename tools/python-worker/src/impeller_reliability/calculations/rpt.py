@@ -30,6 +30,15 @@ RptLowerPointPolicy = Literal["one_percent", "full_stop", "explicit_rpm"]
 ALGORITHM_ID: Final = "rpt_reference"
 ALGORITHM_VERSION: Final = "1.0.0"
 NUMERIC_POLICY: Final = "exact_fraction_v1"
+_FAILURE_REASON_BY_APPLICABILITY: Final[dict[str, str]] = {
+    "unavailable": "failure_duration_unavailable",
+    "interval_endpoint": "failure_endpoint_interval",
+    "right_censored": "failure_not_observed",
+    "ambiguous_pauses": "failure_structure_ambiguous",
+    "variable_cycle": "failure_cycle_variable",
+    "unknown_start": "failure_start_unknown",
+    "repeated_attempts": "failure_attempts_ambiguous",
+}
 
 
 class RptCalculationError(ValueError):
@@ -125,7 +134,7 @@ class RptReferenceResult:
     formula_references: tuple[str, ...]
 
 
-def calculate_rpt_reference(values: object) -> RptReferenceResult:
+def validate_rpt_reference_input(values: object) -> tuple[Decimal, int, Decimal, Decimal, Decimal, Decimal]:
     if not isinstance(values, RptReferenceInput):
         raise RptCalculationError("invalid_input_type", "Ожидался типизированный набор входов РПТ.")
     try:
@@ -138,12 +147,25 @@ def calculate_rpt_reference(values: object) -> RptReferenceResult:
     except ExactInputError as error:
         raise RptCalculationError(error.reason_code, str(error)) from error
 
+    if acceleration + steady + deceleration <= 0:
+        raise RptCalculationError("cycle_duration_zero", "Продолжительность цикла РПТ должна быть положительной.")
+    failure = _validated_failure_input(values.failure)
+    if failure is not None:
+        if failure.applicability == "exact_supported":
+            _validated_failure_duration(failure)
+        else:
+            _validated_failure_applicability(failure.applicability)
+    return nominal_rpm, design_cycles, reserve_factor, acceleration, steady, deceleration
+
+
+def calculate_rpt_reference(values: object) -> RptReferenceResult:
+    if not isinstance(values, RptReferenceInput):
+        raise RptCalculationError("invalid_input_type", "Ожидался типизированный набор входов РПТ.")
+    nominal_rpm, design_cycles, reserve_factor, acceleration, steady, deceleration = validate_rpt_reference_input(values)
     acceleration_fraction = Fraction(acceleration)
     steady_fraction = Fraction(steady)
     deceleration_fraction = Fraction(deceleration)
     cycle_duration = acceleration_fraction + steady_fraction + deceleration_fraction
-    if cycle_duration <= 0:
-        raise RptCalculationError("cycle_duration_zero", "Продолжительность цикла РПТ должна быть положительной.")
     maximum_rpm = Fraction(nominal_rpm)
     minimum_rpm = maximum_rpm / 100
     required_cycles = Fraction(design_cycles) * Fraction(reserve_factor)
@@ -223,29 +245,35 @@ def _diagram_points(
 
 
 def _calculate_failure(failure: object | None, cycle_duration: Fraction) -> RptFailureResult:
+    failure = _validated_failure_input(failure)
     if failure is None:
         return RptFailureResult("not_applicable", None, "failure_duration_unavailable")
-    if not isinstance(failure, RptFailureInput):
-        raise RptCalculationError("invalid_input_type", "Ожидался типизированный набор входов отказа РПТ.")
-    reason_by_applicability = {
-        "unavailable": "failure_duration_unavailable",
-        "interval_endpoint": "failure_endpoint_interval",
-        "right_censored": "failure_not_observed",
-        "ambiguous_pauses": "failure_structure_ambiguous",
-        "variable_cycle": "failure_cycle_variable",
-        "unknown_start": "failure_start_unknown",
-        "repeated_attempts": "failure_attempts_ambiguous",
-    }
     applicability = _validated_failure_applicability(failure.applicability)
     if applicability != "exact_supported":
-        return RptFailureResult("not_applicable", None, reason_by_applicability[applicability])
+        return RptFailureResult("not_applicable", None, failure_reason_for_applicability(applicability))
+    duration = _validated_failure_duration(failure)
+    return RptFailureResult("calculated", str((Fraction(duration) / cycle_duration).__floor__()), None)
+
+
+def failure_reason_for_applicability(applicability: RptFailureApplicability) -> str | None:
+    return None if applicability == "exact_supported" else _FAILURE_REASON_BY_APPLICABILITY[applicability]
+
+
+def _validated_failure_input(failure: object) -> RptFailureInput | None:
+    if failure is None:
+        return None
+    if not isinstance(failure, RptFailureInput):
+        raise RptCalculationError("invalid_input_type", "Ожидался типизированный набор входов отказа РПТ.")
+    return failure
+
+
+def _validated_failure_duration(failure: RptFailureInput) -> Decimal:
     if failure.duration_to_failure_s is None:
         raise RptCalculationError("failure_duration_required", "Для расчёта по таблице 4 требуется документированное время до отказа.")
     try:
-        duration = nonnegative_decimal(failure.duration_to_failure_s, "duration_to_failure_s", Decimal("1000000000000"))
+        return nonnegative_decimal(failure.duration_to_failure_s, "duration_to_failure_s", Decimal("1000000000000"))
     except ExactInputError as error:
         raise RptCalculationError(error.reason_code, str(error)) from error
-    return RptFailureResult("calculated", str((Fraction(duration) / cycle_duration).__floor__()), None)
 
 
 def _validated_failure_applicability(value: object) -> RptFailureApplicability:

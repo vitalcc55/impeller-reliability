@@ -845,9 +845,12 @@ function RptResultDetail({ detail }: { readonly detail: RptCalculationDetail }):
   const input = detail.inputSnapshot.inputSnapshot;
   const result = detail.calculationSnapshot.resultSnapshot;
   const exact = (value: {
+    readonly numerator: string;
+    readonly denominator: string;
     readonly decimal: string | null;
     readonly decimal_preview: string;
-  }): string => value.decimal ?? `${value.decimal_preview}…`;
+  }): string =>
+    value.decimal ?? `${value.numerator}/${value.denominator} (≈ ${value.decimal_preview})`;
   return (
     <section aria-labelledby="rpt-result-heading" className="rbd-result-detail">
       <Title order={3} id="rpt-result-heading">
@@ -915,9 +918,12 @@ function RptResultDetail({ detail }: { readonly detail: RptCalculationDetail }):
           <div key={item.field}>
             <dt>{RPT_FIELD_LABELS[item.field].label}</dt>
             <dd>
-              {item.value} {RPT_FIELD_LABELS[item.field].unit} ·{' '}
+              Принято: {item.value} {RPT_FIELD_LABELS[item.field].unit} ·{' '}
               {item.origin === 'source' ? 'выбранный источник R130SH' : 'дополнение инженера'} ·
               поле источника: {item.sourceReference}
+              {item.origin === 'manual'
+                ? ` · исходное значение плана: ${item.rawSourceValue === null ? 'отсутствует' : `${item.rawSourceValue} ${RPT_FIELD_LABELS[item.field].unit}`}`
+                : ''}
               {item.origin === 'manual' ? ` · основание: ${item.basis}` : ''}
               {item.document !== null
                 ? ` · документ: ${item.document.title}, редакция ${item.document.recordRevision}, ${item.document.locator}`
@@ -935,12 +941,23 @@ function RptResultDetail({ detail }: { readonly detail: RptCalculationDetail }):
       </Text>
       {input.failureEvidence !== null ? (
         <Text size="sm">
-          Основание: {input.failureEvidence.basis}
+          T_ОТК:{' '}
+          {input.failureEvidence.durationToFailureS === null
+            ? 'не представлено'
+            : `${input.failureEvidence.durationToFailureS} с`}
+          {' · '}Применимость:{' '}
+          {
+            failureOptions.find((option) => option.value === input.failureEvidence?.applicability)
+              ?.label
+          }
+          {' · '}Основание: {input.failureEvidence.basis}
           {input.failureEvidence.document !== null
-            ? ` · ${input.failureEvidence.document.title}, редакция ${input.failureEvidence.document.recordRevision}, ${input.failureEvidence.document.locator}`
+            ? ` · ${input.failureEvidence.document.title}, редакция записи ${input.failureEvidence.document.recordRevision} (${input.failureEvidence.document.revisionLabel}), ${input.failureEvidence.document.locator}`
             : ''}
         </Text>
-      ) : null}
+      ) : (
+        <Text size="sm">T_ОТК: не представлено · свидетельство отказа не выбрано.</Text>
+      )}
       <Text size="xs" c="dimmed">
         Формулы: {result.formula_references.join('; ')}. Арифметика:{' '}
         {detail.calculationSnapshot.numericPolicy}; алгоритм{' '}

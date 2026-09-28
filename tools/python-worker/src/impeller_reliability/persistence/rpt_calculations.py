@@ -21,6 +21,8 @@ from impeller_reliability.calculations.rpt import (
     RptReferenceInput,
     calculate_rpt_reference,
     compare_rpt_lower_point,
+    failure_reason_for_applicability,
+    validate_rpt_reference_input,
 )
 from impeller_reliability.calculations.rpt_input_snapshot import (
     RptFailureApplicability,
@@ -282,7 +284,7 @@ def _validate_saved_failure_link(payload: RptInputSnapshotModel, result: RptRefe
     if operation_failure.applicability == "exact_supported":
         if saved.document is None or saved.durationToFailureS is None or not saved.basis or result.failure_result.status != "calculated":
             raise _corrupt()
-    elif result.failure_result.status != "not_applicable":
+    elif result.failure_result.status != "not_applicable" or result.failure_result.reason_code != failure_reason_for_applicability(operation_failure.applicability):
         raise _corrupt()
 
 
@@ -850,6 +852,22 @@ class RptCalculationRepository:
             raise _corrupt()
         _validate_saved_field_links(typed_input)
         _validate_saved_failure_link(typed_input, typed_result)
+        chosen = {item.field: item.value for item in typed_input.fieldSelections}
+        failure = typed_input.failureEvidence
+        try:
+            validate_rpt_reference_input(
+                RptReferenceInput(
+                    nominal_rpm=chosen["nominal_rpm"],
+                    design_cycles=chosen["design_cycles"],
+                    reserve_factor=chosen["reserve_factor"],
+                    acceleration_duration_s=chosen["acceleration_duration_s"],
+                    steady_duration_s=chosen["steady_duration_s"],
+                    deceleration_duration_s=chosen["deceleration_duration_s"],
+                    failure=None if failure is None else RptFailureInput(failure.applicability, failure.durationToFailureS),
+                )
+            )
+        except RptCalculationError as error:
+            raise _corrupt() from error
         comparison = typed_result.lower_point_comparison
         if (
             comparison.source_policy != source.sourceValues.lower_point_policy
