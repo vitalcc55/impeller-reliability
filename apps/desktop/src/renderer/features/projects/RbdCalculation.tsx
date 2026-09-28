@@ -953,6 +953,9 @@ export const RbdCalculation = forwardRef<RbdCalculationHandle, RbdCalculationPro
 
 function RbdResultDetail({ detail }: { readonly detail: RbdCalculationDetail }): React.JSX.Element {
   const result = detail.calculationSnapshot.resultSnapshot;
+  const historicalEffectiveReference =
+    detail.inputSnapshot.inputSnapshot.schemaVersion === 1 &&
+    detail.inputSnapshot.planSelection === 'effective';
   const exact = (value: {
     readonly decimal: string | null;
     readonly decimal_preview: string;
@@ -995,6 +998,11 @@ function RbdResultDetail({ detail }: { readonly detail: RbdCalculationDetail }):
                   ? 'выбранный источник R130SH'
                   : 'дополнение инженера'}
                 {' · '}
+                {selection.rawSourceValue === null
+                  ? 'ожидаемое поле: '
+                  : historicalEffectiveReference
+                    ? 'историческая ссылка v1: '
+                    : 'поле источника: '}
                 {selection.sourceReference}
                 {selection.origin === 'manual' ? ` · основание: ${selection.basis}` : ''}
                 {selection.evidence?.document !== null && selection.evidence?.document !== undefined

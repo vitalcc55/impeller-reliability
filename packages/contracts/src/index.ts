@@ -1457,7 +1457,7 @@ export const rbdSavedFailureEvidenceSchema = z
   .strict();
 export const rbdInputSnapshotPayloadSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.union([z.literal(1), z.literal(2)]),
     operation: rbdOperationSnapshotSchema,
     source: rbdSourceSnapshotSchema,
     fieldSelections: z

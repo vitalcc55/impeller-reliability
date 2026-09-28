@@ -1639,6 +1639,12 @@ def _rbd_plan_object(value: object, selection: RbdPlanSelection) -> dict[str, ob
     return _plan_required_object(effective, "effective_plan")
 
 
+def rbd_plan_field_reference(selection: RbdPlanSelection, field: str) -> str:
+    if selection == "original":
+        return f"plan/original.json#/source_values/{field}"
+    return f"plan/effective.json#/effective_plan/effective_plan/source_values/{field}"
+
+
 def _plan_required_object(value: dict[str, object], key: str) -> dict[str, object]:
     if key not in value:
         raise _corrupt_source()

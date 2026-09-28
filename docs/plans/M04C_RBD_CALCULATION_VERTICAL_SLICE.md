@@ -102,6 +102,15 @@ read-only seam принадлежит существующему `R130shSourceRe
   provenance;
 - не смешивает original/effective и не переключает export revision на latest.
 
+После завершения первого vertical slice исправлена координата поля effective
+member: его исходные значения находятся под двумя уровнями `effective_plan`.
+Новые снимки используют provenance v2; сохранённые снимки v1 остаются
+неизменяемой историей. Применимость активного CaseDocument для нового решения
+проверяется у владельца документа: без связей он относится ко всему делу,
+при наличии связей требуется совпадение WheelModel или Specimen. РБД сохраняет
+свою проверку точной `recordRevision`; последующее архивирование документа
+не меняет сохранённый расчёт.
+
 Для отсутствующего или отклонённого source field доступно explicit manual
 supplement: canonical value, unit, actor, reason и optional exact
 document/observation revision. ПМИ-default может быть только отдельным

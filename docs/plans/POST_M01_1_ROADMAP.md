@@ -40,7 +40,7 @@ M04B реализован как `TestExecution → явная versioned Reliabi
 
 ## M04C и далее — расчёты испытаний
 
-M04C реализует первый полный РБД vertical slice: `ImportedRunPlanSnapshot` + explicit source/enrichment selection → `AnalysisInputSnapshot` → Python validation/calculation → `CalculationSnapshot`. После утверждённого математического контракта и golden fixtures отдельными этапами следуют РПТ, затем ПМН. Расчёты не формируют задание для R130SH.
+M04C реализовал первый полный РБД vertical slice: explicit source/enrichment selection → `AnalysisInputSnapshot` → Python validation/calculation → `CalculationSnapshot`. Последующее закрытие прослеживаемости effective-полей и единой применимости документов сохраняет старые снимки как историю и создаёт новые с provenance v2. Отдельными этапами следуют РПТ, затем ПМН. Расчёты не формируют задание для R130SH.
 
 До первого расчётного экрана фиксируются command availability, неблокирующий job feedback и chart/data-alternative contract. DataGrid не появляется до реального редактируемого табличного сценария FMEA; navigation history и command/shortcut layer вводятся перед несколькими повторяемыми рабочими командами, а не как M02.2B-заготовка.
 

@@ -1033,8 +1033,6 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
     await page.getByLabel('Название').fill('ПМИ Р130У');
     await page.getByLabel('Обозначение').fill('ПМИ Р130У');
     await page.getByLabel('Редакция').fill('01');
-    await page.getByRole('checkbox', { name: 'Локальная модель РБД', exact: true }).check();
-    await page.getByRole('checkbox', { name: /LOCAL-RBD-001/u }).check();
     await page.getByRole('button', { name: 'Создать без файла' }).click();
     await expect(page.getByText('Документ сохранён. Редакция 1.')).toBeVisible();
 
@@ -1057,6 +1055,8 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
     await page.getByRole('option', { name: 'Локальная модель РБД' }).click();
     await expect(page.locator('.rbd-execution-list')).toContainText('normal_final_rbd');
     await page.getByRole('button', { name: /РБД.*normal_final_rbd/u }).click();
+    await page.getByRole('combobox', { name: 'Редакция плана в выбранном архиве' }).click();
+    await page.getByRole('option', { name: 'Эффективный план' }).click();
     for (const field of [
       'Номинальная частота nP',
       'Базовое число циклов N0',
@@ -1070,9 +1070,17 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
         .click();
       await page.getByRole('option', { name: 'Значение выбранного плана R130SH' }).click();
     }
+    const baseCycles = page.getByRole('group', { name: /Базовое число циклов N0/u });
+    await baseCycles.getByRole('combobox', { name: 'Происхождение значения' }).click();
+    await page.getByRole('option', { name: 'Документированное дополнение инженера' }).click();
+    await baseCycles.getByRole('textbox', { name: 'Значение дополнения' }).fill('100');
+    await baseCycles.getByRole('textbox', { name: 'Основание замещения' }).fill('По общей ПМИ');
+    await baseCycles.getByRole('combobox', { name: 'Документ дела (если использован)' }).click();
+    await page.getByRole('option').filter({ hasText: 'ПМИ Р130У' }).first().click();
+    await baseCycles.getByRole('textbox', { name: 'Раздел или поле документа' }).fill('Раздел 10');
     await page
       .getByRole('textbox', { name: 'Основание создания расчётного снимка' })
-      .fill('Исходный план выбран для расчёта одного исполнения');
+      .fill('Эффективный план и общее основание для одного исполнения');
     await page.getByRole('button', { name: 'Рассчитать и зафиксировать' }).click();
     await expect(
       page.getByText('Расчёт РБД сохранён. Входы и результат зафиксированы неизменяемой парой.'),
@@ -1081,6 +1089,9 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
     await expect(calculatedResult.getByText('100 циклов', { exact: true })).toBeVisible();
     await expect(calculatedResult.getByText('4 с', { exact: true })).toBeVisible();
     await expect(calculatedResult.getByText('8 с', { exact: true })).toBeVisible();
+    await expect(calculatedResult).toContainText(
+      'поле источника: plan/effective.json#/effective_plan/effective_plan/source_values/base_cycles',
+    );
     const savedCalculation = await page.evaluate(async () => {
       const api = window.impeller;
       if (api === undefined) throw new Error('preload_api_missing');
@@ -1097,8 +1108,16 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
         calculationSnapshotId: detail.result.calculationSnapshot.calculationSnapshotId,
         inputContentSha256: detail.result.inputSnapshot.contentSha256,
         resultContentSha256: detail.result.calculationSnapshot.contentSha256,
+        provenanceVersion: detail.result.inputSnapshot.inputSnapshot.schemaVersion,
+        fieldReferences: detail.result.inputSnapshot.inputSnapshot.fieldSelections.map(
+          (field) => field.sourceReference,
+        ),
       };
     });
+    expect(savedCalculation.provenanceVersion).toBe(2);
+    expect(savedCalculation.fieldReferences).toContain(
+      'plan/effective.json#/effective_plan/effective_plan/source_values/base_cycles',
+    );
     await page
       .getByRole('textbox', { name: 'Основание создания расчётного снимка' })
       .fill('Новый черновик после сохранения');
@@ -1267,7 +1286,7 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
     await page.getByRole('button', { name: 'Расчёт РБД' }).click();
     await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
     await page.getByRole('option', { name: 'Локальная модель РБД' }).click();
-    await page.getByRole('button', { name: /100 циклов · исходный план/u }).click();
+    await page.getByRole('button', { name: /100 циклов · эффективный план/u }).click();
     await expect(
       page
         .getByRole('region', { name: 'Сохранённый расчёт' })
@@ -1281,11 +1300,17 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
       return {
         inputContentSha256: detail.result.inputSnapshot.contentSha256,
         resultContentSha256: detail.result.calculationSnapshot.contentSha256,
+        provenanceVersion: detail.result.inputSnapshot.inputSnapshot.schemaVersion,
+        fieldReferences: detail.result.inputSnapshot.inputSnapshot.fieldSelections.map(
+          (field) => field.sourceReference,
+        ),
       };
     }, savedCalculation.calculationSnapshotId);
     expect(reopenedCalculation).toEqual({
       inputContentSha256: savedCalculation.inputContentSha256,
       resultContentSha256: savedCalculation.resultContentSha256,
+      provenanceVersion: savedCalculation.provenanceVersion,
+      fieldReferences: savedCalculation.fieldReferences,
     });
     await page.getByRole('button', { name: 'Данные надёжности' }).click();
     await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();

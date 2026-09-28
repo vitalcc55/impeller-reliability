@@ -29,9 +29,10 @@ from impeller_reliability.calculations.rbd_input_snapshot import (
 )
 from impeller_reliability.calculations.rbd_result_snapshot import RbdReferenceResultModel
 from impeller_reliability.persistence.audit import audit_now, insert_audit
+from impeller_reliability.persistence.case_documents import case_document_for_new_decision
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_schema import MAX_AUDIT_PAYLOAD_BYTES
-from impeller_reliability.persistence.r130sh_sources import RbdPlanSourceSnapshot
+from impeller_reliability.persistence.r130sh_sources import RbdPlanSourceSnapshot, rbd_plan_field_reference
 from impeller_reliability.persistence.reliability_domain import bounded_text
 from impeller_reliability.persistence.sqlite_deadline import sqlite_deadline_guard, sqlite_query_rows_with_deadline
 from impeller_reliability.persistence.timestamps import require_canonical_utc_timestamp
@@ -282,7 +283,7 @@ class RbdCalculationRepository:
             reason=reason,
         )
         input_payload: dict[str, object] = {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "operation": operation_payload,
             "source": _source_payload(source),
             "fieldSelections": field_snapshots,
@@ -566,7 +567,7 @@ class RbdCalculationRepository:
                     "origin": choice.origin,
                     "value": value,
                     "rawSourceValue": raw_source,
-                    "sourceReference": f"{source.payload_path}#/source_values/{field}",
+                    "sourceReference": rbd_plan_field_reference(source.selection, field),
                     "basis": basis,
                     "evidence": evidence,
                 }
@@ -667,28 +668,23 @@ class RbdCalculationRepository:
             document_id = _uuid4(evidence.document_id)
             if evidence.document_record_revision is None or evidence.document_record_revision < 1:
                 raise ProjectOperationError("validation_error", "Нужна exact revision документа.")
-            row = self._connection.execute(
-                """
-                SELECT d.document_kind, d.title, d.designation, d.revision_label,
-                       d.record_revision, f.sha256,
-                       EXISTS(SELECT 1 FROM case_document_wheel_models w WHERE w.case_document_id=d.case_document_id AND w.wheel_model_id=?),
-                       EXISTS(SELECT 1 FROM case_document_specimens s WHERE s.case_document_id=d.case_document_id AND s.specimen_id=?)
-                FROM case_documents d
-                LEFT JOIN case_document_files f ON f.case_document_id=d.case_document_id
-                WHERE d.case_document_id=?
-                """,
-                (execution[0], execution[1], document_id),
-            ).fetchone()
-            if row is None or int(row[4]) != evidence.document_record_revision or not (int(row[6]) or int(row[7])):
+            document = case_document_for_new_decision(
+                self._connection,
+                document_id,
+                execution[0],
+                execution[1],
+                deadline,
+            )
+            if document is None or document.record_revision != evidence.document_record_revision:
                 raise ProjectOperationError("validation_error", "Exact revision документа недоступна или неприменима.")
             document_snapshot = {
                 "documentId": document_id,
-                "recordRevision": int(row[4]),
-                "documentKind": str(row[0]),
-                "title": str(row[1]),
-                "designation": str(row[2]),
-                "revisionLabel": str(row[3]),
-                "fileSha256": None if row[5] is None else _sha256(str(row[5]), "document file"),
+                "recordRevision": document.record_revision,
+                "documentKind": document.document_kind,
+                "title": document.title,
+                "designation": document.designation,
+                "revisionLabel": document.revision_label,
+                "fileSha256": None if document.file_sha256 is None else _sha256(document.file_sha256, "document file"),
                 "locator": bounded_text(evidence.document_locator, 1000, "Локатор документа"),
             }
         elif evidence.document_record_revision is not None or evidence.document_locator:
@@ -1127,7 +1123,7 @@ def _validate_input_snapshot_links(
             command.field != selected.field
             or command.origin != selected.origin
             or selected.unit != _FIELD_UNITS[selected.field]
-            or selected.sourceReference != f"{source.payloadPath}#/source_values/{selected.field}"
+            or selected.sourceReference != (f"{source.payloadPath}#/source_values/{selected.field}" if payload.schemaVersion == 1 else rbd_plan_field_reference(source.planSelection, selected.field))
             or (selected.field == "nominal_rpm" and selected.rawSourceValue != nominal_rpm)
         ):
             raise _corrupt()

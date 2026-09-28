@@ -187,7 +187,7 @@ class RbdSavedFailureEvidenceModel(BaseModel):
 
 class RbdInputSnapshotModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    schemaVersion: Literal[1]
+    schemaVersion: Literal[1, 2]
     operation: RbdOperationSnapshotModel
     source: RbdSourceSnapshotModel
     fieldSelections: list[RbdSavedFieldSelectionModel] = Field(min_length=5, max_length=5)

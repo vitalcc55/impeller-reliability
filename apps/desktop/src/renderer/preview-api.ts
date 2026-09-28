@@ -1355,7 +1355,7 @@ function previewRbdCalculationDetail(
       origin: selected.origin,
       value: selected.origin === 'manual' ? (selected.manualValue ?? '') : (rawSourceValue ?? ''),
       rawSourceValue,
-      sourceReference: `${source.payloadPath}#/source_values/${field}`,
+      sourceReference: `${source.payloadPath}#/${source.planSelection === 'effective' ? 'effective_plan/effective_plan/' : ''}source_values/${field}`,
       basis: selected.origin === 'manual' ? selected.basis : '',
       evidence: null,
     };
@@ -1379,7 +1379,7 @@ function previewRbdCalculationDetail(
       sourceSnapshotSha256: source.sourceSnapshotSha256,
       operationSha256: 'b'.repeat(64),
       inputSnapshot: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         operation: {
           schemaVersion: 1,
           analysisInputSnapshotId: command.analysisInputSnapshotId,

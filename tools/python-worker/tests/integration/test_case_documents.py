@@ -15,7 +15,11 @@ import pytest
 
 from impeller_reliability.application.project_service import ProjectService
 from impeller_reliability.persistence.audit import insert_audit
-from impeller_reliability.persistence.case_documents import COPY_CHUNK_BYTES, CaseDocumentRepository
+from impeller_reliability.persistence.case_documents import (
+    COPY_CHUNK_BYTES,
+    CaseDocumentRepository,
+    case_document_for_new_decision,
+)
 from impeller_reliability.persistence.project_database import (
     configure_project_connection,
 )
@@ -278,6 +282,127 @@ def _document_values(title: str = "Документ") -> dict[str, object]:
         "issuer": "",
         "notes": "",
     }
+
+
+def test_document_for_new_decision_uses_shared_active_applicability_rule(tmp_path: Path) -> None:
+    project_path = tmp_path / "document-applicability.irproj"
+    service = _create_project(project_path)
+    wheels = [
+        service.create_wheel(
+            {
+                "wheelModelId": str(uuid4()),
+                "fullName": f"Колесо {index}",
+                "designation": f"ВР-{index}",
+                "nominalDiameterMm": None,
+                "nominalSpeedRpm": None,
+                "bladeCount": None,
+                "geometryDescription": "",
+                "compositionDescription": "",
+                "materialDescription": "",
+                "notes": "",
+            },
+            None,
+        )
+        for index in (1, 2)
+    ]
+    specimen = service.create_specimen(
+        {
+            "specimenId": str(uuid4()),
+            "wheelModelId": wheels[0].wheel_model_id,
+            "identificationNumber": "SN-1",
+            "batchNumber": "",
+            "marking": "",
+            "manufacturedOn": None,
+            "receivedOn": None,
+            "workingDiameterMm": None,
+            "initialConditionNotes": "",
+            "notes": "",
+        },
+        None,
+    )
+    service.close()
+    connection, repository = _open_repository(project_path)
+    try:
+        for wheel_ids, specimen_ids, applicable in (
+            ((), (), True),
+            ((wheels[0].wheel_model_id,), (), True),
+            ((), (specimen.specimen_id,), True),
+            ((wheels[1].wheel_model_id,), (), False),
+        ):
+            document = repository.create(
+                document_id=str(uuid4()),
+                values=_document_values(),
+                wheel_model_ids=wheel_ids,
+                specimen_ids=specimen_ids,
+                deadline=None,
+            )
+            if applicable:
+                selected = case_document_for_new_decision(
+                    connection,
+                    document.case_document_id,
+                    wheels[0].wheel_model_id,
+                    specimen.specimen_id,
+                    None,
+                )
+                assert selected is not None
+                assert selected.record_revision == document.record_revision
+                assert selected.file_sha256 is None
+                if not wheel_ids and not specimen_ids:
+                    source_file = tmp_path / "applicable-basis.pdf"
+                    source_file.write_bytes(b"%PDF-1.7\nDocumented basis\n")
+                    attached = repository.attach_file(
+                        document_id=document.case_document_id,
+                        expected_revision=document.record_revision,
+                        source_path=source_file,
+                        deadline=None,
+                    )
+                    assert attached.file is not None
+                    with_file = case_document_for_new_decision(
+                        connection,
+                        document.case_document_id,
+                        wheels[0].wheel_model_id,
+                        specimen.specimen_id,
+                        None,
+                    )
+                    assert with_file is not None
+                    assert with_file.file_sha256 == attached.file.sha256
+            else:
+                with pytest.raises(ProjectOperationError) as unrelated:
+                    case_document_for_new_decision(
+                        connection,
+                        document.case_document_id,
+                        wheels[0].wheel_model_id,
+                        specimen.specimen_id,
+                        None,
+                    )
+                assert unrelated.value.code == "validation_error"
+                archived = repository.set_archived(
+                    document_id=document.case_document_id,
+                    expected_revision=document.record_revision,
+                    archived=True,
+                    deadline=None,
+                )
+                with pytest.raises(ProjectOperationError) as unavailable:
+                    case_document_for_new_decision(
+                        connection,
+                        archived.case_document_id,
+                        wheels[1].wheel_model_id,
+                        specimen.specimen_id,
+                        None,
+                    )
+                assert unavailable.value.code == "entity_archived"
+        assert (
+            case_document_for_new_decision(
+                connection,
+                str(uuid4()),
+                wheels[0].wheel_model_id,
+                specimen.specimen_id,
+                None,
+            )
+            is None
+        )
+    finally:
+        connection.close()
 
 
 def test_attach_file_once_retry_duplicate_content_and_audit_privacy(tmp_path: Path) -> None:

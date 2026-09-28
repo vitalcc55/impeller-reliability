@@ -1281,22 +1281,39 @@ async function runSmokeIfRequested(): Promise<void> {
             const materialized = binding.ok
               ? await workerClient.request('reliabilityExecution.materialize', { localImportId })
               : null;
+            const globalDocument =
+              materialized?.ok === true
+                ? await workerClient.request('caseDocument.create', {
+                    caseDocumentId: randomUUID(),
+                    document: {
+                      documentKind: 'measurement_or_attestation_record',
+                      title: 'Smoke RBD basis',
+                      designation: 'SM-RBD-1',
+                      revisionLabel: 'Revision 1',
+                      documentDate: '2026-08-28',
+                      issuer: 'Smoke laboratory',
+                      notes: '',
+                    },
+                    wheelModelIds: [],
+                    specimenIds: [],
+                  })
+                : null;
             const sourceInputs =
               materialized?.ok === true
                 ? await workerClient.request('rbdCalculation.getSourceInputs', {
                     executionId: materialized.result.executionId,
-                    planSelection: 'original',
+                    planSelection: 'effective',
                   })
                 : null;
             const calculationInputId = randomUUID();
             const calculationResultId = randomUUID();
             const calculation =
-              sourceInputs?.ok === true
+              sourceInputs?.ok === true && globalDocument?.ok === true
                 ? await workerClient.request('rbdCalculation.create', {
                     analysisInputSnapshotId: calculationInputId,
                     calculationSnapshotId: calculationResultId,
                     executionId: sourceInputs.result.executionId,
-                    planSelection: 'original',
+                    planSelection: 'effective',
                     selections: (
                       [
                         'nominal_rpm',
@@ -1307,10 +1324,18 @@ async function runSmokeIfRequested(): Promise<void> {
                       ] as const
                     ).map((field) => ({
                       field,
-                      origin: 'source' as const,
-                      manualValue: null,
-                      basis: '',
-                      evidence: null,
+                      origin: field === 'base_cycles' ? ('manual' as const) : ('source' as const),
+                      manualValue: field === 'base_cycles' ? '1000' : null,
+                      basis: field === 'base_cycles' ? 'Documented smoke basis' : '',
+                      evidence:
+                        field === 'base_cycles'
+                          ? {
+                              documentId: globalDocument.result.caseDocumentId,
+                              documentRecordRevision: globalDocument.result.recordRevision,
+                              documentLocator: 'Section 1',
+                              observationVersionId: null,
+                            }
+                          : null,
                     })),
                     failureEvidence: null,
                     actor: 'local_user',
@@ -1332,13 +1357,14 @@ async function runSmokeIfRequested(): Promise<void> {
             rbdCalculationPassed =
               binding.ok &&
               materialized?.ok === true &&
+              globalDocument?.ok === true &&
               sourceInputs?.ok === true &&
               sourceInputs.result.packageId === '8b29c35e-60d0-46c1-bc02-4498145011ce' &&
               sourceInputs.result.runId === 'exact_methodical_rounding' &&
               sourceInputs.result.outerPackageSha256 ===
                 '7d36efb7af29dc4da049b7d474034f69d137502f314fe671fa70f9aff0ac4930' &&
               sourceInputs.result.payloadSha256 ===
-                'cc45dc09c6ec04bc832b89f940770f3a35eb54392ee2ee15cd0198b2577cbcf2' &&
+                'f3f4dd13503faa3d4b4cb769bfec410fb174359a84e2c0e48a59ea4db700eb44' &&
               sourceInputs.result.sourceValues.baseCycles === '1000' &&
               sourceInputs.result.sourceValues.reserveFactor === '1.5003' &&
               sourceInputs.result.executionTargets.targetCycles === '1501' &&
@@ -1347,6 +1373,15 @@ async function runSmokeIfRequested(): Promise<void> {
               calculation?.ok === true &&
               calculation.result.detail.inputSnapshot.analysisInputSnapshotId ===
                 calculationInputId &&
+              calculation.result.detail.inputSnapshot.inputSnapshot.schemaVersion === 2 &&
+              calculation.result.detail.inputSnapshot.inputSnapshot.fieldSelections.some(
+                (field) =>
+                  field.field === 'base_cycles' &&
+                  field.origin === 'manual' &&
+                  field.sourceReference ===
+                    'plan/effective.json#/effective_plan/effective_plan/source_values/base_cycles' &&
+                  field.evidence?.document?.documentId === globalDocument.result.caseDocumentId,
+              ) &&
               calculation.result.detail.calculationSnapshot.calculationSnapshotId ===
                 calculationResultId &&
               calculation.result.detail.calculationSnapshot.resultSnapshot.required_cycles_exact

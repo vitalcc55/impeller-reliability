@@ -12,6 +12,7 @@ import shutil
 import sqlite3
 from threading import Event
 from time import monotonic, sleep
+from typing import Literal
 from uuid import uuid4
 from zipfile import ZipFile
 import zlib
@@ -20,6 +21,7 @@ from pydantic import TypeAdapter
 import pytest
 
 from impeller_reliability.application.project_service import ProjectService
+from impeller_reliability.calculations.rbd_input_snapshot import RbdSavedFieldSelectionModel
 from impeller_reliability.integration.r130run.import_jobs import RunPackageImportJobManager
 from impeller_reliability.integration.r130run.import_models import imported_run_detail_model
 from impeller_reliability.integration.r130run.m9a import M9aPackageFacts, read_m9a_package_facts
@@ -34,7 +36,7 @@ from impeller_reliability.persistence import (
     reliability_domain as reliability_domain_module,
 )
 from impeller_reliability.persistence.project_errors import ProjectOperationError
-from impeller_reliability.persistence.r130sh_sources import ImportedRunDetail, ImportedRunSummary
+from impeller_reliability.persistence.r130sh_sources import ImportedRunDetail, ImportedRunSummary, RbdPlanSourceSnapshot
 from impeller_reliability.persistence.rbd_calculations import (
     RbdCalculationRepository,
     RbdCalculationWriteResult,
@@ -54,6 +56,19 @@ from support.r130run_builder import build_synthetic_r130run
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 M9A_ROOT = REPOSITORY_ROOT / "fixtures" / "contracts" / "r130run" / "v1" / "m9a"
 OBJECT_ADAPTER: TypeAdapter[dict[str, object]] = TypeAdapter(dict[str, object])
+FIELD_SELECTIONS_ADAPTER: TypeAdapter[list[dict[str, object]]] = TypeAdapter(list[dict[str, object]])
+
+
+class _RbdFieldResolutionProbe(RbdCalculationRepository):
+    def field_snapshots(
+        self,
+        source: RbdPlanSourceSnapshot,
+        selections: tuple[RbdFieldSelection, ...],
+        execution: tuple[str, str, str],
+    ) -> list[dict[str, object]]:
+        return self._resolve_fields(source, selections, execution, None)[1]
+
+
 EXPECTED_TERMINAL: dict[str, tuple[str, str | None, str | None, str | None, str | None]] = {
     "normal_final_pmn": ("final", "completed", "normal_done", "passed", "valid"),
     "normal_final_rpt_one_percent": ("final", "completed", "normal_done", "passed", "valid"),
@@ -573,8 +588,8 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(
             "issuer": "ЛИЦ ВВУ",
             "notes": "",
         },
-        (wheel.wheel_model_id,),
-        (specimen.specimen_id,),
+        (),
+        (),
         None,
     )
     with pytest.raises(ProjectOperationError) as undocumented_failure:
@@ -666,6 +681,36 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(
     )
     assert updated_failure_document.record_revision == failure_document.record_revision + 1
     assert service.get_rbd_calculation_detail(manual_calculation_id, None) == manual_calculation.detail
+    archived_failure_document = service.set_case_document_archived(
+        failure_document.case_document_id,
+        updated_failure_document.record_revision,
+        True,
+        None,
+    )
+    audit_before_archived_attempt = _audit_count(project_path)
+    with pytest.raises(ProjectOperationError) as archived_failure_evidence:
+        service.create_rbd_calculation(
+            analysis_input_snapshot_id=str(uuid4()),
+            calculation_snapshot_id=str(uuid4()),
+            execution_id=rounding_execution.execution_id,
+            selection="original",
+            selections=source_selections,
+            failure=RbdFailureEvidence(
+                applicability="exact_supported",
+                duration_to_failure_s="60000",
+                basis="Новый расчёт по архивному документу",
+                evidence=RbdEvidenceReference(
+                    document_id=archived_failure_document.case_document_id,
+                    document_record_revision=archived_failure_document.record_revision,
+                    document_locator="раздел 3",
+                ),
+            ),
+            actor="local_user",
+            reason="Проверка недоступного документа",
+            deadline=None,
+        )
+    assert archived_failure_evidence.value.code == "entity_archived"
+    assert _audit_count(project_path) == audit_before_archived_attempt
     assert service.get_rbd_calculation_detail(calculation_id, None) == calculation.detail
     calculation_page = service.list_rbd_calculation_page(wheel.wheel_model_id, None, 25, None)
     assert {item.calculation_snapshot_id for item in calculation_page.items} == {
@@ -823,6 +868,258 @@ def _project_with_rbd_execution(
     )
     execution = service.materialize_reliability_execution(imported.local_import_id, None)
     return service, project_path, imported, execution
+
+
+@pytest.mark.parametrize("selection", ["original", "effective"])
+def test_saved_rbd_plan_field_references_resolve_to_source_lexemes(
+    tmp_path: Path,
+    selection: Literal["original", "effective"],
+) -> None:
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path)
+    saved = service.create_rbd_calculation(
+        analysis_input_snapshot_id=str(uuid4()),
+        calculation_snapshot_id=str(uuid4()),
+        execution_id=execution.execution_id,
+        selection=selection,
+        selections=tuple(
+            RbdFieldSelection(field=field, origin="source")
+            for field in (
+                "base_cycles",
+                "reserve_factor",
+                "nominal_rpm",
+                "acceleration_duration_s",
+                "deceleration_duration_s",
+            )
+        ),
+        failure=None,
+        actor="local_user",
+        reason="Проверка координат исходных полей",
+        deadline=None,
+    )
+    fields = FIELD_SELECTIONS_ADAPTER.validate_python(saved.detail.input_snapshot.input_snapshot["fieldSelections"])
+    assert saved.detail.input_snapshot.input_snapshot["schemaVersion"] == 2
+    expected_member = "plan/original.json" if selection == "original" else "plan/effective.json"
+    expected_prefix = "/source_values/" if selection == "original" else "/effective_plan/effective_plan/source_values/"
+    with ZipFile(_managed_path(project_path, imported)) as archive:
+        for field in fields:
+            stored = OBJECT_ADAPTER.validate_python(field)
+            reference = stored["sourceReference"]
+            assert isinstance(reference, str)
+            member, pointer = reference.split("#", 1)
+            assert member == expected_member
+            assert pointer == f"{expected_prefix}{stored['field']}"
+            current: object = OBJECT_ADAPTER.validate_json(archive.read(member))
+            for segment in pointer[1:].split("/"):
+                current = OBJECT_ADAPTER.validate_python(current)[segment]
+            assert current == stored["rawSourceValue"] == stored["value"]
+    service.close()
+
+
+def test_manual_rbd_field_resolution_preserves_missing_raw_source_value(tmp_path: Path) -> None:
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path)
+    source = service.read_rbd_plan_source(execution.execution_id, imported.local_import_id, "effective")
+    missing_field_source = replace(source, source_values=replace(source.source_values, base_cycles=None))
+    selections = tuple(
+        RbdFieldSelection(
+            field=field,
+            origin="manual" if field == "base_cycles" else "source",
+            manual_value="100" if field == "base_cycles" else None,
+            basis="Дополнение инженера" if field == "base_cycles" else "",
+        )
+        for field in (
+            "base_cycles",
+            "reserve_factor",
+            "nominal_rpm",
+            "acceleration_duration_s",
+            "deceleration_duration_s",
+        )
+    )
+    # A valid .r130run v1 contains all five fields. Characterize the nullable
+    # resolution seam without persisting a claim contradicted by the archive.
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        fields = _RbdFieldResolutionProbe(connection).field_snapshots(
+            missing_field_source,
+            selections,
+            (execution.wheel_model_id, execution.local_specimen_id, execution.source_specimen_id),
+        )
+    assert fields[0]["origin"] == "manual"
+    assert fields[0]["value"] == "100"
+    assert fields[0]["rawSourceValue"] is None
+    assert fields[0]["sourceReference"] == "plan/effective.json#/effective_plan/effective_plan/source_values/base_cycles"
+    assert RbdSavedFieldSelectionModel.model_validate(fields[0]).model_dump(mode="json")["rawSourceValue"] is None
+    service.close()
+
+
+@pytest.mark.parametrize("legacy_history", [False, True])
+def test_effective_rbd_reopen_distinguishes_legacy_history_from_new_coordinates(
+    tmp_path: Path,
+    legacy_history: bool,
+) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path)
+    saved = service.create_rbd_calculation(
+        analysis_input_snapshot_id=str(uuid4()),
+        calculation_snapshot_id=str(uuid4()),
+        execution_id=execution.execution_id,
+        selection="effective",
+        selections=tuple(
+            RbdFieldSelection(field=field, origin="source")
+            for field in (
+                "base_cycles",
+                "reserve_factor",
+                "nominal_rpm",
+                "acceleration_duration_s",
+                "deceleration_duration_s",
+            )
+        ),
+        failure=None,
+        actor="local_user",
+        reason="Проверка версии происхождения",
+        deadline=None,
+    )
+    service.close()
+    input_payload = OBJECT_ADAPTER.validate_python(saved.detail.input_snapshot.input_snapshot)
+    fields = FIELD_SELECTIONS_ADAPTER.validate_python(input_payload["fieldSelections"])
+    input_payload["fieldSelections"] = [
+        {
+            **OBJECT_ADAPTER.validate_python(field),
+            "sourceReference": f"plan/effective.json#/source_values/{OBJECT_ADAPTER.validate_python(field)['field']}",
+        }
+        for field in fields
+    ]
+    if legacy_history:
+        input_payload["schemaVersion"] = 1
+    _reseal_saved_rbd_input_snapshot(project_path, saved, input_payload)
+    if legacy_history:
+        service.open(path=str(project_path), application_instance_id="legacy-effective-history")
+        detail = service.get_rbd_calculation_detail(saved.detail.calculation_snapshot.calculation_snapshot_id, None)
+        assert detail.input_snapshot.input_snapshot == input_payload
+        service.close()
+    else:
+        with pytest.raises(ProjectOperationError) as invalid:
+            service.open(path=str(project_path), application_instance_id="invalid-effective-reference")
+        assert invalid.value.code == "corrupt_project"
+
+
+def test_rbd_accepts_active_global_document_and_rejects_archived_new_evidence(
+    tmp_path: Path,
+) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path)
+    document = service.create_case_document(
+        str(uuid4()),
+        {
+            "documentKind": "measurement_or_attestation_record",
+            "title": "Общее основание расчёта",
+            "designation": "РБД-01",
+            "revisionLabel": "01",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "",
+        },
+        (),
+        (),
+        None,
+    )
+    selections = tuple(
+        RbdFieldSelection(
+            field=field,
+            origin="manual" if field == "base_cycles" else "source",
+            manual_value="100" if field == "base_cycles" else None,
+            basis="По документу" if field == "base_cycles" else "",
+            evidence=RbdEvidenceReference(
+                document_id=document.case_document_id,
+                document_record_revision=document.record_revision,
+                document_locator="раздел 2",
+            )
+            if field == "base_cycles"
+            else None,
+        )
+        for field in (
+            "base_cycles",
+            "reserve_factor",
+            "nominal_rpm",
+            "acceleration_duration_s",
+            "deceleration_duration_s",
+        )
+    )
+    input_id, result_id = str(uuid4()), str(uuid4())
+    saved = service.create_rbd_calculation(
+        analysis_input_snapshot_id=input_id,
+        calculation_snapshot_id=result_id,
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=selections,
+        failure=None,
+        actor="local_user",
+        reason="Общее основание",
+        deadline=None,
+    )
+    updated_document = service.update_case_document(
+        document.case_document_id,
+        document.record_revision,
+        {
+            "documentKind": "measurement_or_attestation_record",
+            "title": "Уточнённое общее основание расчёта",
+            "designation": "РБД-01",
+            "revisionLabel": "02",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "",
+        },
+        (),
+        (),
+        None,
+    )
+    assert updated_document.record_revision == 2
+    with pytest.raises(ProjectOperationError) as stale_revision:
+        service.create_rbd_calculation(
+            analysis_input_snapshot_id=str(uuid4()),
+            calculation_snapshot_id=str(uuid4()),
+            execution_id=execution.execution_id,
+            selection="original",
+            selections=selections,
+            failure=None,
+            actor="local_user",
+            reason="Устаревшая редакция основания",
+            deadline=None,
+        )
+    assert stale_revision.value.code == "validation_error"
+    archived = service.set_case_document_archived(document.case_document_id, updated_document.record_revision, True, None)
+    audit_before = _audit_count(project_path)
+    repeated = service.create_rbd_calculation(
+        analysis_input_snapshot_id=input_id,
+        calculation_snapshot_id=result_id,
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=selections,
+        failure=None,
+        actor="local_user",
+        reason="Общее основание",
+        deadline=None,
+    )
+    assert repeated.disposition == "existing"
+    assert repeated.detail == saved.detail
+    assert _audit_count(project_path) == audit_before
+    archived_selections = tuple(
+        replace(choice, evidence=replace(choice.evidence, document_record_revision=archived.record_revision)) if choice.evidence is not None else choice for choice in selections
+    )
+    with pytest.raises(ProjectOperationError) as rejected:
+        service.create_rbd_calculation(
+            analysis_input_snapshot_id=str(uuid4()),
+            calculation_snapshot_id=str(uuid4()),
+            execution_id=execution.execution_id,
+            selection="original",
+            selections=archived_selections,
+            failure=None,
+            actor="local_user",
+            reason="Новое решение с архивным документом",
+            deadline=None,
+        )
+    assert rejected.value.code == "entity_archived"
+    assert _audit_count(project_path) == audit_before
+    service.close()
+    service.open(path=str(project_path), application_instance_id="archived-document-reopen")
+    assert service.get_rbd_calculation_detail(result_id, None) == saved.detail
+    service.close()
 
 
 def test_imported_numeric_lexeme_is_available_for_documented_manual_replacement(
@@ -1598,8 +1895,8 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
             "issuer": "ЛИЦ ВВУ",
             "notes": "",
         },
-        (wheel.wheel_model_id,),
-        (specimen.specimen_id,),
+        (),
+        (),
         None,
     )
     observation_id = str(uuid4())

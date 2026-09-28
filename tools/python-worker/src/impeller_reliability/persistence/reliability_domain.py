@@ -15,6 +15,7 @@ from unicodedata import category as unicode_category
 from uuid import UUID, uuid4
 
 from impeller_reliability.persistence.audit import audit_now, insert_audit
+from impeller_reliability.persistence.case_documents import case_document_for_new_decision
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.r130sh_sources import ImportedRunDetail, ImportedRunSummary
 from impeller_reliability.persistence.sqlite_deadline import sqlite_query_rows_with_deadline
@@ -1151,43 +1152,23 @@ class ReliabilityDomainRepository:
         specimen_id: str,
     ) -> AnalystDocumentSnapshot:
         document_id = _uuid4(document_id)
-        row = _query_one_with_deadline(
+        document = case_document_for_new_decision(
             self._connection,
-            """
-            SELECT d.document_kind, d.title, d.designation, d.revision_label,
-                   d.record_revision, d.archived_at_utc, f.sha256
-            FROM case_documents d
-            LEFT JOIN case_document_files f ON f.case_document_id=d.case_document_id
-            WHERE d.case_document_id=?
-            """,
-            (document_id,),
+            document_id,
+            wheel_model_id,
+            specimen_id,
             None,
-            "reliability_document_snapshot_read",
         )
-        if row is None:
+        if document is None:
             raise ProjectOperationError("entity_not_found", "Документ-основание не найден.")
-        if row[5] is not None:
-            raise ProjectOperationError("entity_archived", "Архивный документ нельзя выбрать для нового решения.")
-        link_counts = self._connection.execute(
-            """
-            SELECT
-              (SELECT count(*) FROM case_document_wheel_models WHERE case_document_id=?),
-              (SELECT count(*) FROM case_document_specimens WHERE case_document_id=?),
-              EXISTS(SELECT 1 FROM case_document_wheel_models WHERE case_document_id=? AND wheel_model_id=?),
-              EXISTS(SELECT 1 FROM case_document_specimens WHERE case_document_id=? AND specimen_id=?)
-            """,
-            (document_id, document_id, document_id, wheel_model_id, document_id, specimen_id),
-        ).fetchone()
-        if link_counts is None or (int(link_counts[0]) + int(link_counts[1]) > 0 and not bool(link_counts[2]) and not bool(link_counts[3])):
-            raise ProjectOperationError("validation_error", "Документ не относится к выбранному исполнению.")
         return AnalystDocumentSnapshot(
             document_id=document_id,
-            document_kind=bounded_text(str(row[0]), 100, "Вид документа"),
-            title=bounded_text(str(row[1]), 300, "Название документа"),
-            designation=_bounded_optional_text(str(row[2]), 200, "Обозначение документа"),
-            revision_label=_bounded_optional_text(str(row[3]), 200, "Редакция документа"),
-            record_revision=int(row[4]),
-            managed_file_sha256=None if row[6] is None else _sha256(str(row[6])),
+            document_kind=bounded_text(document.document_kind, 100, "Вид документа"),
+            title=bounded_text(document.title, 300, "Название документа"),
+            designation=_bounded_optional_text(document.designation, 200, "Обозначение документа"),
+            revision_label=_bounded_optional_text(document.revision_label, 200, "Редакция документа"),
+            record_revision=document.record_revision,
+            managed_file_sha256=None if document.file_sha256 is None else _sha256(document.file_sha256),
         )
 
     def _observation_head(self, observation_id: str) -> ReliabilityObservationVersion | None:

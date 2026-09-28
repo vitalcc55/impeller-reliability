@@ -119,6 +119,62 @@ class CaseDocument:
 
 
 @dataclass(frozen=True, slots=True)
+class CaseDocumentDecisionSnapshot:
+    document_kind: str
+    title: str
+    designation: str
+    revision_label: str
+    record_revision: int
+    file_sha256: str | None
+
+
+def case_document_for_new_decision(
+    connection: sqlite3.Connection,
+    document_id: str,
+    wheel_model_id: str,
+    specimen_id: str,
+    deadline: RequestDeadline | None,
+) -> CaseDocumentDecisionSnapshot | None:
+    document_id = canonical_uuid4(document_id)
+    row = next(
+        iter(
+            sqlite_query_rows_with_deadline(
+                connection,
+                """
+                SELECT d.document_kind, d.title, d.designation, d.revision_label,
+                       d.record_revision, d.archived_at_utc, f.sha256,
+                       (SELECT count(*) FROM case_document_wheel_models WHERE case_document_id=d.case_document_id),
+                       (SELECT count(*) FROM case_document_specimens WHERE case_document_id=d.case_document_id),
+                       EXISTS(SELECT 1 FROM case_document_wheel_models WHERE case_document_id=d.case_document_id AND wheel_model_id=?),
+                       EXISTS(SELECT 1 FROM case_document_specimens WHERE case_document_id=d.case_document_id AND specimen_id=?)
+                FROM case_documents d
+                LEFT JOIN case_document_files f ON f.case_document_id=d.case_document_id
+                WHERE d.case_document_id=?
+                """,
+                (wheel_model_id, specimen_id, document_id),
+                deadline,
+                "case_document_decision_read",
+            )
+        ),
+        None,
+    )
+    if row is None:
+        return None
+    if row[5] is not None:
+        raise ProjectOperationError("entity_archived", "Архивный документ нельзя выбрать для нового решения.")
+    if int(str(row[7])) + int(str(row[8])) > 0 and not (bool(row[9]) or bool(row[10])):
+        raise ProjectOperationError("validation_error", "Документ не относится к выбранному исполнению.")
+    return CaseDocumentDecisionSnapshot(
+        document_kind=str(row[0]),
+        title=str(row[1]),
+        designation=str(row[2]),
+        revision_label=str(row[3]),
+        record_revision=int(str(row[4])),
+        file_sha256=None if row[6] is None else str(row[6]),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class _StagedFile:
     path: Path
     original_file_name: str

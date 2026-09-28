@@ -228,10 +228,54 @@ describe('browser preview api', () => {
         },
       },
     });
-    await expect(api.rbdCalculation.listPage(wheelId)).resolves.toMatchObject({
-      ok: true,
-      result: { items: [{ calculationSnapshotId: 'bc8fb54c-520d-479e-9e39-c2fd62b83c42' }] },
+    const effectiveSource = await api.rbdCalculation.getSourceInputs(
+      materialized.result.executionId,
+      'effective',
+    );
+    expect(effectiveSource).toMatchObject({ ok: true, result: { planSelection: 'effective' } });
+    const effectiveCalculation = await api.rbdCalculation.create({
+      analysisInputSnapshotId: 'ac8fb54c-520d-479e-9e39-c2fd62b83c43',
+      calculationSnapshotId: 'bc8fb54c-520d-479e-9e39-c2fd62b83c44',
+      executionId: materialized.result.executionId,
+      planSelection: 'effective',
+      selections: (
+        [
+          'nominal_rpm',
+          'base_cycles',
+          'reserve_factor',
+          'acceleration_duration_s',
+          'deceleration_duration_s',
+        ] as const
+      ).map((field) => ({
+        field,
+        origin: 'source' as const,
+        manualValue: null,
+        basis: '',
+        evidence: null,
+      })),
+      failureEvidence: null,
+      actor: 'local_user',
+      reason: 'Проверка ссылки эффективного плана',
     });
+    expect(effectiveCalculation.ok).toBe(true);
+    if (!effectiveCalculation.ok) throw new Error('preview_effective_rbd_missing');
+    expect(effectiveCalculation.result.detail.inputSnapshot.inputSnapshot.schemaVersion).toBe(2);
+    expect(
+      effectiveCalculation.result.detail.inputSnapshot.inputSnapshot.fieldSelections[0],
+    ).toMatchObject({
+      field: 'base_cycles',
+      sourceReference:
+        'plan/effective.json#/effective_plan/effective_plan/source_values/base_cycles',
+    });
+    const history = await api.rbdCalculation.listPage(wheelId);
+    expect(history.ok).toBe(true);
+    if (!history.ok) throw new Error('preview_rbd_history_missing');
+    expect(history.result.items.map((item) => item.calculationSnapshotId)).toEqual(
+      expect.arrayContaining([
+        'bc8fb54c-520d-479e-9e39-c2fd62b83c42',
+        'bc8fb54c-520d-479e-9e39-c2fd62b83c44',
+      ]),
+    );
     await expect(
       api.rbdCalculation.getDetail('bc8fb54c-520d-479e-9e39-c2fd62b83c42'),
     ).resolves.toMatchObject({ ok: true });
