@@ -40,7 +40,7 @@ M04B реализован как `TestExecution → явная versioned Reliabi
 
 ## M04C и далее — расчёты испытаний
 
-M04C реализовал первый полный РБД vertical slice: explicit source/enrichment selection → `AnalysisInputSnapshot` → Python validation/calculation → `CalculationSnapshot`. Последующее закрытие прослеживаемости effective-полей и единой применимости документов сохраняет старые снимки как историю и создаёт новые с provenance v2. Отдельными этапами следуют РПТ, затем ПМН. Расчёты не формируют задание для R130SH.
+M04C реализовал первый полный РБД vertical slice: explicit source/enrichment selection → `AnalysisInputSnapshot` → Python validation/calculation → `CalculationSnapshot`. Последующее закрытие прослеживаемости effective-полей и единой применимости документов сохраняет старые снимки как историю и создаёт новые с provenance v2. M04D добавляет отдельный полный РПТ-сценарий с шестью входами, формулами (4)–(7), optional таблицей 4 и тем же immutable принципом без подмены producer targets. Далее следует ПМН. Расчёты не формируют задание для R130SH.
 
 До первого расчётного экрана фиксируются command availability, неблокирующий job feedback и chart/data-alternative contract. DataGrid не появляется до реального редактируемого табличного сценария FMEA; navigation history и command/shortcut layer вводятся перед несколькими повторяемыми рабочими командами, а не как M02.2B-заготовка.
 
@@ -68,7 +68,7 @@ TypeScript 7/Vite 8 переходят только цельной совмес�
 6. M04A.1 R130SH 0.9.45 downstream acceptance closure
 7. M04B Statistical Classification & Life-Metric Foundation
 8. M04C first RBD calculation vertical slice
-9. RPT calculation
+9. M04D RPT calculation vertical slice
 10. PMN calculation
 
 Каждая ветка заканчивается наблюдаемым вертикальным результатом и собственным verification gate; M02 не начинается из M01.1 автоматически.

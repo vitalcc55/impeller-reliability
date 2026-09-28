@@ -28,8 +28,9 @@ from impeller_reliability.persistence.project_session import ProjectOverview, Pr
 from impeller_reliability.persistence.r130sh_sources import (
     ImportedRunDetail,
     ImportedRunSummary,
-    RbdPlanSelection,
+    PlanSelection,
     RbdPlanSourceSnapshot,
+    RptPlanSourceSnapshot,
     SourceIntegrityStatus,
     SpecimenBinding,
 )
@@ -48,6 +49,13 @@ from impeller_reliability.persistence.reliability_domain import (
     ReliabilityObservationVersion,
     ReliabilityObservationWriteResult,
     TestExecution,
+)
+from impeller_reliability.persistence.rpt_calculations import (
+    RptCalculationDetail,
+    RptCalculationPage,
+    RptCalculationWriteResult,
+    RptFailureEvidence,
+    RptFieldSelection,
 )
 from impeller_reliability.persistence.timestamps import utc_now
 from impeller_reliability.worker.deadline import RequestDeadline
@@ -322,7 +330,7 @@ class ProjectService:
         self,
         execution_id: str,
         local_import_id: str,
-        selection: RbdPlanSelection,
+        selection: PlanSelection,
         deadline: RequestDeadline | None = None,
     ) -> RbdPlanSourceSnapshot:
         return self._require_session().read_rbd_plan_source(execution_id, local_import_id, selection, deadline)
@@ -522,10 +530,68 @@ class ProjectService:
     def get_rbd_source_inputs(
         self,
         execution_id: str,
-        selection: RbdPlanSelection,
+        selection: PlanSelection,
         deadline: RequestDeadline | None,
     ) -> RbdPlanSourceSnapshot:
         return self._require_session().get_rbd_source_inputs(execution_id, selection, deadline)
+
+    def read_rpt_plan_source(
+        self,
+        execution_id: str,
+        local_import_id: str,
+        selection: PlanSelection,
+        deadline: RequestDeadline | None,
+    ) -> RptPlanSourceSnapshot:
+        return self._require_session().read_rpt_plan_source(execution_id, local_import_id, selection, deadline)
+
+    def get_rpt_source_inputs(
+        self,
+        execution_id: str,
+        selection: PlanSelection,
+        deadline: RequestDeadline | None,
+    ) -> RptPlanSourceSnapshot:
+        return self._require_session().get_rpt_source_inputs(execution_id, selection, deadline)
+
+    def create_rpt_calculation(
+        self,
+        *,
+        analysis_input_snapshot_id: str,
+        calculation_snapshot_id: str,
+        execution_id: str,
+        selection: PlanSelection,
+        selections: tuple[RptFieldSelection, ...],
+        failure: RptFailureEvidence | None,
+        actor: str,
+        reason: str,
+        deadline: RequestDeadline | None,
+    ) -> RptCalculationWriteResult:
+        return self._require_session().create_rpt_calculation(
+            analysis_input_snapshot_id=analysis_input_snapshot_id,
+            calculation_snapshot_id=calculation_snapshot_id,
+            execution_id=execution_id,
+            selection=selection,
+            selections=selections,
+            failure=failure,
+            actor=actor,
+            reason=reason,
+            deadline=deadline,
+        )
+
+    def get_rpt_calculation_detail(
+        self,
+        calculation_snapshot_id: str,
+        deadline: RequestDeadline | None,
+    ) -> RptCalculationDetail:
+        return self._require_session().get_rpt_calculation_detail(calculation_snapshot_id, deadline)
+
+    def list_rpt_calculation_page(
+        self,
+        wheel_model_id: str,
+        cursor: str | None,
+        limit: int,
+        deadline: RequestDeadline | None,
+    ) -> RptCalculationPage:
+        return self._require_session().list_rpt_calculation_page(wheel_model_id, cursor, limit, deadline)
 
     def create_rbd_calculation(
         self,
@@ -533,7 +599,7 @@ class ProjectService:
         analysis_input_snapshot_id: str,
         calculation_snapshot_id: str,
         execution_id: str,
-        selection: RbdPlanSelection,
+        selection: PlanSelection,
         selections: tuple[RbdFieldSelection, ...],
         failure: RbdFailureEvidence | None,
         actor: str,

@@ -5,6 +5,99 @@ import type { RuntimeStatus } from '@impeller-reliability/contracts';
 import { createPreviewApi } from './preview-api';
 
 describe('browser preview api', () => {
+  it('exposes a typed RPT source and immutable synthetic result for the RPT sample', async () => {
+    const api = createPreviewApi('ready', 'rpt');
+    await api.project.create({ name: 'РПТ', projectNumber: '', description: '', status: 'draft' });
+    const wheelModelId = '28723636-fdd5-47bd-b0e2-e02c21f36f2e';
+    const specimenId = 'fa50e13e-2944-4874-9cf7-b4747d57ae09';
+    await api.wheelModel.create({
+      wheelModelId,
+      fullName: 'Колесо РПТ',
+      designation: 'РПТ-01',
+      nominalDiameterMm: null,
+      nominalSpeedRpm: null,
+      bladeCount: null,
+      geometryDescription: '',
+      compositionDescription: '',
+      materialDescription: '',
+      notes: '',
+    });
+    await api.specimen.create({
+      specimenId,
+      wheelModelId,
+      identificationNumber: 'РПТ-001',
+      batchNumber: '',
+      marking: '',
+      manufacturedOn: null,
+      receivedOn: null,
+      workingDiameterMm: null,
+      initialConditionNotes: '',
+      notes: '',
+    });
+    const imported = await api.importedRun.list();
+    if (!imported.ok || imported.result[0] === undefined) throw new Error('missing_rpt_sample');
+    await api.importedRun.bindSpecimen({
+      sourceSpecimenId: imported.result[0].sourceSpecimenId,
+      localSpecimenId: specimenId,
+      expectedRevision: 1,
+      actor: 'local_user',
+      reason: 'Образец подтверждён',
+    });
+    const execution = await api.reliabilityExecution.materialize(imported.result[0].localImportId);
+    if (!execution.ok) throw new Error('rpt_materialization_failed');
+    expect(execution.result.method).toBe('rpt');
+    const source = await api.rptCalculation.getSourceInputs(
+      execution.result.executionId,
+      'original',
+    );
+    expect(source).toMatchObject({ ok: true, result: { sourceValues: { steadyDurationS: '0' } } });
+    const command = {
+      analysisInputSnapshotId: 'ac8fb54c-520d-479e-9e39-c2fd62b83c41',
+      calculationSnapshotId: 'bc8fb54c-520d-479e-9e39-c2fd62b83c42',
+      executionId: execution.result.executionId,
+      planSelection: 'original' as const,
+      selections: (
+        [
+          'nominal_rpm',
+          'design_cycles',
+          'reserve_factor',
+          'acceleration_duration_s',
+          'steady_duration_s',
+          'deceleration_duration_s',
+        ] as const
+      ).map((field) => ({
+        field,
+        origin: 'source' as const,
+        manualValue: null,
+        basis: '',
+        evidence: null,
+      })),
+      failureEvidence: null,
+      actor: 'local_user',
+      reason: 'Проверка РПТ',
+    };
+    const created = await api.rptCalculation.create(command);
+    expect(created).toMatchObject({
+      ok: true,
+      result: {
+        detail: {
+          calculationSnapshot: { resultSnapshot: { required_cycles_exact: { decimal: '3' } } },
+        },
+      },
+    });
+    expect(await api.rptCalculation.create(command)).toMatchObject({
+      ok: true,
+      result: { disposition: 'existing' },
+    });
+    const page = await api.rptCalculation.listPage(wheelModelId);
+    expect(page).toMatchObject({
+      ok: true,
+      result: { items: [{ calculationSnapshotId: command.calculationSnapshotId }] },
+    });
+    expect(await api.rptCalculation.getDetail(command.calculationSnapshotId)).toMatchObject({
+      ok: true,
+    });
+  });
   it('provides deterministic ready state without Electron preload', async () => {
     const api = createPreviewApi('ready');
     const status = await api.system.getStatus();

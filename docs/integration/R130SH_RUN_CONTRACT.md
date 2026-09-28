@@ -44,3 +44,5 @@ Renderer не передаёт path и не читает ZIP. `_plan_summary` о
 отсутствия в source. Inventory payload SHA-256, outer archive SHA-256,
 plan id/revision и producer provenance сохраняются раздельно. `measurements.csv`
 не materialize ради получения scalar plan fields.
+
+РПТ использует тот же verified managed archive seam и exact identity `execution_id`/`local_import_id`, но читает шесть собственных полей плана, включая `steady_duration_s`, а также source methodical requirements, округлённые execution targets и политику нижней точки. Numeric JSON scalar сохраняется как исходная лексема без float-преобразования; расчётная граница проверяет её отдельно. Для importer-valid крупного plan member действует существующий лимит импортёра, а не прежний локальный RBD read-limit. Путь к архиву Renderer не получает; позднее отсутствие managed ZIP не переписывает сохранённый результат.

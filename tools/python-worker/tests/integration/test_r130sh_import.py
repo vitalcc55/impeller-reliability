@@ -22,11 +22,13 @@ import pytest
 
 from impeller_reliability.application.project_service import ProjectService
 from impeller_reliability.calculations.rbd_input_snapshot import RbdSavedFieldSelectionModel
+from impeller_reliability.calculations.rpt_input_snapshot import RptInputField
 from impeller_reliability.integration.r130run.import_jobs import RunPackageImportJobManager
 from impeller_reliability.integration.r130run.import_models import ImportedRunPlanModel, imported_run_detail_model
 from impeller_reliability.integration.r130run.m9a import M9aPackageFacts, read_m9a_package_facts
 from impeller_reliability.integration.r130run.models import RunPackageValidationReport
 from impeller_reliability.integration.r130run.validator import (
+    MAX_JSON_BYTES,
     RunPackageValidator,
     ValidationControl,
 )
@@ -34,6 +36,7 @@ from impeller_reliability.persistence import (
     r130sh_sources as r130sh_sources_module,
     rbd_calculations as rbd_calculations_module,
     reliability_domain as reliability_domain_module,
+    rpt_calculations as rpt_calculations_module,
 )
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.r130sh_sources import ImportedRunDetail, ImportedRunSummary, RbdPlanSourceSnapshot
@@ -49,8 +52,17 @@ from impeller_reliability.persistence.reliability_domain import (
     ReliabilityDomainRepository,
     TestExecution as ReliabilityTestExecution,
 )
-from impeller_reliability.protocol.envelopes import RbdPlanSourceValuesResult
+from impeller_reliability.persistence.rpt_calculations import RptCalculationWriteResult, RptEvidenceReference, RptFailureEvidence, RptFieldSelection
+from impeller_reliability.protocol.envelopes import (
+    REQUEST_ENVELOPE_ADAPTER,
+    RbdPlanSourceValuesResult,
+    RptCalculationDetailResult,
+    RptCalculationPageResult,
+    RptCalculationWriteResultModel,
+    RptPlanSourceResult,
+)
 from impeller_reliability.worker.deadline import RequestDeadline
+from impeller_reliability.worker.dispatcher import Dispatcher
 from support.r130run_builder import build_synthetic_r130run
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
@@ -911,6 +923,772 @@ def _project_with_rbd_execution(
     )
     execution = service.materialize_reliability_execution(imported.local_import_id, None)
     return service, project_path, imported, execution
+
+
+@pytest.mark.parametrize("selection", ["original", "effective"])
+@pytest.mark.parametrize(
+    ("package_name", "policy", "lower_rpm"),
+    [
+        ("normal_final_rpt_one_percent.r130run", "one_percent", "15"),
+        ("normal_final_rpt_full_stop.r130run", "full_stop", "0"),
+    ],
+)
+def test_rpt_source_inputs_keep_original_fields_requirements_targets_and_coordinates(
+    tmp_path: Path,
+    selection: Literal["original", "effective"],
+    package_name: str,
+    policy: str,
+    lower_rpm: str,
+) -> None:
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package(package_name))
+    source = service.get_rpt_source_inputs(execution.execution_id, selection, None)
+    assert source.execution_id == execution.execution_id
+    assert source.local_import_id == imported.local_import_id
+    assert source.selection == selection
+    assert source.source_values.steady_duration_s == "0"
+    assert source.source_values.lower_point_policy == policy
+    assert source.source_values.explicit_lower_rpm is None
+    assert source.methodical_requirements.required_cycles_exact == "2"
+    assert source.methodical_requirements.cycle_duration_s_exact == "4"
+    assert source.methodical_requirements.required_total_duration_s_exact == "8"
+    assert source.execution_targets.target_cycles == "2"
+    assert source.execution_targets.lower_rpm == lower_rpm
+    assert source.execution_targets.lower_point_policy == policy
+    assert source.execution_targets.rounding_policy == "ceiling"
+
+    expected_member = "plan/original.json" if selection == "original" else "plan/effective.json"
+    expected_prefix = "/source_values/" if selection == "original" else "/effective_plan/effective_plan/source_values/"
+    assert source.payload_path == expected_member
+    with ZipFile(_managed_path(project_path, imported)) as archive:
+        payload = archive.read(expected_member)
+        assert hashlib.sha256(payload).hexdigest() == source.payload_sha256
+        for field in (
+            "nominal_rpm",
+            "design_cycles",
+            "reserve_factor",
+            "acceleration_duration_s",
+            "steady_duration_s",
+            "deceleration_duration_s",
+        ):
+            reference = r130sh_sources_module.plan_source_field_reference(selection, field)
+            member, pointer = reference.split("#", 1)
+            assert member == expected_member
+            assert pointer == f"{expected_prefix}{field}"
+            current: object = OBJECT_ADAPTER.validate_json(archive.read(member))
+            for segment in pointer[1:].split("/"):
+                current = OBJECT_ADAPTER.validate_python(current)[segment]
+            assert current == getattr(source.source_values, field)
+    service.close()
+
+
+def test_rpt_source_reader_rejects_rbd_method_and_wrong_import_pair(tmp_path: Path) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    other = _import(service, project_path, _package("normal_final_rpt_full_stop.r130run"))
+    with pytest.raises(ProjectOperationError) as wrong_import:
+        service.read_rpt_plan_source(execution.execution_id, other.local_import_id, "original", None)
+    assert wrong_import.value.code == "entity_not_found"
+    service.close()
+
+    rbd_project_root = tmp_path / "rbd"
+    rbd_project_root.mkdir()
+    rbd_service, _, _, rbd_execution = _project_with_rbd_execution(rbd_project_root)
+    with pytest.raises(ProjectOperationError) as wrong_method:
+        rbd_service.get_rpt_source_inputs(rbd_execution.execution_id, "original", None)
+    assert wrong_method.value.code == "entity_not_found"
+    rbd_service.close()
+
+
+@pytest.mark.parametrize("selection", ["original", "effective"])
+def test_rpt_source_reader_preserves_explicit_lower_point(tmp_path: Path, selection: Literal["original", "effective"]) -> None:
+    synthetic = _package_with_explicit_rpt_lower_point(tmp_path)
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    source = service.get_rpt_source_inputs(execution.execution_id, selection, None)
+    assert source.source_values.lower_point_policy == "explicit_rpm"
+    assert source.source_values.explicit_lower_rpm == "125.5"
+    assert source.execution_targets.lower_point_policy == "explicit_rpm"
+    assert source.execution_targets.lower_rpm == "125.5"
+    assert source.methodical_requirements.required_cycles_exact == "2"
+    service.close()
+
+
+def test_rpt_source_reader_keeps_importer_valid_lexeme_outside_analytic_range(tmp_path: Path) -> None:
+    design_cycles = "1000000000001"
+    synthetic = _package_with_rpt_plan_values(
+        tmp_path,
+        suffix="large-design-cycles",
+        source_updates={"design_cycles": design_cycles},
+        requirement_updates={"required_cycles_exact": design_cycles, "required_total_duration_s_exact": "4000000000004"},
+        target_updates={"target_cycles": 1000000000001, "total_duration_s": "4000000000004"},
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    source = service.get_rpt_source_inputs(execution.execution_id, "effective", None)
+    assert source.source_values.design_cycles == design_cycles
+    assert source.methodical_requirements.required_cycles_exact == design_cycles
+    service.close()
+
+
+def test_rpt_source_reader_preserves_importer_valid_numeric_json_scalars(tmp_path: Path) -> None:
+    synthetic = _package_with_rpt_plan_values(
+        tmp_path,
+        suffix="numeric-scalars",
+        source_updates={"reserve_factor": 1.25, "steady_duration_s": 0},
+        requirement_updates={"required_cycles_exact": "2.5", "required_total_duration_s_exact": "10"},
+        target_updates={"target_cycles": 3, "total_duration_s": "12"},
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    source = service.get_rpt_source_inputs(execution.execution_id, "effective", None)
+    assert source.source_values.reserve_factor == "1.25"
+    assert source.source_values.steady_duration_s == "0"
+    assert source.methodical_requirements.required_cycles_exact == "2.5"
+    assert source.execution_targets.target_cycles == "3"
+    service.close()
+
+
+def test_rpt_source_reader_preserves_numeric_json_lexeme_without_float_rounding(tmp_path: Path) -> None:
+    base = _package("normal_final_rpt_full_stop.r130run")
+    with ZipFile(base) as archive:
+        original_bytes = archive.read("plan/original.json")
+        effective = OBJECT_ADAPTER.validate_json(archive.read("plan/effective.json"))
+    old_lexeme = b'"reserve_factor":"1"'
+    new_lexeme = b'"reserve_factor":0.10000000000000001'
+    assert original_bytes.count(old_lexeme) == 1
+    original_bytes = original_bytes.replace(old_lexeme, new_lexeme)
+    effective_container = OBJECT_ADAPTER.validate_python(effective["effective_plan"])
+    effective_container["original_plan_sha256"] = hashlib.sha256(original_bytes).hexdigest()
+    effective["effective_plan"] = effective_container
+    effective_bytes = _canonical_package_json(effective)
+    assert effective_bytes.count(old_lexeme) == 1
+    effective_bytes = effective_bytes.replace(old_lexeme, new_lexeme)
+    synthetic = build_synthetic_r130run(
+        tmp_path / "rpt-raw-numeric-lexeme.r130run",
+        base_package=base,
+        payload_overrides={"plan/original.json": original_bytes, "plan/effective.json": effective_bytes},
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    for selection in ("original", "effective"):
+        source = service.get_rpt_source_inputs(execution.execution_id, selection, None)
+        assert source.source_values.reserve_factor == "0.10000000000000001"
+    service.close()
+
+
+def test_rpt_source_reader_keeps_bounded_access_to_importer_valid_large_plan(tmp_path: Path) -> None:
+    synthetic = _package_with_rpt_plan_values(
+        tmp_path,
+        suffix="large-plan",
+        source_updates={"unrelated_note": "x" * 70_000},
+        requirement_updates={},
+        target_updates={},
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    source = service.get_rpt_source_inputs(execution.execution_id, "original", None)
+    assert source.source_values.design_cycles == "2"
+    service.close()
+
+
+@pytest.mark.parametrize("damage", ["missing_archive", "modified_archive", "plan_id", "plan_hash", "oversized_plan"])
+def test_rpt_source_reader_rejects_missing_modified_or_conflicting_evidence(tmp_path: Path, damage: str) -> None:
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    assert service.get_rpt_source_inputs(execution.execution_id, "original", None).execution_id == execution.execution_id
+    managed_path = _managed_path(project_path, imported)
+    if damage == "missing_archive":
+        managed_path.unlink()
+    elif damage == "modified_archive":
+        managed_path.write_bytes(b"modified")
+    elif damage == "oversized_plan":
+        with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+            connection.execute("DROP TRIGGER r130sh_source_inventory_no_update")
+            connection.execute(
+                "UPDATE r130sh_source_inventory SET size_bytes=? WHERE local_import_id=? AND path='plan/original.json'",
+                (MAX_JSON_BYTES + 1, imported.local_import_id),
+            )
+            connection.commit()
+    else:
+        column = "original_plan_id" if damage == "plan_id" else "original_plan_sha256"
+        value = "wrong-plan" if damage == "plan_id" else "0" * 64
+        with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+            connection.execute("DROP TRIGGER r130sh_run_projections_no_update")
+            connection.execute(
+                f"UPDATE r130sh_run_projections SET {column}=? WHERE local_import_id=?",
+                (value, imported.local_import_id),
+            )
+            connection.commit()
+    with pytest.raises(ProjectOperationError) as rejected:
+        service.get_rpt_source_inputs(execution.execution_id, "original", None)
+    assert rejected.value.code == ("file_integrity_mismatch" if damage in {"missing_archive", "modified_archive"} else "corrupt_project")
+    service.close()
+
+
+def test_rpt_calculation_source_pair_history_and_reopen(tmp_path: Path) -> None:
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_full_stop.r130run"))
+    input_id = str(uuid4())
+    calculation_id = str(uuid4())
+    selections = tuple(
+        RptFieldSelection(field=field, origin="source")
+        for field in (
+            "nominal_rpm",
+            "design_cycles",
+            "reserve_factor",
+            "acceleration_duration_s",
+            "steady_duration_s",
+            "deceleration_duration_s",
+        )
+    )
+    saved = service.create_rpt_calculation(
+        analysis_input_snapshot_id=input_id,
+        calculation_snapshot_id=calculation_id,
+        execution_id=execution.execution_id,
+        selection="effective",
+        selections=selections,
+        failure=None,
+        actor=" local_user ",
+        reason="  Расчёт РПТ по выбранному источнику  ",
+        deadline=None,
+    )
+    assert saved.disposition == "created"
+    assert saved.detail.input_snapshot.actor == "local_user"
+    assert saved.detail.input_snapshot.decision_reason == "Расчёт РПТ по выбранному источнику"
+    source_snapshot = OBJECT_ADAPTER.validate_python(saved.detail.input_snapshot.input_snapshot["source"])
+    targets = OBJECT_ADAPTER.validate_python(source_snapshot["executionTargets"])
+    minimum = OBJECT_ADAPTER.validate_python(saved.detail.calculation_snapshot.result_snapshot["minimum_rpm"])
+    total = OBJECT_ADAPTER.validate_python(saved.detail.calculation_snapshot.result_snapshot["total_duration_s_exact"])
+    failure_result = OBJECT_ADAPTER.validate_python(saved.detail.calculation_snapshot.result_snapshot["failure_result"])
+    assert source_snapshot["localImportId"] == imported.local_import_id
+    assert targets["lower_point_policy"] == "full_stop"
+    assert minimum["decimal"] == "15"
+    assert total["decimal"] == "8"
+    assert failure_result["status"] == "not_applicable"
+    comparison = OBJECT_ADAPTER.validate_python(saved.detail.calculation_snapshot.result_snapshot["lower_point_comparison"])
+    assert comparison["source_policy"] == "full_stop"
+    assert comparison["target_lower_rpm"] == "0"
+    assert comparison["status"] == "differs_from_typical_formula"
+    assert service.get_rpt_calculation_detail(calculation_id, None) == saved.detail
+    page = service.list_rpt_calculation_page(execution.wheel_model_id, None, 25, None)
+    assert [item.calculation_snapshot_id for item in page.items] == [calculation_id]
+    assert page.next_cursor is None
+    assert (
+        service.create_rpt_calculation(
+            analysis_input_snapshot_id=input_id,
+            calculation_snapshot_id=calculation_id,
+            execution_id=execution.execution_id,
+            selection="effective",
+            selections=selections,
+            failure=None,
+            actor=" local_user ",
+            reason="  Расчёт РПТ по выбранному источнику  ",
+            deadline=None,
+        ).disposition
+        == "existing"
+    )
+    service.close()
+    _managed_path(project_path, imported).unlink()
+    service.open(path=str(project_path), application_instance_id="rpt-reopen")
+    assert service.get_rpt_calculation_detail(calculation_id, None) == saved.detail
+    service.close()
+
+
+@pytest.mark.parametrize(("failure_duration", "expected_cycles"), [("8", "2"), ("0", "0")])
+def test_rpt_manual_inputs_and_documented_table_4_survive_document_change(tmp_path: Path, failure_duration: str, expected_cycles: str) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_full_stop.r130run"))
+    document = service.create_case_document(
+        str(uuid4()),
+        {
+            "documentKind": "measurement_or_attestation_record",
+            "title": "Протокол точного времени до отказа",
+            "designation": "РПТ-ОТК-01",
+            "revisionLabel": "01",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "",
+        },
+        (),
+        (),
+        None,
+    )
+    evidence = RptEvidenceReference(
+        document_id=document.case_document_id,
+        document_record_revision=document.record_revision,
+        document_locator="раздел 3, момент отказа и начало отсчёта",
+    )
+    selections = tuple(
+        RptFieldSelection(
+            field=field,
+            origin="manual" if field == "reserve_factor" else "source",
+            manual_value="1.5" if field == "reserve_factor" else None,
+            basis="Коэффициент принят инженером для сценария" if field == "reserve_factor" else "",
+            evidence=evidence if field == "reserve_factor" else None,
+        )
+        for field in (
+            "nominal_rpm",
+            "design_cycles",
+            "reserve_factor",
+            "acceleration_duration_s",
+            "steady_duration_s",
+            "deceleration_duration_s",
+        )
+    )
+    failure = RptFailureEvidence(
+        applicability="exact_supported",
+        duration_to_failure_s=failure_duration,
+        basis="Время до установленного отказа соответствует одному запуску и началу отсчёта",
+        evidence=evidence,
+    )
+    input_id, calculation_id = str(uuid4()), str(uuid4())
+    saved = service.create_rpt_calculation(
+        analysis_input_snapshot_id=input_id,
+        calculation_snapshot_id=calculation_id,
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=selections,
+        failure=failure,
+        actor="local_user",
+        reason="Ручное дополнение с документом",
+        deadline=None,
+    )
+    saved_fields = FIELD_SELECTIONS_ADAPTER.validate_python(saved.detail.input_snapshot.input_snapshot["fieldSelections"])
+    reserve = next(item for item in saved_fields if item["field"] == "reserve_factor")
+    assert reserve["rawSourceValue"] == "1"
+    assert reserve["value"] == "1.5"
+    assert reserve["origin"] == "manual"
+    assert OBJECT_ADAPTER.validate_python(reserve["document"])["recordRevision"] == document.record_revision
+    result = saved.detail.calculation_snapshot.result_snapshot
+    assert OBJECT_ADAPTER.validate_python(result["required_cycles_exact"])["decimal"] == "3"
+    assert OBJECT_ADAPTER.validate_python(result["total_duration_s_exact"])["decimal"] == "12"
+    assert OBJECT_ADAPTER.validate_python(result["failure_result"])["cycles_to_failure"] == expected_cycles
+    updated = service.update_case_document(
+        document.case_document_id,
+        document.record_revision,
+        {
+            "documentKind": "measurement_or_attestation_record",
+            "title": "Протокол уточнён",
+            "designation": "РПТ-ОТК-01",
+            "revisionLabel": "02",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "",
+        },
+        (),
+        (),
+        None,
+    )
+    service.set_case_document_archived(document.case_document_id, updated.record_revision, True, None)
+    assert service.get_rpt_calculation_detail(calculation_id, None) == saved.detail
+    assert (
+        service.create_rpt_calculation(
+            analysis_input_snapshot_id=input_id,
+            calculation_snapshot_id=calculation_id,
+            execution_id=execution.execution_id,
+            selection="original",
+            selections=selections,
+            failure=failure,
+            actor="local_user",
+            reason="Ручное дополнение с документом",
+            deadline=None,
+        ).disposition
+        == "existing"
+    )
+    with pytest.raises(ProjectOperationError) as archived:
+        service.create_rpt_calculation(
+            analysis_input_snapshot_id=str(uuid4()),
+            calculation_snapshot_id=str(uuid4()),
+            execution_id=execution.execution_id,
+            selection="original",
+            selections=selections,
+            failure=failure,
+            actor="local_user",
+            reason="Новая запись по архивному документу",
+            deadline=None,
+        )
+    assert archived.value.code in {"entity_archived", "validation_error"}
+    service.close()
+    service.open(path=str(project_path), application_instance_id="rpt-document-reopen")
+    assert service.get_rpt_calculation_detail(calculation_id, None) == saved.detail
+    service.close()
+
+
+def test_rpt_calculation_rollback_conflicting_retry_and_method_scoped_detail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    selections = tuple(
+        RptFieldSelection(field=field, origin="source")
+        for field in (
+            "nominal_rpm",
+            "design_cycles",
+            "reserve_factor",
+            "acceleration_duration_s",
+            "steady_duration_s",
+            "deceleration_duration_s",
+        )
+    )
+    input_id, calculation_id = str(uuid4()), str(uuid4())
+    with monkeypatch.context() as patch_context:
+
+        def fail_audit(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("injected rpt audit failure")
+
+        patch_context.setattr(rpt_calculations_module, "insert_audit", fail_audit)
+        with pytest.raises(RuntimeError, match="injected rpt audit failure"):
+            service.create_rpt_calculation(
+                analysis_input_snapshot_id=input_id,
+                calculation_snapshot_id=calculation_id,
+                execution_id=execution.execution_id,
+                selection="original",
+                selections=selections,
+                failure=None,
+                actor="local_user",
+                reason="Проверка атомарности",
+                deadline=None,
+            )
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        assert connection.execute("SELECT count(*) FROM rpt_analysis_input_snapshots").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM rpt_calculation_snapshots").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM project_audit_events WHERE event_type='rpt_calculation.created'").fetchone()[0] == 0
+    saved = service.create_rpt_calculation(
+        analysis_input_snapshot_id=input_id,
+        calculation_snapshot_id=calculation_id,
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=selections,
+        failure=None,
+        actor="local_user",
+        reason="Проверка атомарности",
+        deadline=None,
+    )
+    assert saved.disposition == "created"
+    for changed_input_id, changed_calculation_id, changed_reason in (
+        (input_id, calculation_id, "Иное основание"),
+        (input_id, str(uuid4()), "Проверка атомарности"),
+        (str(uuid4()), calculation_id, "Проверка атомарности"),
+    ):
+        with pytest.raises(ProjectOperationError) as conflicting:
+            service.create_rpt_calculation(
+                analysis_input_snapshot_id=changed_input_id,
+                calculation_snapshot_id=changed_calculation_id,
+                execution_id=execution.execution_id,
+                selection="original",
+                selections=selections,
+                failure=None,
+                actor="local_user",
+                reason=changed_reason,
+                deadline=None,
+            )
+        assert conflicting.value.code == "revision_conflict"
+    with pytest.raises(ProjectOperationError) as wrong_method:
+        service.get_rbd_calculation_detail(calculation_id, None)
+    assert wrong_method.value.code == "entity_not_found"
+    service.close()
+
+
+def test_rpt_calculation_four_typed_dispatch_operations_and_bounded_envelope(tmp_path: Path) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    service.close()
+    dispatcher = Dispatcher(tmp_path)
+
+    def request(operation: str, payload: dict[str, object], revision: int) -> object:
+        envelope = REQUEST_ENVELOPE_ADAPTER.validate_python(
+            {
+                "protocolVersion": 1,
+                "requestId": f"rpt-{revision}",
+                "kind": "request",
+                "operation": operation,
+                "revision": revision,
+                "deadlineMs": 30_000 if operation in {"rptCalculation.getSourceInputs", "rptCalculation.create"} else 5_000,
+                "payload": payload,
+            }
+        )
+        response = dispatcher.dispatch(envelope)
+        assert len(response.model_dump_json().encode("utf-8")) < 1_048_576
+        return response.result
+
+    request("project.open", {"path": str(project_path), "applicationInstanceId": str(uuid4())}, 1)
+    source = request(
+        "rptCalculation.getSourceInputs",
+        {"executionId": execution.execution_id, "planSelection": "effective"},
+        2,
+    )
+    assert isinstance(source, RptPlanSourceResult)
+    assert source.sourceValues.lowerPointPolicy == "one_percent"
+    input_id, calculation_id = str(uuid4()), str(uuid4())
+    written = request(
+        "rptCalculation.create",
+        {
+            "analysisInputSnapshotId": input_id,
+            "calculationSnapshotId": calculation_id,
+            "executionId": execution.execution_id,
+            "planSelection": "effective",
+            "selections": [
+                {"field": field, "origin": "source"}
+                for field in (
+                    "nominal_rpm",
+                    "design_cycles",
+                    "reserve_factor",
+                    "acceleration_duration_s",
+                    "steady_duration_s",
+                    "deceleration_duration_s",
+                )
+            ],
+            "failureEvidence": None,
+            "actor": "local_user",
+            "reason": "Проверка production dispatcher",
+        },
+        3,
+    )
+    assert isinstance(written, RptCalculationWriteResultModel)
+    assert written.detail.calculationSnapshot.resultSnapshot.minimum_rpm.decimal == "15"
+    page = request("rptCalculation.listPage", {"wheelModelId": execution.wheel_model_id}, 4)
+    assert isinstance(page, RptCalculationPageResult)
+    assert [item.calculationSnapshotId for item in page.items] == [calculation_id]
+    detail = request("rptCalculation.getDetail", {"calculationSnapshotId": calculation_id}, 5)
+    assert isinstance(detail, RptCalculationDetailResult)
+    assert detail == written.detail
+    dispatcher.close()
+
+
+def test_reopen_rejects_resealed_rpt_result_with_invalid_nested_profile(tmp_path: Path) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    input_id, calculation_id = str(uuid4()), str(uuid4())
+    saved = service.create_rpt_calculation(
+        analysis_input_snapshot_id=input_id,
+        calculation_snapshot_id=calculation_id,
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=tuple(
+            RptFieldSelection(field=field, origin="source")
+            for field in (
+                "nominal_rpm",
+                "design_cycles",
+                "reserve_factor",
+                "acceleration_duration_s",
+                "steady_duration_s",
+                "deceleration_duration_s",
+            )
+        ),
+        failure=None,
+        actor="local_user",
+        reason="Проверка строгого результата РПТ",
+        deadline=None,
+    )
+    service.close()
+    result = dict(saved.detail.calculation_snapshot.result_snapshot)
+    phases = TypeAdapter(list[object]).validate_python(result["phases"])
+    phases[1] = None
+    result["phases"] = phases
+
+    def canonical_json(value: object) -> str:
+        return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+
+    calculation_content = {
+        "calculationSnapshotId": calculation_id,
+        "analysisInputSnapshotId": input_id,
+        "inputContentSha256": saved.detail.input_snapshot.content_sha256,
+        "result": result,
+        "createdAtUtc": saved.detail.calculation_snapshot.created_at_utc,
+    }
+    content_sha256 = hashlib.sha256(canonical_json(calculation_content).encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        for trigger_name in ("rpt_calculation_snapshots_no_update", "project_audit_events_no_update"):
+            trigger_row = connection.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (trigger_name,)).fetchone()
+            assert trigger_row is not None
+            connection.execute(f"DROP TRIGGER {trigger_name}")
+            if trigger_name == "rpt_calculation_snapshots_no_update":
+                connection.execute(
+                    "UPDATE rpt_calculation_snapshots SET result_snapshot_json=?, content_sha256=? WHERE calculation_snapshot_id=?",
+                    (canonical_json(result), content_sha256, calculation_id),
+                )
+            else:
+                audit_row = connection.execute(
+                    "SELECT payload_json FROM project_audit_events WHERE event_type='rpt_calculation.created' AND json_extract(payload_json, '$.calculationSnapshotId')=?",
+                    (calculation_id,),
+                ).fetchone()
+                assert audit_row is not None
+                audit_payload = OBJECT_ADAPTER.validate_json(str(audit_row[0]))
+                audit_payload["calculationContentSha256"] = content_sha256
+                connection.execute(
+                    "UPDATE project_audit_events SET payload_json=? WHERE event_type='rpt_calculation.created' AND json_extract(payload_json, '$.calculationSnapshotId')=?",
+                    (canonical_json(audit_payload), calculation_id),
+                )
+            connection.execute(str(trigger_row[0]))
+        connection.commit()
+    with pytest.raises(ProjectOperationError) as corrupted:
+        service.open(path=str(project_path), application_instance_id="rpt-resealed-result")
+    assert corrupted.value.code == "corrupt_project"
+
+
+def _reseal_saved_rpt_snapshot(
+    project_path: Path,
+    saved: RptCalculationWriteResult,
+    input_payload: dict[str, object],
+    result_payload: dict[str, object],
+) -> None:
+    # The test changes all linked hashes and audit evidence, leaving only domain validation to detect corruption.
+    detail = saved.detail
+    input_snapshot = detail.input_snapshot
+    calculation = detail.calculation_snapshot
+
+    def canonical_json(value: object) -> str:
+        return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+
+    def sha256(value: object) -> str:
+        return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+    operation_hash = sha256(input_payload["operation"])
+    input_hash = sha256(
+        {
+            "analysisInputSnapshotId": input_snapshot.analysis_input_snapshot_id,
+            "executionId": input_snapshot.execution_id,
+            "input": input_payload,
+            "actor": input_snapshot.actor,
+            "reason": input_snapshot.decision_reason,
+            "createdAtUtc": input_snapshot.created_at_utc,
+        }
+    )
+    result_hash = sha256(
+        {
+            "calculationSnapshotId": calculation.calculation_snapshot_id,
+            "analysisInputSnapshotId": input_snapshot.analysis_input_snapshot_id,
+            "inputContentSha256": input_hash,
+            "result": result_payload,
+            "createdAtUtc": calculation.created_at_utc,
+        }
+    )
+    failure_status = OBJECT_ADAPTER.validate_python(result_payload["failure_result"])["status"]
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        triggers: dict[str, str] = {}
+        for name in (
+            "rpt_analysis_input_snapshots_no_update",
+            "rpt_calculation_snapshots_no_update",
+            "project_audit_events_no_update",
+        ):
+            row = connection.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (name,)).fetchone()
+            assert row is not None
+            triggers[name] = str(row[0])
+            connection.execute(f"DROP TRIGGER {name}")
+        connection.execute(
+            "UPDATE rpt_analysis_input_snapshots SET input_snapshot_json=?, operation_sha256=?, content_sha256=? WHERE analysis_input_snapshot_id=?",
+            (canonical_json(input_payload), operation_hash, input_hash, input_snapshot.analysis_input_snapshot_id),
+        )
+        connection.execute(
+            "UPDATE rpt_calculation_snapshots SET result_snapshot_json=?, failure_status=?, input_content_sha256=?, operation_sha256=?, content_sha256=? WHERE calculation_snapshot_id=?",
+            (canonical_json(result_payload), failure_status, input_hash, operation_hash, result_hash, calculation.calculation_snapshot_id),
+        )
+        audit_row = connection.execute(
+            "SELECT payload_json FROM project_audit_events WHERE event_type='rpt_calculation.created' AND json_extract(payload_json, '$.calculationSnapshotId')=?",
+            (calculation.calculation_snapshot_id,),
+        ).fetchone()
+        assert audit_row is not None
+        audit_payload = OBJECT_ADAPTER.validate_json(str(audit_row[0]))
+        audit_payload.update(inputContentSha256=input_hash, calculationContentSha256=result_hash, operationSha256=operation_hash)
+        connection.execute(
+            "UPDATE project_audit_events SET payload_json=? WHERE event_type='rpt_calculation.created' AND json_extract(payload_json, '$.calculationSnapshotId')=?",
+            (canonical_json(audit_payload), calculation.calculation_snapshot_id),
+        )
+        for sql in triggers.values():
+            connection.execute(sql)
+        connection.commit()
+
+
+@pytest.mark.parametrize(
+    ("damage", "value"),
+    [
+        ("reserve_factor", "NaN"),
+        ("design_cycles", "3.5"),
+        ("design_cycles", "0"),
+        ("all_durations", "0"),
+        ("failure_duration", "NaN"),
+        ("failure_duration", "1000000000001"),
+        ("failure_reason", "failure_cycle_variable"),
+    ],
+)
+def test_reopen_rejects_resealed_rpt_inputs_outside_algorithm_domain(tmp_path: Path, damage: str, value: str) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_full_stop.r130run"))
+    document = service.create_case_document(
+        str(uuid4()),
+        {
+            "documentKind": "measurement_or_attestation_record",
+            "title": "Протокол отказа",
+            "designation": "РПТ-ОТК-01",
+            "revisionLabel": "01",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "",
+        },
+        (),
+        (),
+        None,
+    )
+    evidence = RptEvidenceReference(document.case_document_id, document.record_revision, "раздел 3")
+    chosen: dict[RptInputField, str] = {
+        "nominal_rpm": "1500",
+        "design_cycles": "2",
+        "reserve_factor": "1.5",
+        "acceleration_duration_s": "1",
+        "steady_duration_s": "2",
+        "deceleration_duration_s": "1",
+    }
+    saved = service.create_rpt_calculation(
+        analysis_input_snapshot_id=str(uuid4()),
+        calculation_snapshot_id=str(uuid4()),
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=tuple(RptFieldSelection(field=field, origin="manual", manual_value=selected, basis="Сценарий инженера") for field, selected in chosen.items()),
+        failure=RptFailureEvidence("exact_supported", "8", "От начала до отказа", evidence),
+        actor="local_user",
+        reason="Проверка сохранённого входа",
+        deadline=None,
+    )
+    input_payload = dict(saved.detail.input_snapshot.input_snapshot)
+    result_payload = dict(saved.detail.calculation_snapshot.result_snapshot)
+    if damage in chosen:
+        operation = OBJECT_ADAPTER.validate_python(input_payload["operation"])
+        operation_selections = FIELD_SELECTIONS_ADAPTER.validate_python(operation["selections"])
+        for item in operation_selections:
+            if item["field"] == damage:
+                item["manual_value"] = value
+        operation["selections"] = operation_selections
+        input_payload["operation"] = operation
+        selections = FIELD_SELECTIONS_ADAPTER.validate_python(input_payload["fieldSelections"])
+        for item in selections:
+            if item["field"] == damage:
+                item["value"] = value
+        input_payload["fieldSelections"] = selections
+    elif damage == "all_durations":
+        operation = OBJECT_ADAPTER.validate_python(input_payload["operation"])
+        operation_selections = FIELD_SELECTIONS_ADAPTER.validate_python(operation["selections"])
+        selections = FIELD_SELECTIONS_ADAPTER.validate_python(input_payload["fieldSelections"])
+        for item in operation_selections:
+            if item["field"] in {"acceleration_duration_s", "steady_duration_s", "deceleration_duration_s"}:
+                item["manual_value"] = value
+        for item in selections:
+            if item["field"] in {"acceleration_duration_s", "steady_duration_s", "deceleration_duration_s"}:
+                item["value"] = value
+        operation["selections"] = operation_selections
+        input_payload["operation"] = operation
+        input_payload["fieldSelections"] = selections
+    else:
+        operation = OBJECT_ADAPTER.validate_python(input_payload["operation"])
+        operation_failure = OBJECT_ADAPTER.validate_python(operation["failureEvidence"])
+        saved_failure = OBJECT_ADAPTER.validate_python(input_payload["failureEvidence"])
+        if damage == "failure_duration":
+            operation_failure["duration_to_failure_s"] = value
+            saved_failure["durationToFailureS"] = value
+        else:
+            operation_failure["applicability"] = "unknown_start"
+            saved_failure["applicability"] = "unknown_start"
+            failure_result = OBJECT_ADAPTER.validate_python(result_payload["failure_result"])
+            failure_result.update(status="not_applicable", cycles_to_failure=None, reason_code=value)
+            result_payload["failure_result"] = failure_result
+        operation["failureEvidence"] = operation_failure
+        input_payload["operation"] = operation
+        input_payload["failureEvidence"] = saved_failure
+    _reseal_saved_rpt_snapshot(project_path, saved, input_payload, result_payload)
+    with pytest.raises(ProjectOperationError) as detail_corrupted:
+        service.get_rpt_calculation_detail(saved.detail.calculation_snapshot.calculation_snapshot_id, None)
+    assert detail_corrupted.value.code == "corrupt_project"
+    service.close()
+    with pytest.raises(ProjectOperationError) as corrupted:
+        service.open(path=str(project_path), application_instance_id="rpt-invalid-saved-input")
+    assert corrupted.value.code == "corrupt_project"
 
 
 @pytest.mark.parametrize("selection", ["original", "effective"])
@@ -3367,6 +4145,60 @@ def _package_with_nullable_plan_references(tmp_path: Path) -> Path:
             "plan/original.json": _canonical_package_json(original),
             "plan/effective.json": _canonical_package_json(effective),
             "run-summary.json": _canonical_package_json(summary),
+        },
+    )
+
+
+def _package_with_explicit_rpt_lower_point(tmp_path: Path) -> Path:
+    return _package_with_rpt_plan_values(
+        tmp_path,
+        suffix="explicit-lower-point",
+        source_updates={"lower_point_policy": "explicit_rpm", "explicit_lower_rpm": "125.5"},
+        requirement_updates={},
+        target_updates={"lower_point_policy": "explicit_rpm", "lower_rpm": "125.5"},
+    )
+
+
+def _package_with_rpt_plan_values(
+    tmp_path: Path,
+    *,
+    suffix: str,
+    source_updates: dict[str, object],
+    requirement_updates: dict[str, object],
+    target_updates: dict[str, object],
+) -> Path:
+    base = _package("normal_final_rpt_full_stop.r130run")
+    with ZipFile(base) as archive:
+        original = OBJECT_ADAPTER.validate_json(archive.read("plan/original.json"))
+        effective = OBJECT_ADAPTER.validate_json(archive.read("plan/effective.json"))
+    for key, updates in (
+        ("source_values", source_updates),
+        ("methodical_requirements", requirement_updates),
+        ("execution_targets", target_updates),
+    ):
+        values = OBJECT_ADAPTER.validate_python(original[key])
+        values.update(updates)
+        original[key] = values
+
+    effective_container = OBJECT_ADAPTER.validate_python(effective["effective_plan"])
+    effective_plan = OBJECT_ADAPTER.validate_python(effective_container["effective_plan"])
+    for key, updates in (
+        ("source_values", source_updates),
+        ("methodical_requirements", requirement_updates),
+        ("execution_targets", target_updates),
+    ):
+        values = OBJECT_ADAPTER.validate_python(effective_plan[key])
+        values.update(updates)
+        effective_plan[key] = values
+    effective_container["effective_plan"] = effective_plan
+    effective_container["original_plan_sha256"] = hashlib.sha256(_canonical_package_json(original)).hexdigest()
+    effective["effective_plan"] = effective_container
+    return build_synthetic_r130run(
+        tmp_path / f"rpt-{suffix}.r130run",
+        base_package=base,
+        payload_overrides={
+            "plan/original.json": _canonical_package_json(original),
+            "plan/effective.json": _canonical_package_json(effective),
         },
     )
 

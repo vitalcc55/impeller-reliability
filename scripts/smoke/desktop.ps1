@@ -13,6 +13,7 @@ $smokeDirectory = Join-Path $repositoryRoot ".tmp\.codex\evidence\$($Target.ToLo
 $summaryPath = Join-Path $smokeDirectory "summary.json"
 $projectPath = Join-Path $smokeDirectory "Packaged smoke project.irproj"
 $runPackagePath = Join-Path $repositoryRoot "fixtures\contracts\r130run\v1\m9a\packages\exact_methodical_rounding.r130run"
+$rptRunPackagePath = Join-Path $repositoryRoot "fixtures\contracts\r130run\v1\m9a\packages\normal_final_rpt_full_stop.r130run"
 $packageMetadata = Get-Content -LiteralPath (Join-Path $repositoryRoot "apps\desktop\package.json") -Raw | ConvertFrom-Json
 $applicationExecutable = Join-Path $desktopDist "win-unpacked\ImpellerReliabilityCalc.exe"
 
@@ -71,11 +72,13 @@ if (-not (Test-Path -LiteralPath $applicationExecutable)) { throw "Packaged appl
 if ($LASTEXITCODE -ne 0) { throw "Electron fuse verification failed." }
 
 if (-not (Test-Path -LiteralPath $runPackagePath)) { throw "Producer M9a package not found: $runPackagePath" }
+if (-not (Test-Path -LiteralPath $rptRunPackagePath)) { throw "Producer RPT package not found: $rptRunPackagePath" }
 
 $env:IMPELLER_SMOKE_OUTPUT = $summaryPath
 $env:IMPELLER_SMOKE_HOLD_MS = "1500"
 $env:IMPELLER_AUTOMATED_PROJECT_PATH = $projectPath
 $env:IMPELLER_AUTOMATED_R130RUN_PATH = $runPackagePath
+$env:IMPELLER_AUTOMATED_RPT_RUN_PATH = $rptRunPackagePath
 $launchStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $ownedProcessIds = [System.Collections.Generic.HashSet[int]]::new()
 trap {
@@ -117,6 +120,7 @@ finally {
     Remove-Item Env:IMPELLER_SMOKE_HOLD_MS -ErrorAction SilentlyContinue
     Remove-Item Env:IMPELLER_AUTOMATED_PROJECT_PATH -ErrorAction SilentlyContinue
     Remove-Item Env:IMPELLER_AUTOMATED_R130RUN_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:IMPELLER_AUTOMATED_RPT_RUN_PATH -ErrorAction SilentlyContinue
 }
 
 $launchStopwatch.Stop()
@@ -128,6 +132,7 @@ if ($summary.projectScenarioPassed -ne $true) { throw "Desktop smoke project cre
 if ($summary.runPackageValidationPassed -ne $true) { throw "Desktop smoke R130SH contract validation failed." }
 if ($summary.runPackageImportPassed -ne $true) { throw "Desktop smoke R130SH production import/reopen failed." }
 if ($summary.rbdCalculationPassed -ne $true) { throw "Desktop smoke RBD calculation/reopen failed." }
+if ($summary.rptCalculationPassed -ne $true) { throw "Desktop smoke RPT calculation/reopen failed." }
 if ($networkObserved) { throw "Desktop smoke observed a TCP connection in its process tree." }
 
 $shutdownDeadline = [DateTime]::UtcNow.AddSeconds(5)

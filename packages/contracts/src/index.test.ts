@@ -18,6 +18,7 @@ import {
   rbdResultSnapshotSchema,
   rbdInputSnapshotPayloadSchema,
   rbdSavedFieldSelectionSchema,
+  rptCalculationCreateCommandSchema,
   reliabilityDatasetCreateVersionCommandSchema,
   reliabilityExecutionPageSchema,
   reliabilityObservationCreateVersionCommandSchema,
@@ -34,6 +35,48 @@ import {
 } from './index';
 
 describe('worker contracts', () => {
+  it('requires six RPT choices and rejects supplied results and malformed Unicode', () => {
+    const command = {
+      analysisInputSnapshotId: '113ec2c8-9439-4ce8-823d-3e2b0de8f001',
+      calculationSnapshotId: '223ec2c8-9439-4ce8-823d-3e2b0de8f002',
+      executionId: '333ec2c8-9439-4ce8-823d-3e2b0de8f003',
+      planSelection: 'effective',
+      selections: [
+        'nominal_rpm',
+        'design_cycles',
+        'reserve_factor',
+        'acceleration_duration_s',
+        'steady_duration_s',
+        'deceleration_duration_s',
+      ].map((field) => ({ field, origin: 'source' })),
+      failureEvidence: null,
+      actor: 'Инженер',
+      reason: 'Расчёт РПТ',
+    };
+    expect(rptCalculationCreateCommandSchema.safeParse(command).success).toBe(true);
+    expect(
+      rptCalculationCreateCommandSchema.safeParse({ ...command, calculatedOutputs: {} }).success,
+    ).toBe(false);
+    expect(
+      rptCalculationCreateCommandSchema.safeParse({ ...command, reason: '\ud800' }).success,
+    ).toBe(false);
+    expect(
+      rptCalculationCreateCommandSchema.safeParse({ ...command, reason: '🔧'.repeat(501) }).success,
+    ).toBe(false);
+    expect(
+      rptCalculationCreateCommandSchema.safeParse({
+        ...command,
+        selections: command.selections.slice(1),
+      }).success,
+    ).toBe(false);
+    expect(
+      rptCalculationCreateCommandSchema.safeParse({
+        ...command,
+        selections: Array.from({ length: 6 }, () => command.selections[0]),
+      }).success,
+    ).toBe(false);
+  });
+
   it('requires the five RBD input choices and well-formed Unicode without client results', () => {
     const command = {
       analysisInputSnapshotId: '113ec2c8-9439-4ce8-823d-3e2b0de8f001',

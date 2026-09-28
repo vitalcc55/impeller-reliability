@@ -63,6 +63,7 @@ test('renderer reflects worker failure and controlled restart through the narrow
       'reliabilityObservation',
       'reliabilityDataset',
       'rbdCalculation',
+      'rptCalculation',
     ]);
     expect(
       await page.evaluate(() => {

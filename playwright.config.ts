@@ -4,6 +4,8 @@ export default defineConfig({
   testDir: './apps/desktop/tests/e2e',
   timeout: 30_000,
   fullyParallel: false,
+  // Both test files launch the same Electron binary; Windows can lock it during concurrent startup.
+  workers: 1,
   retries: 0,
   reporter: [['list'], ['json', { outputFile: '.tmp/.codex/evidence/playwright.json' }]],
   use: {

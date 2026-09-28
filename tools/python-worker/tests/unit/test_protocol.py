@@ -11,6 +11,7 @@ from impeller_reliability.protocol.envelopes import (
     RbdCalculationCreateRequest,
     RbdPlanSourceResult,
     RbdReferenceResultModel,
+    RptCalculationCreateRequest,
 )
 
 
@@ -173,13 +174,6 @@ def test_rbd_calculation_command_is_fixed_bounded_and_does_not_accept_outputs() 
         REQUEST_ENVELOPE_ADAPTER.validate_python(
             {
                 **request.model_dump(mode="python"),
-                "payload": {key: value for key, value in payload.items() if key != "failureEvidence"},
-            }
-        )
-    with pytest.raises(ValidationError):
-        REQUEST_ENVELOPE_ADAPTER.validate_python(
-            {
-                **request.model_dump(mode="python"),
                 "payload": {**payload, "reason": "Неверный Unicode\ud800"},
             }
         )
@@ -208,6 +202,79 @@ def test_rbd_calculation_command_is_fixed_bounded_and_does_not_accept_outputs() 
                     **payload,
                     "selections": [{"field": "base_cycles", "origin": "source"}] * 5,
                 },
+            }
+        )
+
+
+def test_rpt_calculation_command_has_six_fixed_inputs_and_no_ready_result() -> None:
+    payload = {
+        "analysisInputSnapshotId": "113ec2c8-9439-4ce8-823d-3e2b0de8f001",
+        "calculationSnapshotId": "223ec2c8-9439-4ce8-823d-3e2b0de8f002",
+        "executionId": "333ec2c8-9439-4ce8-823d-3e2b0de8f003",
+        "planSelection": "effective",
+        "selections": [
+            {"field": field, "origin": "source"}
+            for field in (
+                "nominal_rpm",
+                "design_cycles",
+                "reserve_factor",
+                "acceleration_duration_s",
+                "steady_duration_s",
+                "deceleration_duration_s",
+            )
+        ],
+        "failureEvidence": None,
+        "actor": "Инженер",
+        "reason": "Первый расчёт РПТ",
+    }
+    request = REQUEST_ENVELOPE_ADAPTER.validate_python(
+        {
+            "protocolVersion": 1,
+            "requestId": "rpt-1",
+            "kind": "request",
+            "operation": "rptCalculation.create",
+            "revision": 9,
+            "deadlineMs": 30_000,
+            "payload": payload,
+        }
+    )
+    assert request.operation == "rptCalculation.create"
+    selections = payload["selections"]
+    assert isinstance(selections, list)
+    for invalid in (
+        {**payload, "calculatedOutputs": {"minimumRpm": "15"}},
+        {**payload, "selections": selections[:-1]},
+        {**payload, "selections": [*selections[:-1], selections[0]]},
+    ):
+        with pytest.raises(ValidationError):
+            REQUEST_ENVELOPE_ADAPTER.validate_python({**request.model_dump(mode="python"), "payload": invalid})
+    with pytest.raises(ValidationError):
+        REQUEST_ENVELOPE_ADAPTER.validate_python(
+            {
+                **request.model_dump(mode="python"),
+                "payload": {key: value for key, value in payload.items() if key != "failureEvidence"},
+            }
+        )
+    with pytest.raises(ValidationError):
+        REQUEST_ENVELOPE_ADAPTER.validate_python(
+            {
+                **request.model_dump(mode="python"),
+                "payload": {**payload, "reason": "Неверный Unicode\ud800"},
+            }
+        )
+    valid_emoji = REQUEST_ENVELOPE_ADAPTER.validate_python(
+        {
+            **request.model_dump(mode="python"),
+            "payload": {**payload, "reason": "Расчёт 🔧"},
+        }
+    )
+    assert isinstance(valid_emoji, RptCalculationCreateRequest)
+    assert valid_emoji.payload.reason == "Расчёт 🔧"
+    with pytest.raises(ValidationError):
+        REQUEST_ENVELOPE_ADAPTER.validate_python(
+            {
+                **request.model_dump(mode="python"),
+                "payload": {**payload, "reason": "🔧" * 501},
             }
         )
 
