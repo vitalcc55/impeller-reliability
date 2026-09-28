@@ -8,6 +8,7 @@ from typing import Final, Literal
 from impeller_reliability.calculations.exact import (
     ExactInputError,
     ExactRationalValue,
+    canonical_decimal,
     exact_value,
     nonnegative_decimal,
     positive_decimal,
@@ -24,6 +25,7 @@ RptFailureApplicability = Literal[
     "unknown_start",
     "repeated_attempts",
 ]
+RptLowerPointPolicy = Literal["one_percent", "full_stop", "explicit_rpm"]
 
 ALGORITHM_ID: Final = "rpt_reference"
 ALGORITHM_VERSION: Final = "1.0.0"
@@ -82,6 +84,20 @@ class RptFailureResult:
     status: Literal["calculated", "not_applicable"]
     cycles_to_failure: str | None
     reason_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RptLowerPointComparison:
+    source_policy: RptLowerPointPolicy
+    target_policy: RptLowerPointPolicy
+    source_explicit_lower_rpm: str | None
+    target_lower_rpm: str
+    status: Literal[
+        "matches_typical_formula",
+        "differs_from_typical_formula",
+        "source_target_policy_conflict",
+        "target_unavailable",
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,3 +266,35 @@ def _validated_failure_applicability(value: object) -> RptFailureApplicability:
     if value == "repeated_attempts":
         return "repeated_attempts"
     raise RptCalculationError("invalid_failure_applicability", "Неподдерживаемая применимость таблицы 4 РПТ.")
+
+
+def compare_rpt_lower_point(
+    minimum_rpm: ExactRationalValue,
+    source_policy: RptLowerPointPolicy,
+    target_policy: RptLowerPointPolicy,
+    source_explicit_lower_rpm: str | None,
+    target_lower_rpm: str,
+) -> RptLowerPointComparison:
+    status: Literal[
+        "matches_typical_formula",
+        "differs_from_typical_formula",
+        "source_target_policy_conflict",
+        "target_unavailable",
+    ]
+    if source_policy != target_policy:
+        status = "source_target_policy_conflict"
+    else:
+        try:
+            target = Fraction(canonical_decimal(target_lower_rpm, "target_lower_rpm"))
+        except ExactInputError:
+            status = "target_unavailable"
+        else:
+            typical = Fraction(int(minimum_rpm.numerator), int(minimum_rpm.denominator))
+            status = "matches_typical_formula" if target == typical else "differs_from_typical_formula"
+    return RptLowerPointComparison(
+        source_policy=source_policy,
+        target_policy=target_policy,
+        source_explicit_lower_rpm=source_explicit_lower_rpm,
+        target_lower_rpm=target_lower_rpm,
+        status=status,
+    )

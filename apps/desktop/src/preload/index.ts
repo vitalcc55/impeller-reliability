@@ -47,6 +47,14 @@ import {
   rbdCalculationWriteResultSchema,
   rbdPlanSourceSchema,
   rbdSourceInputsPayloadSchema,
+  rptCalculationCreateCommandSchema,
+  rptCalculationDetailSchema,
+  rptCalculationIdPayloadSchema,
+  rptCalculationListPagePayloadSchema,
+  rptCalculationPageSchema,
+  rptCalculationWriteResultSchema,
+  rptPlanSourceSchema,
+  rptSourceInputsPayloadSchema,
   recentProjectsSchema,
   runtimeStatusSchema,
   runPackageValidationDiscardResultSchema,
@@ -542,6 +550,36 @@ const api: ImpellerApi = {
         rbdCalculationIdPayloadSchema,
         { calculationSnapshotId },
         createDesktopResultSchema(rbdCalculationDetailSchema),
+      ),
+  },
+  rptCalculation: {
+    getSourceInputs: async (executionId, planSelection) =>
+      invokeValidated(
+        IPC_CHANNELS.rptCalculationGetSourceInputs,
+        rptSourceInputsPayloadSchema,
+        { executionId, planSelection },
+        createDesktopResultSchema(rptPlanSourceSchema),
+      ),
+    create: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.rptCalculationCreate,
+        rptCalculationCreateCommandSchema,
+        command,
+        createDesktopResultSchema(rptCalculationWriteResultSchema),
+      ),
+    listPage: async (wheelModelId, cursor = null, limit = 25) =>
+      invokeValidated(
+        IPC_CHANNELS.rptCalculationListPage,
+        rptCalculationListPagePayloadSchema,
+        { wheelModelId, cursor, limit },
+        createDesktopResultSchema(rptCalculationPageSchema),
+      ),
+    getDetail: async (calculationSnapshotId) =>
+      invokeValidated(
+        IPC_CHANNELS.rptCalculationGetDetail,
+        rptCalculationIdPayloadSchema,
+        { calculationSnapshotId },
+        createDesktopResultSchema(rptCalculationDetailSchema),
       ),
   },
 };

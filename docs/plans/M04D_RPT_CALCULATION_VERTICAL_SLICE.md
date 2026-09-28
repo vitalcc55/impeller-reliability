@@ -27,3 +27,7 @@
 6. **Завершение.** Профильный read-only review без подтверждённых findings, затем `pnpm verify -- --IncludePackaging`, `git diff --check`, проверка 21 frozen archive, отсутствие orphan processes, commit и PR без merge/release.
 
 В Desktop и Documents вне ignored test/smoke artifacts не обнаружены пользовательские `.irproj`; поэтому расширение ещё не выпущенной clean schema v1 допустимо без вымышленной цепочки миграций. Старые RBD JSON-снимки v1/v2 и их hashes остаются неизменяемыми.
+
+## Подтверждение результата
+
+После закрытого read-only review полный `pnpm verify -- --IncludePackaging` прошёл: 80 Vitest, 564 Python-теста и 16 Electron E2E. Оба packaged smoke (`win-unpacked` и portable) подтвердили сохранение и reopen РБД/РПТ с совпадающими hashes, отсутствие TCP и orphan worker. Browser preview проверен для ready РПТ, недоступного worker и узкого окна; синтетический preview не служит доказательством persistence. Все 21 frozen `.r130run` остались неизменными, `git diff --check` чистый.

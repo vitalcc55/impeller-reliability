@@ -35,6 +35,7 @@ from impeller_reliability.persistence import (
     r130sh_sources as r130sh_sources_module,
     rbd_calculations as rbd_calculations_module,
     reliability_domain as reliability_domain_module,
+    rpt_calculations as rpt_calculations_module,
 )
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.r130sh_sources import ImportedRunDetail, ImportedRunSummary, RbdPlanSourceSnapshot
@@ -50,8 +51,17 @@ from impeller_reliability.persistence.reliability_domain import (
     ReliabilityDomainRepository,
     TestExecution as ReliabilityTestExecution,
 )
-from impeller_reliability.protocol.envelopes import RbdPlanSourceValuesResult
+from impeller_reliability.persistence.rpt_calculations import RptEvidenceReference, RptFailureEvidence, RptFieldSelection
+from impeller_reliability.protocol.envelopes import (
+    REQUEST_ENVELOPE_ADAPTER,
+    RbdPlanSourceValuesResult,
+    RptCalculationDetailResult,
+    RptCalculationPageResult,
+    RptCalculationWriteResultModel,
+    RptPlanSourceResult,
+)
 from impeller_reliability.worker.deadline import RequestDeadline
+from impeller_reliability.worker.dispatcher import Dispatcher
 from support.r130run_builder import build_synthetic_r130run
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
@@ -1105,6 +1115,402 @@ def test_rpt_source_reader_rejects_missing_modified_or_conflicting_evidence(tmp_
         service.get_rpt_source_inputs(execution.execution_id, "original", None)
     assert rejected.value.code == ("file_integrity_mismatch" if damage in {"missing_archive", "modified_archive"} else "corrupt_project")
     service.close()
+
+
+def test_rpt_calculation_source_pair_history_and_reopen(tmp_path: Path) -> None:
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_full_stop.r130run"))
+    input_id = str(uuid4())
+    calculation_id = str(uuid4())
+    selections = tuple(
+        RptFieldSelection(field=field, origin="source")
+        for field in (
+            "nominal_rpm",
+            "design_cycles",
+            "reserve_factor",
+            "acceleration_duration_s",
+            "steady_duration_s",
+            "deceleration_duration_s",
+        )
+    )
+    saved = service.create_rpt_calculation(
+        analysis_input_snapshot_id=input_id,
+        calculation_snapshot_id=calculation_id,
+        execution_id=execution.execution_id,
+        selection="effective",
+        selections=selections,
+        failure=None,
+        actor=" local_user ",
+        reason="  Расчёт РПТ по выбранному источнику  ",
+        deadline=None,
+    )
+    assert saved.disposition == "created"
+    assert saved.detail.input_snapshot.actor == "local_user"
+    assert saved.detail.input_snapshot.decision_reason == "Расчёт РПТ по выбранному источнику"
+    source_snapshot = OBJECT_ADAPTER.validate_python(saved.detail.input_snapshot.input_snapshot["source"])
+    targets = OBJECT_ADAPTER.validate_python(source_snapshot["executionTargets"])
+    minimum = OBJECT_ADAPTER.validate_python(saved.detail.calculation_snapshot.result_snapshot["minimum_rpm"])
+    total = OBJECT_ADAPTER.validate_python(saved.detail.calculation_snapshot.result_snapshot["total_duration_s_exact"])
+    failure_result = OBJECT_ADAPTER.validate_python(saved.detail.calculation_snapshot.result_snapshot["failure_result"])
+    assert source_snapshot["localImportId"] == imported.local_import_id
+    assert targets["lower_point_policy"] == "full_stop"
+    assert minimum["decimal"] == "15"
+    assert total["decimal"] == "8"
+    assert failure_result["status"] == "not_applicable"
+    comparison = OBJECT_ADAPTER.validate_python(saved.detail.calculation_snapshot.result_snapshot["lower_point_comparison"])
+    assert comparison["source_policy"] == "full_stop"
+    assert comparison["target_lower_rpm"] == "0"
+    assert comparison["status"] == "differs_from_typical_formula"
+    assert service.get_rpt_calculation_detail(calculation_id, None) == saved.detail
+    page = service.list_rpt_calculation_page(execution.wheel_model_id, None, 25, None)
+    assert [item.calculation_snapshot_id for item in page.items] == [calculation_id]
+    assert page.next_cursor is None
+    assert (
+        service.create_rpt_calculation(
+            analysis_input_snapshot_id=input_id,
+            calculation_snapshot_id=calculation_id,
+            execution_id=execution.execution_id,
+            selection="effective",
+            selections=selections,
+            failure=None,
+            actor=" local_user ",
+            reason="  Расчёт РПТ по выбранному источнику  ",
+            deadline=None,
+        ).disposition
+        == "existing"
+    )
+    service.close()
+    _managed_path(project_path, imported).unlink()
+    service.open(path=str(project_path), application_instance_id="rpt-reopen")
+    assert service.get_rpt_calculation_detail(calculation_id, None) == saved.detail
+    service.close()
+
+
+def test_rpt_manual_inputs_and_documented_table_4_survive_document_change(tmp_path: Path) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_full_stop.r130run"))
+    document = service.create_case_document(
+        str(uuid4()),
+        {
+            "documentKind": "measurement_or_attestation_record",
+            "title": "Протокол точного времени до отказа",
+            "designation": "РПТ-ОТК-01",
+            "revisionLabel": "01",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "",
+        },
+        (),
+        (),
+        None,
+    )
+    evidence = RptEvidenceReference(
+        document_id=document.case_document_id,
+        document_record_revision=document.record_revision,
+        document_locator="раздел 3, момент отказа и начало отсчёта",
+    )
+    selections = tuple(
+        RptFieldSelection(
+            field=field,
+            origin="manual" if field == "reserve_factor" else "source",
+            manual_value="1.5" if field == "reserve_factor" else None,
+            basis="Коэффициент принят инженером для сценария" if field == "reserve_factor" else "",
+            evidence=evidence if field == "reserve_factor" else None,
+        )
+        for field in (
+            "nominal_rpm",
+            "design_cycles",
+            "reserve_factor",
+            "acceleration_duration_s",
+            "steady_duration_s",
+            "deceleration_duration_s",
+        )
+    )
+    failure = RptFailureEvidence(
+        applicability="exact_supported",
+        duration_to_failure_s="8",
+        basis="Время до установленного отказа соответствует одному запуску и началу отсчёта",
+        evidence=evidence,
+    )
+    input_id, calculation_id = str(uuid4()), str(uuid4())
+    saved = service.create_rpt_calculation(
+        analysis_input_snapshot_id=input_id,
+        calculation_snapshot_id=calculation_id,
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=selections,
+        failure=failure,
+        actor="local_user",
+        reason="Ручное дополнение с документом",
+        deadline=None,
+    )
+    saved_fields = FIELD_SELECTIONS_ADAPTER.validate_python(saved.detail.input_snapshot.input_snapshot["fieldSelections"])
+    reserve = next(item for item in saved_fields if item["field"] == "reserve_factor")
+    assert reserve["rawSourceValue"] == "1"
+    assert reserve["value"] == "1.5"
+    assert reserve["origin"] == "manual"
+    assert OBJECT_ADAPTER.validate_python(reserve["document"])["recordRevision"] == document.record_revision
+    result = saved.detail.calculation_snapshot.result_snapshot
+    assert OBJECT_ADAPTER.validate_python(result["required_cycles_exact"])["decimal"] == "3"
+    assert OBJECT_ADAPTER.validate_python(result["total_duration_s_exact"])["decimal"] == "12"
+    assert OBJECT_ADAPTER.validate_python(result["failure_result"])["cycles_to_failure"] == "2"
+    updated = service.update_case_document(
+        document.case_document_id,
+        document.record_revision,
+        {
+            "documentKind": "measurement_or_attestation_record",
+            "title": "Протокол уточнён",
+            "designation": "РПТ-ОТК-01",
+            "revisionLabel": "02",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "",
+        },
+        (),
+        (),
+        None,
+    )
+    service.set_case_document_archived(document.case_document_id, updated.record_revision, True, None)
+    assert service.get_rpt_calculation_detail(calculation_id, None) == saved.detail
+    assert (
+        service.create_rpt_calculation(
+            analysis_input_snapshot_id=input_id,
+            calculation_snapshot_id=calculation_id,
+            execution_id=execution.execution_id,
+            selection="original",
+            selections=selections,
+            failure=failure,
+            actor="local_user",
+            reason="Ручное дополнение с документом",
+            deadline=None,
+        ).disposition
+        == "existing"
+    )
+    with pytest.raises(ProjectOperationError) as archived:
+        service.create_rpt_calculation(
+            analysis_input_snapshot_id=str(uuid4()),
+            calculation_snapshot_id=str(uuid4()),
+            execution_id=execution.execution_id,
+            selection="original",
+            selections=selections,
+            failure=failure,
+            actor="local_user",
+            reason="Новая запись по архивному документу",
+            deadline=None,
+        )
+    assert archived.value.code in {"entity_archived", "validation_error"}
+    service.close()
+    service.open(path=str(project_path), application_instance_id="rpt-document-reopen")
+    assert service.get_rpt_calculation_detail(calculation_id, None) == saved.detail
+    service.close()
+
+
+def test_rpt_calculation_rollback_conflicting_retry_and_method_scoped_detail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    selections = tuple(
+        RptFieldSelection(field=field, origin="source")
+        for field in (
+            "nominal_rpm",
+            "design_cycles",
+            "reserve_factor",
+            "acceleration_duration_s",
+            "steady_duration_s",
+            "deceleration_duration_s",
+        )
+    )
+    input_id, calculation_id = str(uuid4()), str(uuid4())
+    with monkeypatch.context() as patch_context:
+
+        def fail_audit(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("injected rpt audit failure")
+
+        patch_context.setattr(rpt_calculations_module, "insert_audit", fail_audit)
+        with pytest.raises(RuntimeError, match="injected rpt audit failure"):
+            service.create_rpt_calculation(
+                analysis_input_snapshot_id=input_id,
+                calculation_snapshot_id=calculation_id,
+                execution_id=execution.execution_id,
+                selection="original",
+                selections=selections,
+                failure=None,
+                actor="local_user",
+                reason="Проверка атомарности",
+                deadline=None,
+            )
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        assert connection.execute("SELECT count(*) FROM rpt_analysis_input_snapshots").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM rpt_calculation_snapshots").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM project_audit_events WHERE event_type='rpt_calculation.created'").fetchone()[0] == 0
+    saved = service.create_rpt_calculation(
+        analysis_input_snapshot_id=input_id,
+        calculation_snapshot_id=calculation_id,
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=selections,
+        failure=None,
+        actor="local_user",
+        reason="Проверка атомарности",
+        deadline=None,
+    )
+    assert saved.disposition == "created"
+    for changed_input_id, changed_calculation_id, changed_reason in (
+        (input_id, calculation_id, "Иное основание"),
+        (input_id, str(uuid4()), "Проверка атомарности"),
+        (str(uuid4()), calculation_id, "Проверка атомарности"),
+    ):
+        with pytest.raises(ProjectOperationError) as conflicting:
+            service.create_rpt_calculation(
+                analysis_input_snapshot_id=changed_input_id,
+                calculation_snapshot_id=changed_calculation_id,
+                execution_id=execution.execution_id,
+                selection="original",
+                selections=selections,
+                failure=None,
+                actor="local_user",
+                reason=changed_reason,
+                deadline=None,
+            )
+        assert conflicting.value.code == "revision_conflict"
+    with pytest.raises(ProjectOperationError) as wrong_method:
+        service.get_rbd_calculation_detail(calculation_id, None)
+    assert wrong_method.value.code == "entity_not_found"
+    service.close()
+
+
+def test_rpt_calculation_four_typed_dispatch_operations_and_bounded_envelope(tmp_path: Path) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    service.close()
+    dispatcher = Dispatcher(tmp_path)
+
+    def request(operation: str, payload: dict[str, object], revision: int) -> object:
+        envelope = REQUEST_ENVELOPE_ADAPTER.validate_python(
+            {
+                "protocolVersion": 1,
+                "requestId": f"rpt-{revision}",
+                "kind": "request",
+                "operation": operation,
+                "revision": revision,
+                "deadlineMs": 30_000 if operation in {"rptCalculation.getSourceInputs", "rptCalculation.create"} else 5_000,
+                "payload": payload,
+            }
+        )
+        response = dispatcher.dispatch(envelope)
+        assert len(response.model_dump_json().encode("utf-8")) < 1_048_576
+        return response.result
+
+    request("project.open", {"path": str(project_path), "applicationInstanceId": str(uuid4())}, 1)
+    source = request(
+        "rptCalculation.getSourceInputs",
+        {"executionId": execution.execution_id, "planSelection": "effective"},
+        2,
+    )
+    assert isinstance(source, RptPlanSourceResult)
+    assert source.sourceValues.lowerPointPolicy == "one_percent"
+    input_id, calculation_id = str(uuid4()), str(uuid4())
+    written = request(
+        "rptCalculation.create",
+        {
+            "analysisInputSnapshotId": input_id,
+            "calculationSnapshotId": calculation_id,
+            "executionId": execution.execution_id,
+            "planSelection": "effective",
+            "selections": [
+                {"field": field, "origin": "source"}
+                for field in (
+                    "nominal_rpm",
+                    "design_cycles",
+                    "reserve_factor",
+                    "acceleration_duration_s",
+                    "steady_duration_s",
+                    "deceleration_duration_s",
+                )
+            ],
+            "failureEvidence": None,
+            "actor": "local_user",
+            "reason": "Проверка production dispatcher",
+        },
+        3,
+    )
+    assert isinstance(written, RptCalculationWriteResultModel)
+    assert written.detail.calculationSnapshot.resultSnapshot.minimum_rpm.decimal == "15"
+    page = request("rptCalculation.listPage", {"wheelModelId": execution.wheel_model_id}, 4)
+    assert isinstance(page, RptCalculationPageResult)
+    assert [item.calculationSnapshotId for item in page.items] == [calculation_id]
+    detail = request("rptCalculation.getDetail", {"calculationSnapshotId": calculation_id}, 5)
+    assert isinstance(detail, RptCalculationDetailResult)
+    assert detail == written.detail
+    dispatcher.close()
+
+
+def test_reopen_rejects_resealed_rpt_result_with_invalid_nested_profile(tmp_path: Path) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    input_id, calculation_id = str(uuid4()), str(uuid4())
+    saved = service.create_rpt_calculation(
+        analysis_input_snapshot_id=input_id,
+        calculation_snapshot_id=calculation_id,
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=tuple(
+            RptFieldSelection(field=field, origin="source")
+            for field in (
+                "nominal_rpm",
+                "design_cycles",
+                "reserve_factor",
+                "acceleration_duration_s",
+                "steady_duration_s",
+                "deceleration_duration_s",
+            )
+        ),
+        failure=None,
+        actor="local_user",
+        reason="Проверка строгого результата РПТ",
+        deadline=None,
+    )
+    service.close()
+    result = dict(saved.detail.calculation_snapshot.result_snapshot)
+    phases = TypeAdapter(list[object]).validate_python(result["phases"])
+    phases[1] = None
+    result["phases"] = phases
+
+    def canonical_json(value: object) -> str:
+        return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+
+    calculation_content = {
+        "calculationSnapshotId": calculation_id,
+        "analysisInputSnapshotId": input_id,
+        "inputContentSha256": saved.detail.input_snapshot.content_sha256,
+        "result": result,
+        "createdAtUtc": saved.detail.calculation_snapshot.created_at_utc,
+    }
+    content_sha256 = hashlib.sha256(canonical_json(calculation_content).encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        for trigger_name in ("rpt_calculation_snapshots_no_update", "project_audit_events_no_update"):
+            trigger_row = connection.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (trigger_name,)).fetchone()
+            assert trigger_row is not None
+            connection.execute(f"DROP TRIGGER {trigger_name}")
+            if trigger_name == "rpt_calculation_snapshots_no_update":
+                connection.execute(
+                    "UPDATE rpt_calculation_snapshots SET result_snapshot_json=?, content_sha256=? WHERE calculation_snapshot_id=?",
+                    (canonical_json(result), content_sha256, calculation_id),
+                )
+            else:
+                audit_row = connection.execute(
+                    "SELECT payload_json FROM project_audit_events WHERE event_type='rpt_calculation.created' AND json_extract(payload_json, '$.calculationSnapshotId')=?",
+                    (calculation_id,),
+                ).fetchone()
+                assert audit_row is not None
+                audit_payload = OBJECT_ADAPTER.validate_json(str(audit_row[0]))
+                audit_payload["calculationContentSha256"] = content_sha256
+                connection.execute(
+                    "UPDATE project_audit_events SET payload_json=? WHERE event_type='rpt_calculation.created' AND json_extract(payload_json, '$.calculationSnapshotId')=?",
+                    (canonical_json(audit_payload), calculation_id),
+                )
+            connection.execute(str(trigger_row[0]))
+        connection.commit()
+    with pytest.raises(ProjectOperationError) as corrupted:
+        service.open(path=str(project_path), application_instance_id="rpt-resealed-result")
+    assert corrupted.value.code == "corrupt_project"
 
 
 @pytest.mark.parametrize("selection", ["original", "effective"])

@@ -38,6 +38,10 @@ import {
   rbdCalculationCreateCommandSchema,
   rbdCalculationIdPayloadSchema,
   rbdSourceInputsPayloadSchema,
+  rptCalculationCreateCommandSchema,
+  rptCalculationIdPayloadSchema,
+  rptCalculationListPagePayloadSchema,
+  rptSourceInputsPayloadSchema,
   runPackageImportJobPayloadSchema,
   runPackageImportStartCommandSchema,
   runPackageValidationJobPayloadSchema,
@@ -721,6 +725,34 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       client.request('rbdCalculation.getDetail', parsed.data),
     );
   });
+  ipcMain.handle(IPC_CHANNELS.rptCalculationGetSourceInputs, (_event, raw: unknown) => {
+    const parsed = rptSourceInputsPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('rptCalculation.getSourceInputs', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.rptCalculationCreate, (_event, raw: unknown) => {
+    const parsed = rptCalculationCreateCommandSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('rptCalculation.create', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.rptCalculationListPage, (_event, raw: unknown) => {
+    const parsed = rptCalculationListPagePayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('rptCalculation.listPage', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.rptCalculationGetDetail, (_event, raw: unknown) => {
+    const parsed = rptCalculationIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('rptCalculation.getDetail', parsed.data),
+    );
+  });
 }
 
 function selectRunPackageSourceFromDialog(): Promise<DesktopResult<string>> {
@@ -1058,6 +1090,7 @@ async function runSmokeIfRequested(): Promise<void> {
   let runPackageValidationPassed = false;
   let runPackageImportPassed = false;
   let rbdCalculationPassed = false;
+  let rptCalculationPassed = false;
   if (automatedProjectPath !== null && workerClient !== null) {
     const created = await workerClient.request('project.create', {
       path: automatedProjectPath,
@@ -1342,6 +1375,94 @@ async function runSmokeIfRequested(): Promise<void> {
                     reason: 'Проверка точного требования отдельно от округлённой уставки',
                   })
                 : null;
+            const rptRunPath = process.env['IMPELLER_AUTOMATED_RPT_RUN_PATH'];
+            const rptImportJobId = randomUUID();
+            let rptImported =
+              rptRunPath !== undefined
+                ? await workerClient.request('runPackageImport.start', {
+                    jobId: rptImportJobId,
+                    sourcePath: resolve(rptRunPath),
+                    allowDiagnosticPartial: false,
+                  })
+                : null;
+            const rptImportDeadline = performance.now() + 180_000;
+            while (
+              rptImported?.ok === true &&
+              !['completed', 'failed', 'cancelled'].includes(rptImported.result.state) &&
+              performance.now() < rptImportDeadline
+            ) {
+              await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 25));
+              rptImported = await workerClient.request('runPackageImport.get', {
+                jobId: rptImportJobId,
+              });
+            }
+            const rptRun =
+              rptImported?.ok === true &&
+              rptImported.result.state === 'completed' &&
+              rptImported.result.result !== null
+                ? rptImported.result.result.importedRun
+                : null;
+            const rptDiscarded =
+              rptRun !== null
+                ? await workerClient.request('runPackageImport.discard', { jobId: rptImportJobId })
+                : null;
+            const rptVerified =
+              rptRun !== null
+                ? await workerClient.request('importedRun.verifySource', {
+                    localImportId: rptRun.localImportId,
+                  })
+                : null;
+            const rptMaterialized =
+              rptRun !== null
+                ? await workerClient.request('reliabilityExecution.materialize', {
+                    localImportId: rptRun.localImportId,
+                  })
+                : null;
+            const rptSource =
+              rptMaterialized?.ok === true
+                ? await workerClient.request('rptCalculation.getSourceInputs', {
+                    executionId: rptMaterialized.result.executionId,
+                    planSelection: 'original',
+                  })
+                : null;
+            const rptCalculationInputId = randomUUID();
+            const rptCalculationResultId = randomUUID();
+            const rptCalculation =
+              rptSource?.ok === true
+                ? await workerClient.request('rptCalculation.create', {
+                    analysisInputSnapshotId: rptCalculationInputId,
+                    calculationSnapshotId: rptCalculationResultId,
+                    executionId: rptSource.result.executionId,
+                    planSelection: 'original',
+                    selections: (
+                      [
+                        'nominal_rpm',
+                        'design_cycles',
+                        'reserve_factor',
+                        'acceleration_duration_s',
+                        'steady_duration_s',
+                        'deceleration_duration_s',
+                      ] as const
+                    ).map((field) => ({
+                      field,
+                      origin: 'source' as const,
+                      manualValue: null,
+                      basis: '',
+                      evidence: null,
+                    })),
+                    failureEvidence: null,
+                    actor: 'local_user',
+                    reason: 'Проверка РПТ в поставке',
+                  })
+                : null;
+            const rptHistory =
+              rptCalculation?.ok === true
+                ? await workerClient.request('rptCalculation.listPage', {
+                    wheelModelId: smokeWheelId,
+                    cursor: null,
+                    limit: 25,
+                  })
+                : null;
             const importClosed = await workerClient.request('project.close', {});
             const importReopened = await workerClient.request('project.open', {
               path: automatedProjectPath,
@@ -1354,6 +1475,45 @@ async function runSmokeIfRequested(): Promise<void> {
                     calculationSnapshotId: calculationResultId,
                   })
                 : null;
+            const rptAfterReopen =
+              rptCalculation?.ok === true && importReopened.ok
+                ? await workerClient.request('rptCalculation.getDetail', {
+                    calculationSnapshotId: rptCalculationResultId,
+                  })
+                : null;
+            rptCalculationPassed =
+              rptRun !== null &&
+              rptRun.mode === 'rpt' &&
+              rptDiscarded?.ok === true &&
+              rptVerified?.ok === true &&
+              rptVerified.result.sourceIntegrity === 'verified' &&
+              rptMaterialized?.ok === true &&
+              rptMaterialized.result.method === 'rpt' &&
+              rptSource?.ok === true &&
+              rptSource.result.sourceValues.steadyDurationS === '0' &&
+              rptSource.result.executionTargets.lowerPointPolicy === 'full_stop' &&
+              rptCalculation?.ok === true &&
+              rptCalculation.result.detail.inputSnapshot.analysisInputSnapshotId ===
+                rptCalculationInputId &&
+              rptCalculation.result.detail.calculationSnapshot.resultSnapshot.required_cycles_exact
+                .decimal === '2' &&
+              rptCalculation.result.detail.calculationSnapshot.resultSnapshot.cycle_duration_s_exact
+                .decimal === '4' &&
+              rptCalculation.result.detail.calculationSnapshot.resultSnapshot.total_duration_s_exact
+                .decimal === '8' &&
+              rptCalculation.result.detail.calculationSnapshot.resultSnapshot.minimum_rpm
+                .decimal === '15' &&
+              rptCalculation.result.detail.calculationSnapshot.resultSnapshot.lower_point_comparison
+                .status === 'differs_from_typical_formula' &&
+              rptHistory?.ok === true &&
+              rptHistory.result.items.some(
+                (item) => item.calculationSnapshotId === rptCalculationResultId,
+              ) &&
+              rptAfterReopen?.ok === true &&
+              rptAfterReopen.result.inputSnapshot.contentSha256 ===
+                rptCalculation.result.detail.inputSnapshot.contentSha256 &&
+              rptAfterReopen.result.calculationSnapshot.contentSha256 ===
+                rptCalculation.result.detail.calculationSnapshot.contentSha256;
             rbdCalculationPassed =
               binding.ok &&
               materialized?.ok === true &&
@@ -1407,7 +1567,11 @@ async function runSmokeIfRequested(): Promise<void> {
               importClosed.ok &&
               importReopened.ok &&
               listedAfterReopen.ok &&
-              listedAfterReopen.result.items[0]?.localImportId === localImportId;
+              listedAfterReopen.result.items.length === 2 &&
+              listedAfterReopen.result.items.some((item) => item.localImportId === localImportId) &&
+              listedAfterReopen.result.items.some(
+                (item) => item.localImportId === rptRun?.localImportId,
+              );
           }
         }
         await workerClient.request('project.close', {});
@@ -1427,13 +1591,15 @@ async function runSmokeIfRequested(): Promise<void> {
           projectScenarioPassed &&
           runPackageValidationPassed &&
           runPackageImportPassed &&
-          rbdCalculationPassed,
+          rbdCalculationPassed &&
+          rptCalculationPassed,
         runtime,
         pingOk: ping?.ok === true,
         projectScenarioPassed,
         runPackageValidationPassed,
         runPackageImportPassed,
         rbdCalculationPassed,
+        rptCalculationPassed,
         elapsedMs: Math.round(performance.now() - startedAt),
         pid: process.pid,
         workerPid: workerClient?.processId ?? null,

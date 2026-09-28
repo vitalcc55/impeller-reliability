@@ -24,6 +24,7 @@ from impeller_reliability.persistence.project_schema import (
 from impeller_reliability.persistence.r130sh_sources import validate_r130sh_source_evidence
 from impeller_reliability.persistence.rbd_calculations import validate_rbd_calculation_evidence
 from impeller_reliability.persistence.reliability_domain import validate_reliability_evidence
+from impeller_reliability.persistence.rpt_calculations import validate_rpt_calculation_evidence
 from impeller_reliability.persistence.sqlite_deadline import sqlite_deadline_guard
 from impeller_reliability.persistence.timestamps import utc_now
 from impeller_reliability.worker.deadline import RequestDeadline
@@ -86,6 +87,7 @@ def probe_project_database_identity(
         validate_r130sh_source_evidence(connection, deadline)
         validate_reliability_evidence(connection, deadline)
         validate_rbd_calculation_evidence(connection, deadline)
+        validate_rpt_calculation_evidence(connection, deadline)
         with sqlite_deadline_guard(connection, deadline, "project_read_only_integrity"):
             quick_check = str(connection.execute("PRAGMA quick_check").fetchone()[0])
             has_foreign_key_error = connection.execute("PRAGMA foreign_key_check").fetchone() is not None
@@ -390,6 +392,7 @@ def _validate_open_connection_identity(
     validate_r130sh_source_evidence(connection, deadline)
     validate_reliability_evidence(connection, deadline)
     validate_rbd_calculation_evidence(connection, deadline)
+    validate_rpt_calculation_evidence(connection, deadline)
 
 
 def validate_project_database(
@@ -422,6 +425,7 @@ def validate_project_database(
     validate_r130sh_source_evidence(connection, deadline)
     validate_reliability_evidence(connection, deadline)
     validate_rbd_calculation_evidence(connection, deadline)
+    validate_rpt_calculation_evidence(connection, deadline)
 
 
 def quick_check_with_deadline(

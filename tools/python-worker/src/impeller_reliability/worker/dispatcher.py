@@ -14,13 +14,20 @@ from impeller_reliability.integration.r130run.import_models import (
 from impeller_reliability.integration.r130run.jobs import RunPackageValidationJobManager
 from impeller_reliability.integration.r130run.m9a import M9aPackageFacts
 from impeller_reliability.integration.r130run.models import RunPackageValidationReport
-from impeller_reliability.persistence.r130sh_sources import ImportedRunSummary, RbdPlanSourceSnapshot
+from impeller_reliability.persistence.r130sh_sources import ImportedRunSummary, RbdPlanSourceSnapshot, RptPlanSourceSnapshot
 from impeller_reliability.persistence.rbd_calculations import (
     RbdCalculationDetail,
     RbdCalculationSummary,
     RbdEvidenceReference,
     RbdFailureEvidence,
     RbdFieldSelection,
+)
+from impeller_reliability.persistence.rpt_calculations import (
+    RptCalculationDetail,
+    RptCalculationSummary,
+    RptEvidenceReference,
+    RptFailureEvidence,
+    RptFieldSelection,
 )
 from impeller_reliability.persistence.sqlite_health import SCHEMA_VERSION, check_storage
 from impeller_reliability.protocol.envelopes import (
@@ -100,6 +107,19 @@ from impeller_reliability.protocol.envelopes import (
     ReliabilityObservationVersionResult,
     ReliabilityObservationWriteResultModel,
     RequestEnvelope,
+    RptCalculationCreateRequest,
+    RptCalculationDetailResult,
+    RptCalculationGetDetailRequest,
+    RptCalculationGetSourceInputsRequest,
+    RptCalculationListPageRequest,
+    RptCalculationPageResult,
+    RptCalculationSummaryResult,
+    RptCalculationWriteResultModel,
+    RptEvidenceReferencePayload,
+    RptExecutionTargetsResult,
+    RptMethodicalRequirementsResult,
+    RptPlanSourceResult,
+    RptPlanSourceValuesResult,
     RunPackageImportCancelRequest,
     RunPackageImportDiscardRequest,
     RunPackageImportGetRequest,
@@ -197,6 +217,10 @@ CAPABILITIES: list[Operation] = [
     "rbdCalculation.create",
     "rbdCalculation.listPage",
     "rbdCalculation.getDetail",
+    "rptCalculation.getSourceInputs",
+    "rptCalculation.create",
+    "rptCalculation.listPage",
+    "rptCalculation.getDetail",
 ]
 
 
@@ -227,7 +251,7 @@ class Dispatcher:
                     numpyVersion=version("numpy"),
                     scipyVersion=version("scipy"),
                     databaseSchemaVersions=[SCHEMA_VERSION],
-                    algorithmVersions={"rbd_reference": "1.0.0"},
+                    algorithmVersions={"rbd_reference": "1.0.0", "rpt_reference": "1.0.0"},
                     supportedRunPackageSchemas=["r130sh.run-package.v1"],
                     supportedPlanSchemas=[],
                     capabilities=CAPABILITIES,
@@ -307,6 +331,9 @@ class Dispatcher:
             "rbdCalculation.getSourceInputs",
             "rbdCalculation.listPage",
             "rbdCalculation.getDetail",
+            "rptCalculation.getSourceInputs",
+            "rptCalculation.listPage",
+            "rptCalculation.getDetail",
         }:
             from impeller_reliability.persistence.project_errors import ProjectOperationError
 
@@ -801,6 +828,83 @@ class Dispatcher:
                     revision=request.revision,
                     result=self._rbd_calculation_detail_result(detail),
                 )
+            case RptCalculationGetSourceInputsRequest():
+                rpt_source = self._projects.get_rpt_source_inputs(
+                    request.payload.executionId,
+                    request.payload.planSelection,
+                    active_deadline,
+                )
+                return SuccessResponse[RptPlanSourceResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._rpt_plan_source_result(rpt_source),
+                )
+            case RptCalculationCreateRequest():
+                rpt_selections = tuple(
+                    RptFieldSelection(
+                        field=item.field,
+                        origin=item.origin,
+                        manual_value=item.manualValue,
+                        basis=item.basis,
+                        evidence=self._rpt_evidence_reference(item.evidence),
+                    )
+                    for item in request.payload.selections
+                )
+                rpt_failure_payload = request.payload.failureEvidence
+                rpt_failure = (
+                    None
+                    if rpt_failure_payload is None
+                    else RptFailureEvidence(
+                        applicability=rpt_failure_payload.applicability,
+                        duration_to_failure_s=rpt_failure_payload.durationToFailureS,
+                        basis=rpt_failure_payload.basis,
+                        evidence=self._rpt_evidence_reference(rpt_failure_payload.evidence),
+                    )
+                )
+                rpt_written = self._projects.create_rpt_calculation(
+                    analysis_input_snapshot_id=request.payload.analysisInputSnapshotId,
+                    calculation_snapshot_id=request.payload.calculationSnapshotId,
+                    execution_id=request.payload.executionId,
+                    selection=request.payload.planSelection,
+                    selections=rpt_selections,
+                    failure=rpt_failure,
+                    actor=request.payload.actor,
+                    reason=request.payload.reason,
+                    deadline=active_deadline,
+                )
+                return SuccessResponse[RptCalculationWriteResultModel](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=RptCalculationWriteResultModel(
+                        disposition=rpt_written.disposition,
+                        detail=self._rpt_calculation_detail_result(rpt_written.detail),
+                    ),
+                )
+            case RptCalculationListPageRequest():
+                rpt_page = self._projects.list_rpt_calculation_page(
+                    request.payload.wheelModelId,
+                    request.payload.cursor,
+                    request.payload.limit,
+                    active_deadline,
+                )
+                return SuccessResponse[RptCalculationPageResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=RptCalculationPageResult(
+                        items=[self._rpt_calculation_summary_result(item) for item in rpt_page.items],
+                        nextCursor=rpt_page.next_cursor,
+                    ),
+                )
+            case RptCalculationGetDetailRequest():
+                rpt_detail = self._projects.get_rpt_calculation_detail(
+                    request.payload.calculationSnapshotId,
+                    active_deadline,
+                )
+                return SuccessResponse[RptCalculationDetailResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._rpt_calculation_detail_result(rpt_detail),
+                )
 
     def close(self) -> None:
         if not self._run_package_jobs_shutdown:
@@ -1192,6 +1296,106 @@ class Dispatcher:
             wheelModelId=item.wheel_model_id,
             planSelection=item.plan_selection,
             requiredCycles=item.required_cycles,
+            failureStatus=item.failure_status,
+            createdAtUtc=item.created_at_utc,
+        )
+
+    @staticmethod
+    def _rpt_plan_source_result(source: RptPlanSourceSnapshot) -> RptPlanSourceResult:
+        return RptPlanSourceResult(
+            executionId=source.execution_id,
+            localImportId=source.local_import_id,
+            packageId=source.package_id,
+            runId=source.run_id,
+            exportRevision=source.export_revision,
+            outerPackageSha256=source.outer_package_sha256,
+            sourceSnapshotSha256=source.source_snapshot_sha256,
+            producerName=source.producer_name,
+            producerVersion=source.producer_version,
+            producerBuildId=source.producer_build_id,
+            producerGitCommit=source.producer_git_commit,
+            planSelection=source.selection,
+            payloadPath=source.payload_path,
+            payloadSha256=source.payload_sha256,
+            planId=source.plan_id,
+            planRevision=source.plan_revision,
+            sourceValues=RptPlanSourceValuesResult(
+                nominalRpm=source.source_values.nominal_rpm,
+                designCycles=source.source_values.design_cycles,
+                reserveFactor=source.source_values.reserve_factor,
+                accelerationDurationS=source.source_values.acceleration_duration_s,
+                steadyDurationS=source.source_values.steady_duration_s,
+                decelerationDurationS=source.source_values.deceleration_duration_s,
+                lowerPointPolicy=source.source_values.lower_point_policy,
+                explicitLowerRpm=source.source_values.explicit_lower_rpm,
+            ),
+            methodicalRequirements=RptMethodicalRequirementsResult(
+                requiredCyclesExact=source.methodical_requirements.required_cycles_exact,
+                cycleDurationSExact=source.methodical_requirements.cycle_duration_s_exact,
+                requiredTotalDurationSExact=source.methodical_requirements.required_total_duration_s_exact,
+            ),
+            executionTargets=RptExecutionTargetsResult(
+                targetCycles=source.execution_targets.target_cycles,
+                upperRpm=source.execution_targets.upper_rpm,
+                lowerRpm=source.execution_targets.lower_rpm,
+                cycleDurationS=source.execution_targets.cycle_duration_s,
+                totalDurationS=source.execution_targets.total_duration_s,
+                lowerPointPolicy=source.execution_targets.lower_point_policy,
+                roundingPolicy=source.execution_targets.rounding_policy,
+            ),
+        )
+
+    @staticmethod
+    def _rpt_evidence_reference(payload: RptEvidenceReferencePayload | None) -> RptEvidenceReference | None:
+        if payload is None:
+            return None
+        return RptEvidenceReference(
+            document_id=payload.documentId,
+            document_record_revision=payload.documentRecordRevision,
+            document_locator=payload.documentLocator,
+        )
+
+    @staticmethod
+    def _rpt_calculation_detail_result(detail: RptCalculationDetail) -> RptCalculationDetailResult:
+        input_snapshot = detail.input_snapshot
+        calculation = detail.calculation_snapshot
+        return RptCalculationDetailResult.model_validate(
+            {
+                "inputSnapshot": {
+                    "analysisInputSnapshotId": input_snapshot.analysis_input_snapshot_id,
+                    "executionId": input_snapshot.execution_id,
+                    "inputSnapshot": input_snapshot.input_snapshot,
+                    "contentSha256": input_snapshot.content_sha256,
+                    "operationSha256": input_snapshot.operation_sha256,
+                    "actor": input_snapshot.actor,
+                    "decisionReason": input_snapshot.decision_reason,
+                    "createdAtUtc": input_snapshot.created_at_utc,
+                },
+                "calculationSnapshot": {
+                    "calculationSnapshotId": calculation.calculation_snapshot_id,
+                    "analysisInputSnapshotId": calculation.analysis_input_snapshot_id,
+                    "executionId": calculation.execution_id,
+                    "algorithmId": calculation.algorithm_id,
+                    "algorithmVersion": calculation.algorithm_version,
+                    "numericPolicy": calculation.numeric_policy,
+                    "resultSnapshot": calculation.result_snapshot,
+                    "inputContentSha256": calculation.input_content_sha256,
+                    "operationSha256": calculation.operation_sha256,
+                    "contentSha256": calculation.content_sha256,
+                    "createdAtUtc": calculation.created_at_utc,
+                },
+            },
+            strict=True,
+        )
+
+    @staticmethod
+    def _rpt_calculation_summary_result(item: RptCalculationSummary) -> RptCalculationSummaryResult:
+        return RptCalculationSummaryResult(
+            calculationSnapshotId=item.calculation_snapshot_id,
+            analysisInputSnapshotId=item.analysis_input_snapshot_id,
+            executionId=item.execution_id,
+            wheelModelId=item.wheel_model_id,
+            requiredCycles=item.required_cycles_exact,
             failureStatus=item.failure_status,
             createdAtUtc=item.created_at_utc,
         )

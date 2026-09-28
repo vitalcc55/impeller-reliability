@@ -4,22 +4,16 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
-class RbdExactRationalResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    numerator: str = Field(pattern=r"^-?(?:0|[1-9][0-9]{0,63})$")
-    denominator: str = Field(pattern=r"^[1-9][0-9]{0,63}$")
-    decimal: str | None = Field(max_length=128)
-    decimal_preview: str = Field(min_length=1, max_length=128)
+from impeller_reliability.calculations.exact_result_snapshot import ExactRationalResultModel
 
 
 class RbdPhaseResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     phase: Literal["acceleration", "steady_rotation", "deceleration"]
-    start_s: RbdExactRationalResult
-    end_s: RbdExactRationalResult
-    start_rpm: RbdExactRationalResult
-    end_rpm: RbdExactRationalResult
+    start_s: ExactRationalResultModel
+    end_s: ExactRationalResultModel
+    start_rpm: ExactRationalResultModel
+    end_rpm: ExactRationalResultModel
 
 
 class RbdDiagramPointResult(BaseModel):
@@ -41,11 +35,11 @@ class RbdReferenceResultModel(BaseModel):
     algorithm_id: Literal["rbd_reference"]
     algorithm_version: Literal["1.0.0"]
     numeric_policy: Literal["exact_fraction_v1"]
-    maximum_rpm: RbdExactRationalResult
-    required_cycles_exact: RbdExactRationalResult
-    steady_duration_s_exact: RbdExactRationalResult
-    cycle_duration_s_exact: RbdExactRationalResult
-    total_duration_s_exact: RbdExactRationalResult
+    maximum_rpm: ExactRationalResultModel
+    required_cycles_exact: ExactRationalResultModel
+    steady_duration_s_exact: ExactRationalResultModel
+    cycle_duration_s_exact: ExactRationalResultModel
+    total_duration_s_exact: ExactRationalResultModel
     failure_result: RbdFailureResultModel
     phases: list[RbdPhaseResult] = Field(min_length=3, max_length=3)
     diagram_points: list[RbdDiagramPointResult] = Field(min_length=4, max_length=4)

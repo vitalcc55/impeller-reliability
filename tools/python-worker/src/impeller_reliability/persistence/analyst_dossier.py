@@ -606,6 +606,7 @@ def validate_dossier_evidence(
               AND event_type NOT GLOB 'r130sh_*'
               AND event_type NOT GLOB 'reliability_*'
               AND event_type NOT GLOB 'rbd_*'
+                  AND event_type NOT GLOB 'rpt_*'
         ORDER BY sequence
         """,
         (MAX_DOSSIER_AUDIT_PAYLOAD_BYTES,),

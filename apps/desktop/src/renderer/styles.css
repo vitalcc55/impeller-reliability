@@ -1548,6 +1548,22 @@ h3 {
   border-right: 0;
 }
 
+.rpt-profile-labels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.rpt-profile-labels span {
+  padding: 9px 8px;
+  border-top: 1px solid var(--ir-color-border);
+  text-align: center;
+  font-size: 0.82rem;
+}
+
+.rpt-profile-labels span:first-child {
+  border-right: 1px solid var(--ir-color-border);
+}
+
 .rbd-phase-table-wrap {
   overflow-x: auto;
 }

@@ -68,4 +68,8 @@ export const IPC_CHANNELS = {
   rbdCalculationCreate: 'impeller:rbd-calculation:create',
   rbdCalculationListPage: 'impeller:rbd-calculation:list-page',
   rbdCalculationGetDetail: 'impeller:rbd-calculation:get-detail',
+  rptCalculationGetSourceInputs: 'impeller:rpt-calculation:get-source-inputs',
+  rptCalculationCreate: 'impeller:rpt-calculation:create',
+  rptCalculationListPage: 'impeller:rpt-calculation:list-page',
+  rptCalculationGetDetail: 'impeller:rpt-calculation:get-detail',
 } as const;

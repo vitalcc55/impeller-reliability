@@ -6,6 +6,8 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, 
 
 from impeller_reliability.calculations.rbd_input_snapshot import RbdInputSnapshotModel
 from impeller_reliability.calculations.rbd_result_snapshot import RbdReferenceResultModel as RbdReferenceResultModel
+from impeller_reliability.calculations.rpt_input_snapshot import RptFailureApplicability, RptInputField, RptInputSnapshotModel
+from impeller_reliability.calculations.rpt_result_snapshot import RptReferenceResultModel
 from impeller_reliability.integration.r130run.import_models import (
     ImportedRunDetailModel,
     ImportedRunSummaryModel,
@@ -87,6 +89,10 @@ Operation = Literal[
     "rbdCalculation.create",
     "rbdCalculation.listPage",
     "rbdCalculation.getDetail",
+    "rptCalculation.getSourceInputs",
+    "rptCalculation.create",
+    "rptCalculation.listPage",
+    "rptCalculation.getDetail",
 ]
 
 ProjectStatus = Literal["draft", "active", "completed", "archived"]
@@ -664,6 +670,78 @@ class RbdCalculationListPagePayload(BaseModel):
     limit: int = Field(default=25, ge=1, le=50)
 
 
+class RptEvidenceReferencePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    documentId: EntityId
+    documentRecordRevision: int = Field(ge=1, le=9_007_199_254_740_991)
+    documentLocator: str = Field(min_length=1, max_length=1_000)
+
+
+class RptFieldSelectionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    field: RptInputField
+    origin: Literal["source", "manual"]
+    manualValue: str | None = Field(default=None, max_length=64)
+    basis: str = Field(default="", max_length=2_000)
+    evidence: RptEvidenceReferencePayload | None = None
+
+
+class RptFailureEvidencePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    applicability: RptFailureApplicability
+    durationToFailureS: str | None = Field(default=None, max_length=64)
+    basis: str = Field(min_length=1, max_length=2_000)
+    evidence: RptEvidenceReferencePayload | None = None
+
+
+class RptSourceInputsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    executionId: EntityId
+    planSelection: Literal["original", "effective"]
+
+
+class RptCalculationCreatePayload(RptSourceInputsPayload):
+    analysisInputSnapshotId: EntityId
+    calculationSnapshotId: EntityId
+    selections: list[RptFieldSelectionPayload] = Field(min_length=6, max_length=6)
+    failureEvidence: RptFailureEvidencePayload | None
+    actor: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_fixed_selections(self) -> RptCalculationCreatePayload:
+        if {item.field for item in self.selections} != {"nominal_rpm", "design_cycles", "reserve_factor", "acceleration_duration_s", "steady_duration_s", "deceleration_duration_s"}:
+            raise ValueError("rpt_field_selections_invalid")
+        _require_utf8_tree(self.model_dump(mode="python"))
+        _require_utf8_bytes(self.actor, 200)
+        _require_utf8_bytes(self.reason, 2_000)
+        for selection in self.selections:
+            _require_utf8_bytes(selection.basis, 2_000)
+            if selection.manualValue is not None:
+                _require_utf8_bytes(selection.manualValue, 64)
+            if selection.evidence is not None:
+                _require_utf8_bytes(selection.evidence.documentLocator, 1_000)
+        if self.failureEvidence is not None:
+            _require_utf8_bytes(self.failureEvidence.basis, 2_000)
+            if self.failureEvidence.durationToFailureS is not None:
+                _require_utf8_bytes(self.failureEvidence.durationToFailureS, 64)
+            if self.failureEvidence.evidence is not None:
+                _require_utf8_bytes(self.failureEvidence.evidence.documentLocator, 1_000)
+        return self
+
+
+class RptCalculationIdPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    calculationSnapshotId: EntityId
+
+
+class RptCalculationListPagePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    wheelModelId: EntityId
+    cursor: str | None = Field(default=None, min_length=1, max_length=512)
+    limit: int = Field(default=25, ge=1, le=50)
+
+
 class CustomerGetRequest(RequestBase):
     operation: Literal["caseCustomer.get"]
     payload: EmptyPayload
@@ -919,6 +997,26 @@ class RbdCalculationGetDetailRequest(RequestBase):
     payload: RbdCalculationIdPayload
 
 
+class RptCalculationGetSourceInputsRequest(RequestBase):
+    operation: Literal["rptCalculation.getSourceInputs"]
+    payload: RptSourceInputsPayload
+
+
+class RptCalculationCreateRequest(RequestBase):
+    operation: Literal["rptCalculation.create"]
+    payload: RptCalculationCreatePayload
+
+
+class RptCalculationListPageRequest(RequestBase):
+    operation: Literal["rptCalculation.listPage"]
+    payload: RptCalculationListPagePayload
+
+
+class RptCalculationGetDetailRequest(RequestBase):
+    operation: Literal["rptCalculation.getDetail"]
+    payload: RptCalculationIdPayload
+
+
 type RequestEnvelope = Annotated[
     HandshakeRequest
     | PingRequest
@@ -980,7 +1078,11 @@ type RequestEnvelope = Annotated[
     | RbdCalculationGetSourceInputsRequest
     | RbdCalculationCreateRequest
     | RbdCalculationListPageRequest
-    | RbdCalculationGetDetailRequest,
+    | RbdCalculationGetDetailRequest
+    | RptCalculationGetSourceInputsRequest
+    | RptCalculationCreateRequest
+    | RptCalculationListPageRequest
+    | RptCalculationGetDetailRequest,
     Field(discriminator="operation"),
 ]
 REQUEST_ENVELOPE_ADAPTER: TypeAdapter[RequestEnvelope] = TypeAdapter(RequestEnvelope)
@@ -1513,6 +1615,120 @@ class RbdCalculationPageResult(BaseModel):
     nextCursor: str | None = Field(default=None, max_length=512)
 
 
+class RptPlanSourceValuesResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    nominalRpm: str | None = Field(default=None, max_length=512)
+    designCycles: str | None = Field(default=None, max_length=512)
+    reserveFactor: str | None = Field(default=None, max_length=512)
+    accelerationDurationS: str | None = Field(default=None, max_length=512)
+    steadyDurationS: str | None = Field(default=None, max_length=512)
+    decelerationDurationS: str | None = Field(default=None, max_length=512)
+    lowerPointPolicy: Literal["one_percent", "full_stop", "explicit_rpm"]
+    explicitLowerRpm: str | None = Field(default=None, max_length=512)
+
+
+class RptMethodicalRequirementsResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    requiredCyclesExact: str = Field(max_length=512)
+    cycleDurationSExact: str = Field(max_length=512)
+    requiredTotalDurationSExact: str = Field(max_length=512)
+
+
+class RptExecutionTargetsResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    targetCycles: str = Field(pattern=r"^(?:0|[1-9][0-9]{0,63})$")
+    upperRpm: str = Field(max_length=512)
+    lowerRpm: str = Field(max_length=512)
+    cycleDurationS: str = Field(max_length=512)
+    totalDurationS: str = Field(max_length=512)
+    lowerPointPolicy: Literal["one_percent", "full_stop", "explicit_rpm"]
+    roundingPolicy: str = Field(min_length=1, max_length=512)
+
+
+class RptPlanSourceResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    executionId: EntityId
+    localImportId: EntityId
+    packageId: str = Field(min_length=1, max_length=200)
+    runId: str = Field(min_length=1, max_length=200)
+    exportRevision: int = Field(ge=1, le=9_007_199_254_740_991)
+    outerPackageSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sourceSnapshotSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    producerName: str = Field(min_length=1, max_length=200)
+    producerVersion: str = Field(min_length=1, max_length=200)
+    producerBuildId: str = Field(min_length=1, max_length=200)
+    producerGitCommit: str = Field(min_length=1, max_length=200)
+    planSelection: Literal["original", "effective"]
+    payloadPath: Literal["plan/original.json", "plan/effective.json"]
+    payloadSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    planId: str = Field(min_length=1, max_length=200)
+    planRevision: int = Field(ge=1, le=9_007_199_254_740_991)
+    sourceValues: RptPlanSourceValuesResult
+    methodicalRequirements: RptMethodicalRequirementsResult
+    executionTargets: RptExecutionTargetsResult
+
+    @model_validator(mode="after")
+    def validate_source_text_utf8(self) -> RptPlanSourceResult:
+        _require_utf8_tree(self.model_dump(mode="python"))
+        return self
+
+
+class RptAnalysisInputSnapshotResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    analysisInputSnapshotId: EntityId
+    executionId: EntityId
+    inputSnapshot: RptInputSnapshotModel
+    contentSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    operationSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    actor: str = Field(min_length=1, max_length=200)
+    decisionReason: str = Field(min_length=1, max_length=2_000)
+    createdAtUtc: CanonicalUtcTimestamp
+
+
+class RptCalculationSnapshotResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    calculationSnapshotId: EntityId
+    analysisInputSnapshotId: EntityId
+    executionId: EntityId
+    algorithmId: Literal["rpt_reference"]
+    algorithmVersion: Literal["1.0.0"]
+    numericPolicy: Literal["exact_fraction_v1"]
+    resultSnapshot: RptReferenceResultModel
+    inputContentSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    operationSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    contentSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    createdAtUtc: CanonicalUtcTimestamp
+
+
+class RptCalculationDetailResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    inputSnapshot: RptAnalysisInputSnapshotResult
+    calculationSnapshot: RptCalculationSnapshotResult
+
+
+class RptCalculationWriteResultModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    disposition: Literal["created", "existing"]
+    detail: RptCalculationDetailResult
+
+
+class RptCalculationSummaryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    calculationSnapshotId: EntityId
+    analysisInputSnapshotId: EntityId
+    executionId: EntityId
+    wheelModelId: EntityId
+    requiredCycles: str = Field(min_length=1, max_length=128)
+    failureStatus: Literal["calculated", "not_applicable"]
+    createdAtUtc: CanonicalUtcTimestamp
+
+
+class RptCalculationPageResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    items: list[RptCalculationSummaryResult] = Field(max_length=50)
+    nextCursor: str | None = Field(default=None, max_length=512)
+
+
 class ErrorPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -1599,6 +1815,10 @@ type SuccessResponseType = (
     | SuccessResponse[RbdCalculationDetailResult]
     | SuccessResponse[RbdCalculationWriteResultModel]
     | SuccessResponse[RbdCalculationPageResult]
+    | SuccessResponse[RptPlanSourceResult]
+    | SuccessResponse[RptCalculationDetailResult]
+    | SuccessResponse[RptCalculationWriteResultModel]
+    | SuccessResponse[RptCalculationPageResult]
 )
 
 

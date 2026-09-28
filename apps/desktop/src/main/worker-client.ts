@@ -342,6 +342,26 @@ export const WORKER_OPERATION_POLICIES = {
     transportTimeoutMs: 7_000,
     terminateWorkerOnTimeout: false,
   },
+  'rptCalculation.getSourceInputs': {
+    domainDeadlineMs: 30_000,
+    transportTimeoutMs: 35_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'rptCalculation.create': {
+    domainDeadlineMs: 30_000,
+    transportTimeoutMs: 35_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'rptCalculation.listPage': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'rptCalculation.getDetail': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
 } as const satisfies Readonly<Record<WorkerOperation, WorkerOperationPolicy>>;
 
 export interface WorkerLifecycleEvent {

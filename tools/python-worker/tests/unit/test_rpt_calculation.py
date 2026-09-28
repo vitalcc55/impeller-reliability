@@ -8,6 +8,7 @@ from impeller_reliability.calculations.rpt import (
     RptFailureInput,
     RptReferenceInput,
     calculate_rpt_reference,
+    compare_rpt_lower_point,
 )
 
 
@@ -58,6 +59,19 @@ def test_fractional_requirement_is_not_rounded_to_producer_target() -> None:
     assert result.failure_result.reason_code == "failure_duration_unavailable"
     assert result.phases[1].end_s.decimal == "3"
     assert result.diagram_points[1].x < result.diagram_points[2].x
+
+
+def test_source_lower_policy_and_typical_formula_are_compared_without_rewriting_either() -> None:
+    result = calculate_rpt_reference(_input())
+    matched = compare_rpt_lower_point(result.minimum_rpm, "one_percent", "one_percent", None, "15")
+    stopped = compare_rpt_lower_point(result.minimum_rpm, "full_stop", "full_stop", None, "0")
+    explicit = compare_rpt_lower_point(result.minimum_rpm, "explicit_rpm", "explicit_rpm", "125.5", "125.5")
+    conflicting = compare_rpt_lower_point(result.minimum_rpm, "full_stop", "one_percent", None, "15")
+    assert matched.status == "matches_typical_formula"
+    assert stopped.status == "differs_from_typical_formula"
+    assert explicit.status == "differs_from_typical_formula"
+    assert explicit.source_explicit_lower_rpm == "125.5"
+    assert conflicting.status == "source_target_policy_conflict"
 
 
 @pytest.mark.parametrize(

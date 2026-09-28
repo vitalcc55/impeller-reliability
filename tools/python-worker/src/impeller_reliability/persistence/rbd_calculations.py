@@ -29,6 +29,7 @@ from impeller_reliability.calculations.rbd_input_snapshot import (
 )
 from impeller_reliability.calculations.rbd_result_snapshot import RbdReferenceResultModel
 from impeller_reliability.persistence.audit import audit_now, insert_audit
+from impeller_reliability.persistence.calculation_write_lock import begin_calculation_write
 from impeller_reliability.persistence.case_documents import case_document_for_new_decision
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_schema import MAX_AUDIT_PAYLOAD_BYTES
@@ -314,7 +315,7 @@ class RbdCalculationRepository:
                 "createdAtUtc": now,
             }
         )
-        _begin_immediate_with_deadline(self._connection, deadline)
+        begin_calculation_write(self._connection, deadline, "rbd_calculation_write_lock")
         try:
             existing = self.resolve_idempotent_retry(
                 analysis_input_snapshot_id,
@@ -1380,36 +1381,3 @@ def _corrupt() -> ProjectOperationError:
 def _check_deadline(deadline: RequestDeadline | None, stage: str) -> None:
     if deadline is not None:
         deadline.check(stage)
-
-
-def _begin_immediate_with_deadline(connection: sqlite3.Connection, deadline: RequestDeadline | None) -> None:
-    if deadline is None:
-        connection.execute("BEGIN IMMEDIATE")
-        return
-    stage = "rbd_calculation_write_lock"
-    deadline.check(stage)
-    previous_timeout = connection.execute("PRAGMA busy_timeout").fetchone()
-    if previous_timeout is None:
-        raise ProjectOperationError("storage_error", "SQLite busy timeout недоступен.")
-    previous_timeout_ms = int(previous_timeout[0])
-    remaining_ms = max(1, int(deadline.remaining_seconds(5) * 1000))
-    connection.execute(f"PRAGMA busy_timeout = {remaining_ms}")
-    acquired = False
-    try:
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-        except sqlite3.OperationalError as error:
-            deadline.check(stage)
-            raise ProjectOperationError(
-                "storage_error",
-                "Невозможно получить блокировку записи проекта.",
-                retryable=True,
-            ) from error
-        acquired = True
-        deadline.check(stage)
-    except Exception:
-        if acquired:
-            connection.rollback()
-        raise
-    finally:
-        connection.execute(f"PRAGMA busy_timeout = {previous_timeout_ms}")
