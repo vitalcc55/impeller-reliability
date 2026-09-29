@@ -29,6 +29,7 @@ from impeller_reliability.persistence.r130sh_sources import (
     ImportedRunDetail,
     ImportedRunSummary,
     PlanSelection,
+    PmnPlanSourceSnapshot,
     RbdPlanSourceSnapshot,
     RptPlanSourceSnapshot,
     SourceIntegrityStatus,
@@ -551,6 +552,23 @@ class ProjectService:
         deadline: RequestDeadline | None,
     ) -> RptPlanSourceSnapshot:
         return self._require_session().get_rpt_source_inputs(execution_id, selection, deadline)
+
+    def read_pmn_plan_source(
+        self,
+        execution_id: str,
+        local_import_id: str,
+        selection: PlanSelection,
+        deadline: RequestDeadline | None,
+    ) -> PmnPlanSourceSnapshot:
+        return self._require_session().read_pmn_plan_source(execution_id, local_import_id, selection, deadline)
+
+    def get_pmn_source_inputs(
+        self,
+        execution_id: str,
+        selection: PlanSelection,
+        deadline: RequestDeadline | None,
+    ) -> PmnPlanSourceSnapshot:
+        return self._require_session().get_pmn_source_inputs(execution_id, selection, deadline)
 
     def create_rpt_calculation(
         self,

@@ -926,6 +926,198 @@ def _project_with_rbd_execution(
 
 
 @pytest.mark.parametrize("selection", ["original", "effective"])
+def test_pmn_source_inputs_keep_provenance_fields_requirements_targets_and_coordinates(tmp_path: Path, selection: Literal["original", "effective"]) -> None:
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    source = service.get_pmn_source_inputs(execution.execution_id, selection, None)
+    assert source.execution_id == execution.execution_id
+    assert source.local_import_id == imported.local_import_id
+    assert source.outer_package_sha256 == imported.outer_package_sha256
+    assert source.export_revision == imported.export_revision
+    assert source.selection == selection
+    assert source.source_values.nominal_rpm == "1500"
+    assert source.source_values.speed_factor == "1.1"
+    assert source.source_values.target_cycles == "2"
+    assert source.source_values.acceleration_duration_s == "2"
+    assert source.source_values.steady_duration_s == "1"
+    assert source.source_values.deceleration_duration_s == "2"
+    assert source.methodical_requirements.target_max_rpm_exact == "1650"
+    assert source.methodical_requirements.cycle_duration_s_exact == "5"
+    assert source.methodical_requirements.total_duration_s_exact == "10"
+    assert source.execution_targets.target_max_rpm == "1650"
+    assert source.execution_targets.target_cycles == "2"
+    assert source.execution_targets.cycle_duration_s == "5"
+    assert source.execution_targets.total_duration_s == "10"
+
+    expected_member = "plan/original.json" if selection == "original" else "plan/effective.json"
+    expected_prefix = "/source_values/" if selection == "original" else "/effective_plan/effective_plan/source_values/"
+    assert source.payload_path == expected_member
+    with ZipFile(_managed_path(project_path, imported)) as archive:
+        payload = archive.read(expected_member)
+        assert hashlib.sha256(payload).hexdigest() == source.payload_sha256
+        for field in (
+            "nominal_rpm",
+            "speed_factor",
+            "target_cycles",
+            "acceleration_duration_s",
+            "steady_duration_s",
+            "deceleration_duration_s",
+        ):
+            reference = r130sh_sources_module.plan_source_field_reference(selection, field)
+            member, pointer = reference.split("#", 1)
+            assert member == expected_member
+            assert pointer == f"{expected_prefix}{field}"
+            current: object = OBJECT_ADAPTER.validate_json(archive.read(member))
+            for segment in pointer[1:].split("/"):
+                current = OBJECT_ADAPTER.validate_python(current)[segment]
+            assert current == getattr(source.source_values, field)
+    service.close()
+
+
+def test_pmn_source_reader_rejects_wrong_import_pair_and_method(tmp_path: Path) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    other = _import(service, project_path, _package("shared_specimen_pmn_rpt_rbd-pmn.r130run"))
+    with pytest.raises(ProjectOperationError) as wrong_import:
+        service.read_pmn_plan_source(execution.execution_id, other.local_import_id, "original", None)
+    assert wrong_import.value.code == "entity_not_found"
+    service.close()
+
+    rbd_root = tmp_path / "rbd"
+    rbd_root.mkdir()
+    rbd_service, _, _, rbd_execution = _project_with_rbd_execution(rbd_root)
+    with pytest.raises(ProjectOperationError) as wrong_method:
+        rbd_service.get_pmn_source_inputs(rbd_execution.execution_id, "original", None)
+    assert wrong_method.value.code == "entity_not_found"
+    rbd_service.close()
+
+
+@pytest.mark.parametrize("damage", ["missing", "modified"])
+def test_pmn_source_reader_rejects_unavailable_managed_archive(tmp_path: Path, damage: str) -> None:
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    assert service.get_pmn_source_inputs(execution.execution_id, "original", None).execution_id == execution.execution_id
+    managed_path = _managed_path(project_path, imported)
+    if damage == "missing":
+        managed_path.unlink()
+    else:
+        managed_path.write_bytes(b"modified")
+    with pytest.raises(ProjectOperationError) as rejected:
+        service.get_pmn_source_inputs(execution.execution_id, "original", None)
+    assert rejected.value.code == "file_integrity_mismatch"
+    service.close()
+
+
+def test_pmn_source_reader_preserves_numeric_json_scalars_and_zero(tmp_path: Path) -> None:
+    synthetic = _package_with_plan_values(
+        tmp_path,
+        base_name="normal_final_pmn.r130run",
+        output_name="pmn-numeric-scalars.r130run",
+        source_updates={"speed_factor": 1.25, "target_cycles": 2, "steady_duration_s": 0},
+        requirement_updates={"target_max_rpm_exact": "1875", "cycle_duration_s_exact": "4", "total_duration_s_exact": "8"},
+        target_updates={"target_max_rpm": "1875", "target_cycles": 2, "cycle_duration_s": "4", "total_duration_s": "8"},
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    for selection in ("original", "effective"):
+        source = service.get_pmn_source_inputs(execution.execution_id, selection, None)
+        assert source.source_values.speed_factor == "1.25"
+        assert source.source_values.target_cycles == "2"
+        assert source.source_values.steady_duration_s == "0"
+        assert source.methodical_requirements.target_max_rpm_exact == "1875"
+        assert source.execution_targets.target_cycles == "2"
+    service.close()
+
+
+def test_pmn_source_reader_keeps_importer_valid_lexeme_outside_analytic_range(tmp_path: Path) -> None:
+    synthetic = _package_with_plan_values(
+        tmp_path,
+        base_name="normal_final_pmn.r130run",
+        output_name="pmn-wide-source.r130run",
+        source_updates={"speed_factor": "1000001"},
+        requirement_updates={},
+        target_updates={},
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    source = service.get_pmn_source_inputs(execution.execution_id, "effective", None)
+    assert source.source_values.speed_factor == "1000001"
+    service.close()
+
+
+def test_pmn_source_reader_distinguishes_missing_null_and_zero(tmp_path: Path) -> None:
+    synthetic = _package_with_plan_values(
+        tmp_path,
+        base_name="normal_final_pmn.r130run",
+        output_name="pmn-missing-null-zero.r130run",
+        source_updates={"steady_duration_s": None, "acceleration_duration_s": 0},
+        requirement_updates={},
+        target_updates={},
+        source_removals=("deceleration_duration_s",),
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    source = service.get_pmn_source_inputs(execution.execution_id, "original", None)
+    assert source.source_values.steady_duration_s is None
+    assert source.source_values.deceleration_duration_s is None
+    assert source.source_values.acceleration_duration_s == "0"
+    service.close()
+
+
+def test_pmn_source_reader_preserves_decimal_json_lexeme_without_float_rounding(tmp_path: Path) -> None:
+    base = _package("normal_final_pmn.r130run")
+    with ZipFile(base) as archive:
+        original_bytes = archive.read("plan/original.json")
+        effective = OBJECT_ADAPTER.validate_json(archive.read("plan/effective.json"))
+    old_lexeme = b'"speed_factor":"1.1"'
+    new_lexeme = b'"speed_factor":0.10000000000000001'
+    assert original_bytes.count(old_lexeme) == 1
+    original_bytes = original_bytes.replace(old_lexeme, new_lexeme)
+    effective_container = OBJECT_ADAPTER.validate_python(effective["effective_plan"])
+    effective_container["original_plan_sha256"] = hashlib.sha256(original_bytes).hexdigest()
+    effective["effective_plan"] = effective_container
+    effective_bytes = _canonical_package_json(effective)
+    assert effective_bytes.count(old_lexeme) == 1
+    effective_bytes = effective_bytes.replace(old_lexeme, new_lexeme)
+    synthetic = build_synthetic_r130run(
+        tmp_path / "pmn-raw-numeric-lexeme.r130run",
+        base_package=base,
+        payload_overrides={"plan/original.json": original_bytes, "plan/effective.json": effective_bytes},
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    for selection in ("original", "effective"):
+        source = service.get_pmn_source_inputs(execution.execution_id, selection, None)
+        assert source.source_values.speed_factor == "0.10000000000000001"
+    service.close()
+
+
+@pytest.mark.parametrize("invalid", [True, [], {"unexpected": "value"}])
+def test_pmn_source_reader_rejects_wrong_nested_scalar_type(tmp_path: Path, invalid: object) -> None:
+    synthetic = _package_with_plan_values(
+        tmp_path,
+        base_name="normal_final_pmn.r130run",
+        output_name=f"pmn-wrong-scalar-{uuid4()}.r130run",
+        source_updates={"speed_factor": invalid},
+        requirement_updates={},
+        target_updates={},
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    with pytest.raises(ProjectOperationError) as rejected:
+        service.get_pmn_source_inputs(execution.execution_id, "original", None)
+    assert rejected.value.code == "corrupt_project"
+    service.close()
+
+
+def test_rbd_verified_plan_reader_keeps_importer_valid_large_plan(tmp_path: Path) -> None:
+    synthetic = _package_with_plan_values(
+        tmp_path,
+        base_name="normal_final_rbd.r130run",
+        output_name="rbd-large-plan.r130run",
+        source_updates={"unrelated_note": "x" * 70_000},
+        requirement_updates={},
+        target_updates={},
+    )
+    service, _, _, execution = _project_with_rbd_execution(tmp_path, synthetic)
+    source = service.get_rbd_source_inputs(execution.execution_id, "original", None)
+    assert source.source_values.nominal_rpm is not None
+    service.close()
+
+
+@pytest.mark.parametrize("selection", ["original", "effective"])
 @pytest.mark.parametrize(
     ("package_name", "policy", "lower_rpm"),
     [
@@ -4167,7 +4359,27 @@ def _package_with_rpt_plan_values(
     requirement_updates: dict[str, object],
     target_updates: dict[str, object],
 ) -> Path:
-    base = _package("normal_final_rpt_full_stop.r130run")
+    return _package_with_plan_values(
+        tmp_path,
+        base_name="normal_final_rpt_full_stop.r130run",
+        output_name=f"rpt-{suffix}.r130run",
+        source_updates=source_updates,
+        requirement_updates=requirement_updates,
+        target_updates=target_updates,
+    )
+
+
+def _package_with_plan_values(
+    tmp_path: Path,
+    *,
+    base_name: str,
+    output_name: str,
+    source_updates: dict[str, object],
+    requirement_updates: dict[str, object],
+    target_updates: dict[str, object],
+    source_removals: tuple[str, ...] = (),
+) -> Path:
+    base = _package(base_name)
     with ZipFile(base) as archive:
         original = OBJECT_ADAPTER.validate_json(archive.read("plan/original.json"))
         effective = OBJECT_ADAPTER.validate_json(archive.read("plan/effective.json"))
@@ -4178,6 +4390,9 @@ def _package_with_rpt_plan_values(
     ):
         values = OBJECT_ADAPTER.validate_python(original[key])
         values.update(updates)
+        if key == "source_values":
+            for field in source_removals:
+                values.pop(field, None)
         original[key] = values
 
     effective_container = OBJECT_ADAPTER.validate_python(effective["effective_plan"])
@@ -4189,12 +4404,15 @@ def _package_with_rpt_plan_values(
     ):
         values = OBJECT_ADAPTER.validate_python(effective_plan[key])
         values.update(updates)
+        if key == "source_values":
+            for field in source_removals:
+                values.pop(field, None)
         effective_plan[key] = values
     effective_container["effective_plan"] = effective_plan
     effective_container["original_plan_sha256"] = hashlib.sha256(_canonical_package_json(original)).hexdigest()
     effective["effective_plan"] = effective_container
     return build_synthetic_r130run(
-        tmp_path / f"rpt-{suffix}.r130run",
+        tmp_path / output_name,
         base_package=base,
         payload_overrides={
             "plan/original.json": _canonical_package_json(original),

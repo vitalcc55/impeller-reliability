@@ -52,7 +52,6 @@ FINAL_PATH_RE: Final = re.compile(
 )
 STAGING_NAME_RE: Final = re.compile(r"^[0-9a-f-]{36}\.part$")
 STREAM_CHUNK_BYTES: Final = 1024 * 1024
-RBD_PLAN_MAX_BYTES: Final = 64 * 1024
 WINDOWS_REPARSE_POINT_ATTRIBUTE: Final = 0x0400
 MAX_SAFE_JSON_INTEGER: Final = 9_007_199_254_740_991
 
@@ -209,6 +208,54 @@ class RptPlanSourceSnapshot:
     source_values: RptPlanSourceValues
     methodical_requirements: RptMethodicalRequirements
     execution_targets: RptExecutionTargets
+
+
+@dataclass(frozen=True, slots=True)
+class PmnPlanSourceValues:
+    nominal_rpm: str | None
+    speed_factor: str | None
+    target_cycles: str | None
+    acceleration_duration_s: str | None
+    steady_duration_s: str | None
+    deceleration_duration_s: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PmnMethodicalRequirements:
+    target_max_rpm_exact: str
+    cycle_duration_s_exact: str
+    total_duration_s_exact: str
+
+
+@dataclass(frozen=True, slots=True)
+class PmnExecutionTargets:
+    target_max_rpm: str
+    target_cycles: str
+    cycle_duration_s: str
+    total_duration_s: str
+
+
+@dataclass(frozen=True, slots=True)
+class PmnPlanSourceSnapshot:
+    execution_id: str
+    local_import_id: str
+    package_id: str
+    run_id: str
+    export_revision: int
+    outer_package_sha256: str
+    source_snapshot_sha256: str
+    producer_name: str
+    producer_version: str
+    producer_build_id: str
+    producer_git_commit: str
+    selection: PlanSelection
+    payload_path: Literal["plan/original.json", "plan/effective.json"]
+    payload_sha256: str
+    plan_id: str
+    plan_revision: int
+    source_values: PmnPlanSourceValues
+    methodical_requirements: PmnMethodicalRequirements
+    execution_targets: PmnExecutionTargets
 
 
 @dataclass(frozen=True, slots=True)
@@ -646,7 +693,7 @@ class R130shSourceRepository:
         execution_id: str,
         local_import_id: str,
         selection: PlanSelection,
-        method: Literal["rbd", "rpt"],
+        method: Literal["rbd", "rpt", "pmn"],
         *,
         deadline: RequestDeadline | None = None,
     ) -> _VerifiedPlan:
@@ -688,7 +735,7 @@ class R130shSourceRepository:
             raise _corrupt_source()
         if str(row[12]) != method:
             raise ProjectOperationError("validation_error", "Выбранное исполнение относится к другому методу испытания.")
-        max_plan_bytes = RBD_PLAN_MAX_BYTES if method == "rbd" else MAX_JSON_BYTES
+        max_plan_bytes = MAX_JSON_BYTES
         payload_path: Literal["plan/original.json", "plan/effective.json"] = "plan/original.json" if selection == "original" else "plan/effective.json"
         plan_id = str(row[13] if selection == "original" else row[16])
         plan_revision = int(row[14] if selection == "original" else row[17])
@@ -741,7 +788,7 @@ class R130shSourceRepository:
         if len(payload_bytes) != int(inventory[0]) or hashlib.sha256(payload_bytes).hexdigest() != projected_sha256:
             raise ProjectOperationError("file_integrity_mismatch", "Расчётный план изменён после импорта.")
         try:
-            payload = json.loads(payload_bytes.decode("utf-8"), parse_float=str if method == "rpt" else float)
+            payload = json.loads(payload_bytes.decode("utf-8"), parse_float=str)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ProjectOperationError("file_integrity_mismatch", "Расчётный план повреждён.") from error
         plan = _plan_object(cast(object, payload), selection)
@@ -900,6 +947,56 @@ class R130shSourceRepository:
             deadline=deadline,
         )
 
+    def read_pmn_plan_source(
+        self,
+        execution_id: str,
+        local_import_id: str,
+        selection: PlanSelection,
+        *,
+        deadline: RequestDeadline | None = None,
+    ) -> PmnPlanSourceSnapshot:
+        verified = self._read_verified_plan(execution_id, local_import_id, selection, "pmn", deadline=deadline)
+        source_values = _plan_required_object(verified.plan, "source_values")
+        requirements = _plan_required_object(verified.plan, "methodical_requirements")
+        targets = _plan_required_object(verified.plan, "execution_targets")
+        return PmnPlanSourceSnapshot(
+            execution_id=verified.execution_id,
+            local_import_id=verified.local_import_id,
+            package_id=verified.package_id,
+            run_id=verified.run_id,
+            export_revision=verified.export_revision,
+            outer_package_sha256=verified.outer_package_sha256,
+            source_snapshot_sha256=verified.source_snapshot_sha256,
+            producer_name=verified.producer_name,
+            producer_version=verified.producer_version,
+            producer_build_id=verified.producer_build_id,
+            producer_git_commit=verified.producer_git_commit,
+            selection=verified.selection,
+            payload_path=verified.payload_path,
+            payload_sha256=verified.payload_sha256,
+            plan_id=verified.plan_id,
+            plan_revision=verified.plan_revision,
+            source_values=PmnPlanSourceValues(
+                nominal_rpm=_plan_optional_scalar_text(source_values, "nominal_rpm"),
+                speed_factor=_plan_optional_scalar_text(source_values, "speed_factor"),
+                target_cycles=_plan_optional_scalar_text(source_values, "target_cycles"),
+                acceleration_duration_s=_plan_optional_scalar_text(source_values, "acceleration_duration_s"),
+                steady_duration_s=_plan_optional_scalar_text(source_values, "steady_duration_s"),
+                deceleration_duration_s=_plan_optional_scalar_text(source_values, "deceleration_duration_s"),
+            ),
+            methodical_requirements=PmnMethodicalRequirements(
+                target_max_rpm_exact=_plan_required_scalar_text(requirements, "target_max_rpm_exact"),
+                cycle_duration_s_exact=_plan_required_scalar_text(requirements, "cycle_duration_s_exact"),
+                total_duration_s_exact=_plan_required_scalar_text(requirements, "total_duration_s_exact"),
+            ),
+            execution_targets=PmnExecutionTargets(
+                target_max_rpm=_plan_required_scalar_text(targets, "target_max_rpm"),
+                target_cycles=str(_plan_required_integer(targets, "target_cycles", maximum=10**64 - 1)),
+                cycle_duration_s=_plan_required_scalar_text(targets, "cycle_duration_s"),
+                total_duration_s=_plan_required_scalar_text(targets, "total_duration_s"),
+            ),
+        )
+
     def read_rpt_plan_source_for_execution(
         self,
         execution_id: str,
@@ -916,6 +1013,28 @@ class R130shSourceRepository:
         if row is None:
             raise ProjectOperationError("entity_not_found", "Исполнение РПТ не найдено.")
         return self.read_rpt_plan_source(
+            execution_id,
+            _uuid4(str(row[0])),
+            selection,
+            deadline=deadline,
+        )
+
+    def read_pmn_plan_source_for_execution(
+        self,
+        execution_id: str,
+        selection: PlanSelection,
+        *,
+        deadline: RequestDeadline | None = None,
+    ) -> PmnPlanSourceSnapshot:
+        execution_id = _uuid4(execution_id)
+        row = self._connection.execute(
+            "SELECT local_import_id FROM reliability_test_executions WHERE execution_id=? AND method='pmn'",
+            (execution_id,),
+        ).fetchone()
+        _check_deadline(deadline, "pmn_execution_source_lookup")
+        if row is None:
+            raise ProjectOperationError("entity_not_found", "Исполнение ПМН не найдено.")
+        return self.read_pmn_plan_source(
             execution_id,
             _uuid4(str(row[0])),
             selection,

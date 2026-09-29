@@ -34,6 +34,7 @@ from impeller_reliability.persistence.r130sh_sources import (
     ImportedRunDetail,
     ImportedRunSummary,
     PlanSelection,
+    PmnPlanSourceSnapshot,
     R130shSourceRepository,
     RbdPlanSourceSnapshot,
     RptPlanSourceSnapshot,
@@ -452,6 +453,20 @@ class ProjectSession:
             deadline=deadline,
         )
 
+    def read_pmn_plan_source(
+        self,
+        execution_id: str,
+        local_import_id: str,
+        selection: PlanSelection,
+        deadline: RequestDeadline | None = None,
+    ) -> PmnPlanSourceSnapshot:
+        return self._r130sh_sources.read_pmn_plan_source(
+            execution_id,
+            local_import_id,
+            selection,
+            deadline=deadline,
+        )
+
     def get_imported_run_binding(
         self,
         source_specimen_id: str,
@@ -673,6 +688,18 @@ class ProjectSession:
         deadline: RequestDeadline | None,
     ) -> RptPlanSourceSnapshot:
         return self._r130sh_sources.read_rpt_plan_source_for_execution(
+            execution_id,
+            selection,
+            deadline=deadline,
+        )
+
+    def get_pmn_source_inputs(
+        self,
+        execution_id: str,
+        selection: PlanSelection,
+        deadline: RequestDeadline | None,
+    ) -> PmnPlanSourceSnapshot:
+        return self._r130sh_sources.read_pmn_plan_source_for_execution(
             execution_id,
             selection,
             deadline=deadline,
