@@ -9,6 +9,13 @@ from impeller_reliability.integration.r130run.m9a import M9aPackageFacts
 from impeller_reliability.integration.r130run.models import RunPackageValidationReport
 from impeller_reliability.persistence.analyst_dossier import CustomerProfile, Specimen, WheelModel
 from impeller_reliability.persistence.case_documents import CaseDocument
+from impeller_reliability.persistence.pmn_calculations import (
+    PmnCalculationDetail,
+    PmnCalculationPage,
+    PmnCalculationWriteResult,
+    PmnFailureEvidence,
+    PmnFieldSelection,
+)
 from impeller_reliability.persistence.project_database import (
     ProjectMetadataSeed,
     ProjectMigrator,
@@ -569,6 +576,37 @@ class ProjectService:
         deadline: RequestDeadline | None,
     ) -> PmnPlanSourceSnapshot:
         return self._require_session().get_pmn_source_inputs(execution_id, selection, deadline)
+
+    def create_pmn_calculation(
+        self,
+        *,
+        analysis_input_snapshot_id: str,
+        calculation_snapshot_id: str,
+        execution_id: str,
+        selection: PlanSelection,
+        selections: tuple[PmnFieldSelection, ...],
+        failure: PmnFailureEvidence | None,
+        actor: str,
+        reason: str,
+        deadline: RequestDeadline | None,
+    ) -> PmnCalculationWriteResult:
+        return self._require_session().create_pmn_calculation(
+            analysis_input_snapshot_id=analysis_input_snapshot_id,
+            calculation_snapshot_id=calculation_snapshot_id,
+            execution_id=execution_id,
+            selection=selection,
+            selections=selections,
+            failure=failure,
+            actor=actor,
+            reason=reason,
+            deadline=deadline,
+        )
+
+    def get_pmn_calculation_detail(self, calculation_snapshot_id: str, deadline: RequestDeadline | None) -> PmnCalculationDetail:
+        return self._require_session().get_pmn_calculation_detail(calculation_snapshot_id, deadline)
+
+    def list_pmn_calculation_page(self, wheel_model_id: str, cursor: str | None, limit: int, deadline: RequestDeadline | None) -> PmnCalculationPage:
+        return self._require_session().list_pmn_calculation_page(wheel_model_id, cursor, limit, deadline)
 
     def create_rpt_calculation(
         self,

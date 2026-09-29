@@ -15,6 +15,14 @@ from impeller_reliability.persistence.analyst_dossier import (
 )
 from impeller_reliability.persistence.audit import audit_now, insert_audit
 from impeller_reliability.persistence.case_documents import CaseDocument, CaseDocumentRepository
+from impeller_reliability.persistence.pmn_calculations import (
+    PmnCalculationDetail,
+    PmnCalculationPage,
+    PmnCalculationRepository,
+    PmnCalculationWriteResult,
+    PmnFailureEvidence,
+    PmnFieldSelection,
+)
 from impeller_reliability.persistence.project_database import (
     create_verified_backup,
     remove_backup,
@@ -108,6 +116,7 @@ class ProjectSession:
         self._reliability_domain = ReliabilityDomainRepository(connection)
         self._rbd_calculations = RbdCalculationRepository(connection)
         self._rpt_calculations = RptCalculationRepository(connection)
+        self._pmn_calculations = PmnCalculationRepository(connection)
 
     def overview(self) -> ProjectOverview:
         row = self._connection.execute(
@@ -819,6 +828,61 @@ class ProjectSession:
         deadline: RequestDeadline | None,
     ) -> RptCalculationPage:
         return self._rpt_calculations.list_page(wheel_model_id, cursor, limit, deadline)
+
+    def create_pmn_calculation(
+        self,
+        *,
+        analysis_input_snapshot_id: str,
+        calculation_snapshot_id: str,
+        execution_id: str,
+        selection: PlanSelection,
+        selections: tuple[PmnFieldSelection, ...],
+        failure: PmnFailureEvidence | None,
+        actor: str,
+        reason: str,
+        deadline: RequestDeadline | None,
+    ) -> PmnCalculationWriteResult:
+        operation_sha256 = self._pmn_calculations.operation_sha256(
+            analysis_input_snapshot_id=analysis_input_snapshot_id,
+            calculation_snapshot_id=calculation_snapshot_id,
+            execution_id=execution_id,
+            plan_selection=selection,
+            selections=selections,
+            failure=failure,
+            actor=actor,
+            reason=reason,
+        )
+        existing = self._pmn_calculations.resolve_idempotent_retry(analysis_input_snapshot_id, calculation_snapshot_id, operation_sha256, deadline)
+        if existing is not None:
+            return existing
+        source = self.get_pmn_source_inputs(execution_id, selection, deadline)
+        return self._pmn_calculations.create(
+            analysis_input_snapshot_id=analysis_input_snapshot_id,
+            calculation_snapshot_id=calculation_snapshot_id,
+            source=source,
+            selections=selections,
+            failure=failure,
+            actor=actor,
+            reason=reason,
+            operation_sha256=operation_sha256,
+            deadline=deadline,
+        )
+
+    def get_pmn_calculation_detail(
+        self,
+        calculation_snapshot_id: str,
+        deadline: RequestDeadline | None,
+    ) -> PmnCalculationDetail:
+        return self._pmn_calculations.get_detail(calculation_snapshot_id, deadline)
+
+    def list_pmn_calculation_page(
+        self,
+        wheel_model_id: str,
+        cursor: str | None,
+        limit: int,
+        deadline: RequestDeadline | None,
+    ) -> PmnCalculationPage:
+        return self._pmn_calculations.list_page(wheel_model_id, cursor, limit, deadline)
 
     def validate(self, deadline: RequestDeadline | None = None) -> None:
         validate_project_database(self._connection, self.manifest, deadline)

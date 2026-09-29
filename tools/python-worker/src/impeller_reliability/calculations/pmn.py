@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from impeller_reliability.calculations.exact import (
     ExactInputError,
@@ -13,6 +13,9 @@ from impeller_reliability.calculations.exact import (
     positive_decimal,
     positive_integer,
 )
+
+if TYPE_CHECKING:
+    from impeller_reliability.calculations.pmn_result_snapshot import PmnReferenceResultModel
 
 PmnFailureApplicability = Literal[
     "exact_supported",
@@ -37,6 +40,12 @@ PmnFailureReason = Literal[
 ALGORITHM_ID: Final = "pmn_reference"
 ALGORITHM_VERSION: Final = "1.0.0"
 NUMERIC_POLICY: Final = "exact_fraction_v1"
+FORMULA_REFERENCES: Final = (
+    "ПМИ Р130У, редакция 01, 2024, страница 15, формула 8",
+    "ПМИ Р130У, редакция 01, 2024, страница 15, формула 9",
+    "ПМИ Р130У, редакция 01, 2024, страница 16, формула 10",
+    "ПМИ Р130У, редакция 01, 2024, страница 15, таблица 5",
+)
 
 _FAILURE_REASON_BY_APPLICABILITY: Final[dict[str, PmnFailureReason]] = {
     "unavailable": "failure_duration_unavailable",
@@ -127,6 +136,15 @@ class PmnReferenceResult:
     formula_references: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _PmnQuantities:
+    acceleration: Fraction
+    steady_end: Fraction
+    cycle_duration: Fraction
+    maximum_rpm: Fraction
+    total_duration: Fraction
+
+
 def validate_pmn_reference_input(values: object) -> tuple[Decimal, Decimal, int, Decimal, Decimal, Decimal]:
     if not isinstance(values, PmnReferenceInput):
         raise PmnCalculationError("invalid_input_type", "Ожидался типизированный набор входов ПМН.")
@@ -155,14 +173,12 @@ def validate_pmn_reference_input(values: object) -> tuple[Decimal, Decimal, int,
 def calculate_pmn_reference(values: object) -> PmnReferenceResult:
     if not isinstance(values, PmnReferenceInput):
         raise PmnCalculationError("invalid_input_type", "Ожидался типизированный набор входов ПМН.")
-    nominal_rpm, speed_factor, target_cycles, acceleration, steady, deceleration = validate_pmn_reference_input(values)
-    acceleration_fraction = Fraction(acceleration)
-    steady_fraction = Fraction(steady)
-    deceleration_fraction = Fraction(deceleration)
-    cycle_duration = acceleration_fraction + steady_fraction + deceleration_fraction
-    maximum_rpm = Fraction(nominal_rpm) * Fraction(speed_factor)
-    total_duration = cycle_duration * target_cycles
-    steady_end = acceleration_fraction + steady_fraction
+    quantities = _reference_quantities(validate_pmn_reference_input(values))
+    acceleration_fraction = quantities.acceleration
+    steady_end = quantities.steady_end
+    cycle_duration = quantities.cycle_duration
+    maximum_rpm = quantities.maximum_rpm
+    total_duration = quantities.total_duration
 
     return PmnReferenceResult(
         algorithm_id=ALGORITHM_ID,
@@ -180,13 +196,49 @@ def calculate_pmn_reference(values: object) -> PmnReferenceResult:
             PmnPhase("deceleration", exact_value(steady_end), exact_value(cycle_duration), exact_value(maximum_rpm), exact_value(Fraction(0))),
         ),
         diagram_points=_diagram_points(acceleration_fraction, steady_end, cycle_duration),
-        formula_references=(
-            "ПМИ Р130У, редакция 01, 2024, страница 15, формула 8",
-            "ПМИ Р130У, редакция 01, 2024, страница 15, формула 9",
-            "ПМИ Р130У, редакция 01, 2024, страница 16, формула 10",
-            "ПМИ Р130У, редакция 01, 2024, страница 15, таблица 5",
-        ),
+        formula_references=FORMULA_REFERENCES,
     )
+
+
+def validate_pmn_saved_result(values: PmnReferenceInput, result: PmnReferenceResultModel) -> None:
+    quantities = _reference_quantities(validate_pmn_reference_input(values))
+    if (
+        _snapshot_fraction(result.maximum_rpm.numerator, result.maximum_rpm.denominator) != quantities.maximum_rpm
+        or _snapshot_fraction(result.cycle_duration_s_exact.numerator, result.cycle_duration_s_exact.denominator) != quantities.cycle_duration
+        or _snapshot_fraction(result.total_duration_s_exact.numerator, result.total_duration_s_exact.denominator) != quantities.total_duration
+        or _snapshot_fraction(result.phases[0].end_s.numerator, result.phases[0].end_s.denominator) != quantities.acceleration
+        or _snapshot_fraction(result.phases[1].end_s.numerator, result.phases[1].end_s.denominator) != quantities.steady_end
+        or tuple(result.formula_references) != FORMULA_REFERENCES
+    ):
+        raise PmnCalculationError("saved_result_mismatch", "Сохранённый результат ПМН не соответствует выбранным входам.")
+    expected_failure = _calculate_failure(values.failure, quantities.cycle_duration)
+    if (
+        result.failure_result.status != expected_failure.status
+        or result.failure_result.cycles_to_failure != expected_failure.cycles_to_failure
+        or result.failure_result.reason_code != expected_failure.reason_code
+    ):
+        raise PmnCalculationError("saved_result_mismatch", "Показатель таблицы 5 не соответствует сохранённой применимости.")
+    expected_points = _diagram_points(quantities.acceleration, quantities.steady_end, quantities.cycle_duration)
+    if tuple((point.boundary, point.x, point.y) for point in result.diagram_points) != tuple((point.boundary, point.x, point.y) for point in expected_points):
+        raise PmnCalculationError("saved_result_mismatch", "Схема фаз не соответствует сохранённым длительностям.")
+
+
+def _reference_quantities(values: tuple[Decimal, Decimal, int, Decimal, Decimal, Decimal]) -> _PmnQuantities:
+    nominal_rpm, speed_factor, target_cycles, acceleration, steady, deceleration = values
+    acceleration_fraction = Fraction(acceleration)
+    steady_end = acceleration_fraction + Fraction(steady)
+    cycle_duration = steady_end + Fraction(deceleration)
+    return _PmnQuantities(
+        acceleration=acceleration_fraction,
+        steady_end=steady_end,
+        cycle_duration=cycle_duration,
+        maximum_rpm=Fraction(nominal_rpm) * Fraction(speed_factor),
+        total_duration=cycle_duration * target_cycles,
+    )
+
+
+def _snapshot_fraction(numerator: str, denominator: str) -> Fraction:
+    return Fraction(int(numerator), int(denominator))
 
 
 def _diagram_points(

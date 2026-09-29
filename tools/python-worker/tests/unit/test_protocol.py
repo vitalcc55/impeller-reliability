@@ -8,6 +8,7 @@ from impeller_reliability.protocol.envelopes import (
     CaseDocumentFileResult,
     EmptyPayload,
     PingRequest,
+    PmnCalculationCreateRequest,
     RbdCalculationCreateRequest,
     RbdPlanSourceResult,
     RbdReferenceResultModel,
@@ -277,6 +278,63 @@ def test_rpt_calculation_command_has_six_fixed_inputs_and_no_ready_result() -> N
                 "payload": {**payload, "reason": "🔧" * 501},
             }
         )
+
+
+def test_pmn_calculation_command_has_six_fixed_inputs_and_no_ready_result() -> None:
+    payload = {
+        "analysisInputSnapshotId": "113ec2c8-9439-4ce8-823d-3e2b0de8f001",
+        "calculationSnapshotId": "223ec2c8-9439-4ce8-823d-3e2b0de8f002",
+        "executionId": "333ec2c8-9439-4ce8-823d-3e2b0de8f003",
+        "planSelection": "effective",
+        "selections": [
+            {"field": field, "origin": "source"}
+            for field in (
+                "nominal_rpm",
+                "speed_factor",
+                "target_cycles",
+                "acceleration_duration_s",
+                "steady_duration_s",
+                "deceleration_duration_s",
+            )
+        ],
+        "failureEvidence": None,
+        "actor": "Инженер",
+        "reason": "Расчёт ПМН",
+    }
+    request = REQUEST_ENVELOPE_ADAPTER.validate_python(
+        {
+            "protocolVersion": 1,
+            "requestId": "pmn-1",
+            "kind": "request",
+            "operation": "pmnCalculation.create",
+            "revision": 9,
+            "deadlineMs": 30_000,
+            "payload": payload,
+        }
+    )
+    assert isinstance(request, PmnCalculationCreateRequest)
+    selections = payload["selections"]
+    assert isinstance(selections, list)
+    for invalid in (
+        {**payload, "calculatedOutputs": {"maximumRpm": "1650"}},
+        {**payload, "selections": selections[:-1]},
+        {**payload, "selections": [*selections[:-1], selections[0]]},
+        {**payload, "reason": "\ud800"},
+    ):
+        with pytest.raises(ValidationError):
+            REQUEST_ENVELOPE_ADAPTER.validate_python({**request.model_dump(mode="python"), "payload": invalid})
+    zero = REQUEST_ENVELOPE_ADAPTER.validate_python(
+        {
+            **request.model_dump(mode="python"),
+            "payload": {
+                **payload,
+                "failureEvidence": {"applicability": "exact_supported", "durationToFailureS": "0", "basis": "Документированное время"},
+            },
+        }
+    )
+    assert isinstance(zero, PmnCalculationCreateRequest)
+    assert zero.payload.failureEvidence is not None
+    assert zero.payload.failureEvidence.durationToFailureS == "0"
 
 
 def test_rbd_source_response_preserves_imported_text_with_unicode_and_bounds() -> None:

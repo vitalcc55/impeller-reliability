@@ -5,6 +5,103 @@ import type { RuntimeStatus } from '@impeller-reliability/contracts';
 import { createPreviewApi } from './preview-api';
 
 describe('browser preview api', () => {
+  it('exposes a typed synthetic PMN source, result, and unavailable state', async () => {
+    const api = createPreviewApi('ready', 'pmn');
+    await api.project.create({ name: 'ПМН', projectNumber: '', description: '', status: 'draft' });
+    const wheelModelId = '28723636-fdd5-47bd-b0e2-e02c21f36f2e';
+    const specimenId = 'fa50e13e-2944-4874-9cf7-b4747d57ae09';
+    await api.wheelModel.create({
+      wheelModelId,
+      fullName: 'Колесо ПМН',
+      designation: 'ПМН-01',
+      nominalDiameterMm: null,
+      nominalSpeedRpm: null,
+      bladeCount: null,
+      geometryDescription: '',
+      compositionDescription: '',
+      materialDescription: '',
+      notes: '',
+    });
+    await api.specimen.create({
+      specimenId,
+      wheelModelId,
+      identificationNumber: 'ПМН-001',
+      batchNumber: '',
+      marking: '',
+      manufacturedOn: null,
+      receivedOn: null,
+      workingDiameterMm: null,
+      initialConditionNotes: '',
+      notes: '',
+    });
+    const imported = await api.importedRun.list();
+    if (!imported.ok || imported.result[0] === undefined) throw new Error('missing_pmn_sample');
+    await api.importedRun.bindSpecimen({
+      sourceSpecimenId: imported.result[0].sourceSpecimenId,
+      localSpecimenId: specimenId,
+      expectedRevision: 1,
+      actor: 'local_user',
+      reason: 'Образец подтверждён',
+    });
+    const execution = await api.reliabilityExecution.materialize(imported.result[0].localImportId);
+    if (!execution.ok) throw new Error('pmn_materialization_failed');
+    expect(execution.result.method).toBe('pmn');
+    const source = await api.pmnCalculation.getSourceInputs(
+      execution.result.executionId,
+      'original',
+    );
+    expect(source).toMatchObject({
+      ok: true,
+      result: { sourceValues: { speedFactor: '1.1', targetCycles: '2' } },
+    });
+    const command = {
+      analysisInputSnapshotId: 'ac8fb54c-520d-479e-9e39-c2fd62b83c41',
+      calculationSnapshotId: 'bc8fb54c-520d-479e-9e39-c2fd62b83c42',
+      executionId: execution.result.executionId,
+      planSelection: 'original' as const,
+      selections: (
+        [
+          'nominal_rpm',
+          'speed_factor',
+          'target_cycles',
+          'acceleration_duration_s',
+          'steady_duration_s',
+          'deceleration_duration_s',
+        ] as const
+      ).map((field) => ({
+        field,
+        origin: 'source' as const,
+        manualValue: null,
+        basis: '',
+        evidence: null,
+      })),
+      failureEvidence: null,
+      actor: 'local_user',
+      reason: 'Синтетический пример',
+    };
+    expect(await api.pmnCalculation.create(command)).toMatchObject({
+      ok: true,
+      result: {
+        detail: { calculationSnapshot: { resultSnapshot: { maximum_rpm: { decimal: '1650' } } } },
+      },
+    });
+    expect(await api.pmnCalculation.listPage(wheelModelId)).toMatchObject({
+      ok: true,
+      result: {
+        items: [{ calculationSnapshotId: command.calculationSnapshotId, targetCycles: '2' }],
+      },
+    });
+    expect(await api.pmnCalculation.getDetail(command.calculationSnapshotId)).toMatchObject({
+      ok: true,
+    });
+    const unavailable = createPreviewApi('unavailable', 'pmn');
+    expect(
+      await unavailable.pmnCalculation.getSourceInputs(execution.result.executionId, 'original'),
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'worker_unavailable' },
+    });
+  });
   it('exposes a typed RPT source and immutable synthetic result for the RPT sample', async () => {
     const api = createPreviewApi('ready', 'rpt');
     await api.project.create({ name: 'РПТ', projectNumber: '', description: '', status: 'draft' });

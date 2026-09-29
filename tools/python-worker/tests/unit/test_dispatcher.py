@@ -57,7 +57,7 @@ def test_handshake_reports_current_capabilities_and_revision(tmp_path: Path) -> 
     assert response.revision == 12
     assert isinstance(response.result, HandshakeResult)
     assert response.result.protocolVersions == [1]
-    assert response.result.algorithmVersions == {"rbd_reference": "1.0.0", "rpt_reference": "1.0.0"}
+    assert response.result.algorithmVersions == {"rbd_reference": "1.0.0", "rpt_reference": "1.0.0", "pmn_reference": "1.0.0"}
     assert response.result.capabilities == [
         "system.handshake",
         "system.ping",
@@ -124,6 +124,10 @@ def test_handshake_reports_current_capabilities_and_revision(tmp_path: Path) -> 
         "rptCalculation.create",
         "rptCalculation.listPage",
         "rptCalculation.getDetail",
+        "pmnCalculation.getSourceInputs",
+        "pmnCalculation.create",
+        "pmnCalculation.listPage",
+        "pmnCalculation.getDetail",
     ]
     assert response.result.supportedRunPackageSchemas == ["r130sh.run-package.v1"]
     assert response.result.supportedPlanSchemas == []

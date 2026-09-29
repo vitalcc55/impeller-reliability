@@ -70,6 +70,10 @@ export const workerOperationSchema = z.enum([
   'rptCalculation.create',
   'rptCalculation.listPage',
   'rptCalculation.getDetail',
+  'pmnCalculation.getSourceInputs',
+  'pmnCalculation.create',
+  'pmnCalculation.listPage',
+  'pmnCalculation.getDetail',
 ]);
 
 export type WorkerOperation = z.infer<typeof workerOperationSchema>;
@@ -1930,6 +1934,370 @@ export const rptCalculationPageSchema = z
     nextCursor: z.string().max(512).nullable(),
   })
   .strict();
+const pmnInputFieldSchema = z.enum([
+  'nominal_rpm',
+  'speed_factor',
+  'target_cycles',
+  'acceleration_duration_s',
+  'steady_duration_s',
+  'deceleration_duration_s',
+]);
+const pmnFailureApplicabilitySchema = z.enum([
+  'exact_supported',
+  'unavailable',
+  'interval_endpoint',
+  'right_censored',
+  'ambiguous_pauses',
+  'variable_cycle',
+  'unknown_start',
+  'repeated_attempts',
+]);
+const pmnEvidenceReferenceSchema = z
+  .object({
+    documentId: entityIdSchema,
+    documentRecordRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    documentLocator: textWithinUtf8Bytes(1_000).min(1).max(1_000),
+  })
+  .strict();
+const pmnFieldSelectionSchema = z
+  .object({
+    field: pmnInputFieldSchema,
+    origin: z.enum(['source', 'manual']),
+    manualValue: textWithinUtf8Bytes(64).max(64).nullable().default(null),
+    basis: textWithinUtf8Bytes(2_000).max(2_000).default(''),
+    evidence: pmnEvidenceReferenceSchema.nullable().default(null),
+  })
+  .strict();
+const pmnFailureEvidenceSchema = z
+  .object({
+    applicability: pmnFailureApplicabilitySchema,
+    durationToFailureS: textWithinUtf8Bytes(64).max(64).nullable().default(null),
+    basis: textWithinUtf8Bytes(2_000).max(2_000).default(''),
+    evidence: pmnEvidenceReferenceSchema.nullable().default(null),
+  })
+  .strict();
+export const pmnSourceInputsPayloadSchema = z
+  .object({ executionId: entityIdSchema, planSelection: z.enum(['original', 'effective']) })
+  .strict();
+export const pmnCalculationCreateCommandSchema = pmnSourceInputsPayloadSchema
+  .extend({
+    analysisInputSnapshotId: entityIdSchema,
+    calculationSnapshotId: entityIdSchema,
+    selections: z.array(pmnFieldSelectionSchema).length(6),
+    failureEvidence: pmnFailureEvidenceSchema.nullable(),
+    actor: textWithinUtf8Bytes(200).min(1).max(200),
+    reason: textWithinUtf8Bytes(2_000).min(1).max(2_000),
+  })
+  .superRefine((value, context) => {
+    if (new Set(value.selections.map((item) => item.field)).size !== 6) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Нужно выбрать происхождение шести входов ПМН.',
+      });
+    }
+  });
+export const pmnCalculationIdPayloadSchema = z
+  .object({ calculationSnapshotId: entityIdSchema })
+  .strict();
+export const pmnCalculationListPagePayloadSchema = z
+  .object({
+    wheelModelId: entityIdSchema,
+    cursor: z.string().min(1).max(512).nullable().default(null),
+    limit: z.number().int().min(1).max(50).default(25),
+  })
+  .strict();
+export const pmnPlanSourceSchema = z
+  .object({
+    executionId: entityIdSchema,
+    localImportId: entityIdSchema,
+    packageId: z.string().min(1).max(200),
+    runId: z.string().min(1).max(200),
+    exportRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    outerPackageSha256: sha256Schema,
+    sourceSnapshotSha256: sha256Schema,
+    producerName: z.string().min(1).max(200),
+    producerVersion: z.string().min(1).max(200),
+    producerBuildId: z.string().min(1).max(200),
+    producerGitCommit: z.string().min(1).max(200),
+    planSelection: z.enum(['original', 'effective']),
+    payloadPath: z.enum(['plan/original.json', 'plan/effective.json']),
+    payloadSha256: sha256Schema,
+    planId: z.string().min(1).max(200),
+    planRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    sourceValues: z
+      .object({
+        nominalRpm: z.string().max(512).nullable(),
+        speedFactor: z.string().max(512).nullable(),
+        targetCycles: z.string().max(512).nullable(),
+        accelerationDurationS: z.string().max(512).nullable(),
+        steadyDurationS: z.string().max(512).nullable(),
+        decelerationDurationS: z.string().max(512).nullable(),
+      })
+      .strict(),
+    methodicalRequirements: z
+      .object({
+        targetMaxRpmExact: z.string().max(512),
+        cycleDurationSExact: z.string().max(512),
+        totalDurationSExact: z.string().max(512),
+      })
+      .strict(),
+    executionTargets: z
+      .object({
+        targetMaxRpm: z.string().max(512),
+        targetCycles: z.string().regex(/^(?:0|[1-9][0-9]{0,63})$/u),
+        cycleDurationS: z.string().max(512),
+        totalDurationS: z.string().max(512),
+      })
+      .strict(),
+  })
+  .strict();
+const pmnOperationEvidenceReferenceSchema = z
+  .object({
+    document_id: entityIdSchema,
+    document_record_revision: z.number().int().positive(),
+    document_locator: z.string().min(1).max(1_000),
+  })
+  .strict();
+const pmnOperationFieldSelectionSchema = z
+  .object({
+    field: pmnInputFieldSchema,
+    origin: z.enum(['source', 'manual']),
+    manual_value: z.string().max(64).nullable(),
+    basis: z.string().max(2_000),
+    evidence: pmnOperationEvidenceReferenceSchema.nullable(),
+  })
+  .strict();
+const pmnOperationFailureEvidenceSchema = z
+  .object({
+    applicability: pmnFailureApplicabilitySchema,
+    duration_to_failure_s: z.string().max(64).nullable(),
+    basis: z.string().max(2_000),
+    evidence: pmnOperationEvidenceReferenceSchema.nullable(),
+  })
+  .strict();
+const pmnOperationSnapshotSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    analysisInputSnapshotId: entityIdSchema,
+    calculationSnapshotId: entityIdSchema,
+    executionId: entityIdSchema,
+    planSelection: z.enum(['original', 'effective']),
+    selections: z.array(pmnOperationFieldSelectionSchema).length(6),
+    failureEvidence: pmnOperationFailureEvidenceSchema.nullable(),
+    actor: z.string().min(1).max(200),
+    reason: z.string().max(2_000),
+    algorithmId: z.literal('pmn_reference'),
+    algorithmVersion: z.literal('1.0.0'),
+    numericPolicy: z.literal('exact_fraction_v1'),
+  })
+  .strict()
+  .refine((value) => new Set(value.selections.map((item) => item.field)).size === 6);
+const pmnSourceSnapshotSchema = z
+  .object({
+    executionId: entityIdSchema,
+    localImportId: entityIdSchema,
+    packageId: z.string().min(1).max(200),
+    runId: z.string().min(1).max(200),
+    exportRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    outerPackageSha256: sha256Schema,
+    sourceSnapshotSha256: sha256Schema,
+    producer: z
+      .object({
+        name: z.string().min(1).max(200),
+        version: z.string().min(1).max(200),
+        buildId: z.string().min(1).max(200),
+        gitCommit: z.string().min(1).max(200),
+      })
+      .strict(),
+    planSelection: z.enum(['original', 'effective']),
+    payloadPath: z.enum(['plan/original.json', 'plan/effective.json']),
+    payloadSha256: sha256Schema,
+    planId: z.string().min(1).max(200),
+    planRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    sourceValues: z
+      .object({
+        nominal_rpm: z.string().max(512).nullable(),
+        speed_factor: z.string().max(512).nullable(),
+        target_cycles: z.string().max(512).nullable(),
+        acceleration_duration_s: z.string().max(512).nullable(),
+        steady_duration_s: z.string().max(512).nullable(),
+        deceleration_duration_s: z.string().max(512).nullable(),
+      })
+      .strict(),
+    methodicalRequirements: z
+      .object({
+        target_max_rpm_exact: z.string().max(512),
+        cycle_duration_s_exact: z.string().max(512),
+        total_duration_s_exact: z.string().max(512),
+      })
+      .strict(),
+    executionTargets: z
+      .object({
+        target_max_rpm: z.string().max(512),
+        target_cycles: z.string().regex(/^(?:0|[1-9][0-9]{0,63})$/u),
+        cycle_duration_s: z.string().max(512),
+        total_duration_s: z.string().max(512),
+      })
+      .strict(),
+  })
+  .strict();
+const pmnSavedFieldSelectionSchema = z
+  .object({
+    field: pmnInputFieldSchema,
+    unit: z.enum(['rpm', 'cycle', '1', 's']),
+    origin: z.enum(['source', 'manual']),
+    value: z.string().min(1).max(64),
+    rawSourceValue: z.string().max(512).nullable(),
+    sourceReference: z.string().min(1).max(200),
+    basis: z.string().max(2_000),
+    document: documentEvidenceSnapshotSchema.nullable(),
+  })
+  .strict();
+const pmnSavedFailureEvidenceSchema = z
+  .object({
+    applicability: pmnFailureApplicabilitySchema,
+    durationToFailureS: z.string().max(64).nullable(),
+    basis: z.string().max(2_000),
+    document: documentEvidenceSnapshotSchema.nullable(),
+  })
+  .strict();
+export const pmnInputSnapshotPayloadSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    operation: pmnOperationSnapshotSchema,
+    source: pmnSourceSnapshotSchema,
+    fieldSelections: z
+      .array(pmnSavedFieldSelectionSchema)
+      .length(6)
+      .refine((items) =>
+        items.every((item, index) => item.field === pmnInputFieldSchema.options[index]),
+      ),
+    failureEvidence: pmnSavedFailureEvidenceSchema.nullable(),
+  })
+  .strict();
+export const pmnResultSnapshotSchema = z
+  .object({
+    algorithm_id: z.literal('pmn_reference'),
+    algorithm_version: z.literal('1.0.0'),
+    numeric_policy: z.literal('exact_fraction_v1'),
+    maximum_rpm: exactRationalSchema,
+    cycle_duration_s_exact: exactRationalSchema,
+    total_duration_s_exact: exactRationalSchema,
+    total_duration_min_exact: exactRationalSchema,
+    total_duration_h_exact: exactRationalSchema,
+    failure_result: z
+      .object({
+        status: z.enum(['calculated', 'not_applicable']),
+        cycles_to_failure: z
+          .string()
+          .regex(/^(?:0|[1-9][0-9]{0,63})$/u)
+          .nullable(),
+        reason_code: z
+          .enum([
+            'failure_duration_unavailable',
+            'failure_endpoint_interval',
+            'failure_not_observed',
+            'failure_structure_ambiguous',
+            'failure_cycle_variable',
+            'failure_start_unknown',
+            'failure_attempts_ambiguous',
+          ])
+          .nullable(),
+      })
+      .strict()
+      .refine((value) =>
+        value.status === 'calculated'
+          ? value.cycles_to_failure !== null && value.reason_code === null
+          : value.cycles_to_failure === null && value.reason_code !== null,
+      ),
+    phases: z
+      .array(
+        z
+          .object({
+            phase: z.enum(['acceleration', 'steady_rotation', 'deceleration']),
+            start_s: exactRationalSchema,
+            end_s: exactRationalSchema,
+            start_rpm: exactRationalSchema,
+            end_rpm: exactRationalSchema,
+          })
+          .strict(),
+      )
+      .length(3),
+    diagram_points: z
+      .array(
+        z
+          .object({
+            boundary: z.enum([
+              'cycle_start',
+              'acceleration_end',
+              'steady_end',
+              'cycle_end',
+              'repeat_acceleration_end',
+              'repeat_steady_end',
+              'repeat_cycle_end',
+            ]),
+            x: z.number().int().min(0).max(2_000),
+            y: z.number().int().min(0).max(100),
+          })
+          .strict(),
+      )
+      .length(7),
+    formula_references: z.array(z.string()).length(4),
+  })
+  .strict();
+export const pmnAnalysisInputSnapshotSchema = z
+  .object({
+    analysisInputSnapshotId: entityIdSchema,
+    executionId: entityIdSchema,
+    inputSnapshot: pmnInputSnapshotPayloadSchema,
+    contentSha256: sha256Schema,
+    operationSha256: sha256Schema,
+    actor: z.string().min(1).max(200),
+    decisionReason: z.string().min(1).max(2_000),
+    createdAtUtc: canonicalUtcTimestampSchema,
+  })
+  .strict();
+export const pmnCalculationSnapshotSchema = z
+  .object({
+    calculationSnapshotId: entityIdSchema,
+    analysisInputSnapshotId: entityIdSchema,
+    executionId: entityIdSchema,
+    algorithmId: z.literal('pmn_reference'),
+    algorithmVersion: z.literal('1.0.0'),
+    numericPolicy: z.literal('exact_fraction_v1'),
+    resultSnapshot: pmnResultSnapshotSchema,
+    inputContentSha256: sha256Schema,
+    operationSha256: sha256Schema,
+    contentSha256: sha256Schema,
+    createdAtUtc: canonicalUtcTimestampSchema,
+  })
+  .strict();
+export const pmnCalculationDetailSchema = z
+  .object({
+    inputSnapshot: pmnAnalysisInputSnapshotSchema,
+    calculationSnapshot: pmnCalculationSnapshotSchema,
+  })
+  .strict();
+export const pmnCalculationWriteResultSchema = z
+  .object({ disposition: z.enum(['created', 'existing']), detail: pmnCalculationDetailSchema })
+  .strict();
+export const pmnCalculationSummarySchema = z
+  .object({
+    calculationSnapshotId: entityIdSchema,
+    analysisInputSnapshotId: entityIdSchema,
+    executionId: entityIdSchema,
+    wheelModelId: entityIdSchema,
+    targetCycles: z.string().regex(/^(?:0|[1-9][0-9]{0,12})$/u),
+    failureStatus: z.enum(['calculated', 'not_applicable']),
+    createdAtUtc: canonicalUtcTimestampSchema,
+  })
+  .strict();
+export const pmnCalculationPageSchema = z
+  .object({
+    items: z.array(pmnCalculationSummarySchema).max(50),
+    nextCursor: z.string().max(512).nullable(),
+  })
+  .strict();
 export const importedRunListResultSchema = z
   .object({ items: z.array(importedRunSummarySchema) })
   .strict();
@@ -2101,6 +2469,11 @@ export type RptCalculationCreateCommand = z.infer<typeof rptCalculationCreateCom
 export type RptCalculationDetail = z.infer<typeof rptCalculationDetailSchema>;
 export type RptCalculationWriteResult = z.infer<typeof rptCalculationWriteResultSchema>;
 export type RptCalculationPage = z.infer<typeof rptCalculationPageSchema>;
+export type PmnPlanSource = z.infer<typeof pmnPlanSourceSchema>;
+export type PmnCalculationCreateCommand = z.infer<typeof pmnCalculationCreateCommandSchema>;
+export type PmnCalculationDetail = z.infer<typeof pmnCalculationDetailSchema>;
+export type PmnCalculationWriteResult = z.infer<typeof pmnCalculationWriteResultSchema>;
+export type PmnCalculationPage = z.infer<typeof pmnCalculationPageSchema>;
 
 export interface WorkerOperationMap {
   readonly 'system.handshake': {
@@ -2362,6 +2735,22 @@ export interface WorkerOperationMap {
   readonly 'rptCalculation.getDetail': {
     readonly request: z.infer<typeof rptCalculationIdPayloadSchema>;
     readonly result: RptCalculationDetail;
+  };
+  readonly 'pmnCalculation.getSourceInputs': {
+    readonly request: z.infer<typeof pmnSourceInputsPayloadSchema>;
+    readonly result: PmnPlanSource;
+  };
+  readonly 'pmnCalculation.create': {
+    readonly request: PmnCalculationCreateCommand;
+    readonly result: PmnCalculationWriteResult;
+  };
+  readonly 'pmnCalculation.listPage': {
+    readonly request: z.infer<typeof pmnCalculationListPagePayloadSchema>;
+    readonly result: PmnCalculationPage;
+  };
+  readonly 'pmnCalculation.getDetail': {
+    readonly request: z.infer<typeof pmnCalculationIdPayloadSchema>;
+    readonly result: PmnCalculationDetail;
   };
 }
 
@@ -2695,6 +3084,30 @@ export const workerRequestSchema = z.discriminatedUnion('operation', [
       payload: rptCalculationIdPayloadSchema,
     })
     .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('pmnCalculation.getSourceInputs'),
+      payload: pmnSourceInputsPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('pmnCalculation.create'),
+      payload: pmnCalculationCreateCommandSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('pmnCalculation.listPage'),
+      payload: pmnCalculationListPagePayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('pmnCalculation.getDetail'),
+      payload: pmnCalculationIdPayloadSchema,
+    })
+    .strict(),
 ]);
 
 export const workerErrorSchema = z
@@ -2843,6 +3256,15 @@ export const rptCalculationWriteSuccessResponseSchema = createSuccessResponseSch
 );
 export const rptCalculationPageSuccessResponseSchema =
   createSuccessResponseSchema(rptCalculationPageSchema);
+export const pmnPlanSourceSuccessResponseSchema = createSuccessResponseSchema(pmnPlanSourceSchema);
+export const pmnCalculationDetailSuccessResponseSchema = createSuccessResponseSchema(
+  pmnCalculationDetailSchema,
+);
+export const pmnCalculationWriteSuccessResponseSchema = createSuccessResponseSchema(
+  pmnCalculationWriteResultSchema,
+);
+export const pmnCalculationPageSuccessResponseSchema =
+  createSuccessResponseSchema(pmnCalculationPageSchema);
 export const workerErrorResponseSchema = responseBaseSchema
   .extend({
     ok: z.literal(false),
@@ -2998,6 +3420,22 @@ const rptCalculationPageResponseSchema = z.union([
   rptCalculationPageSuccessResponseSchema,
   workerErrorResponseSchema,
 ]);
+const pmnPlanSourceResponseSchema = z.union([
+  pmnPlanSourceSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const pmnCalculationDetailResponseSchema = z.union([
+  pmnCalculationDetailSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const pmnCalculationWriteResponseSchema = z.union([
+  pmnCalculationWriteSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
+const pmnCalculationPageResponseSchema = z.union([
+  pmnCalculationPageSuccessResponseSchema,
+  workerErrorResponseSchema,
+]);
 
 export type WorkerRequest = z.infer<typeof workerRequestSchema>;
 export type WorkerErrorResponse = z.infer<typeof workerErrorResponseSchema>;
@@ -3078,6 +3516,10 @@ export interface WorkerResponseMap {
   readonly 'rptCalculation.create': z.infer<typeof rptCalculationWriteResponseSchema>;
   readonly 'rptCalculation.listPage': z.infer<typeof rptCalculationPageResponseSchema>;
   readonly 'rptCalculation.getDetail': z.infer<typeof rptCalculationDetailResponseSchema>;
+  readonly 'pmnCalculation.getSourceInputs': z.infer<typeof pmnPlanSourceResponseSchema>;
+  readonly 'pmnCalculation.create': z.infer<typeof pmnCalculationWriteResponseSchema>;
+  readonly 'pmnCalculation.listPage': z.infer<typeof pmnCalculationPageResponseSchema>;
+  readonly 'pmnCalculation.getDetail': z.infer<typeof pmnCalculationDetailResponseSchema>;
 }
 
 export type WorkerResponseFor<TOperation extends WorkerOperation> = WorkerResponseMap[TOperation];
@@ -3232,6 +3674,14 @@ export function parseWorkerResponse(operation: WorkerOperation, input: unknown):
       return rptCalculationPageResponseSchema.parse(input);
     case 'rptCalculation.getDetail':
       return rptCalculationDetailResponseSchema.parse(input);
+    case 'pmnCalculation.getSourceInputs':
+      return pmnPlanSourceResponseSchema.parse(input);
+    case 'pmnCalculation.create':
+      return pmnCalculationWriteResponseSchema.parse(input);
+    case 'pmnCalculation.listPage':
+      return pmnCalculationPageResponseSchema.parse(input);
+    case 'pmnCalculation.getDetail':
+      return pmnCalculationDetailResponseSchema.parse(input);
   }
 }
 
@@ -3464,5 +3914,18 @@ export interface ImpellerApi {
       limit?: number,
     ): Promise<DesktopResult<RptCalculationPage>>;
     getDetail(calculationSnapshotId: string): Promise<DesktopResult<RptCalculationDetail>>;
+  };
+  readonly pmnCalculation: {
+    getSourceInputs(
+      executionId: string,
+      planSelection: 'original' | 'effective',
+    ): Promise<DesktopResult<PmnPlanSource>>;
+    create(command: PmnCalculationCreateCommand): Promise<DesktopResult<PmnCalculationWriteResult>>;
+    listPage(
+      wheelModelId: string,
+      cursor?: string | null,
+      limit?: number,
+    ): Promise<DesktopResult<PmnCalculationPage>>;
+    getDetail(calculationSnapshotId: string): Promise<DesktopResult<PmnCalculationDetail>>;
   };
 }

@@ -7,6 +7,9 @@ import type {
   ImpellerApi,
   ImportedRunDetail,
   ImportedRunSummary,
+  PmnCalculationCreateCommand,
+  PmnCalculationDetail,
+  PmnPlanSource,
   RbdCalculationCreateCommand,
   RbdCalculationDetail,
   RbdPlanSource,
@@ -31,6 +34,8 @@ import type {
 } from '@impeller-reliability/contracts';
 import {
   importedRunDetailSchema,
+  pmnCalculationDetailSchema,
+  pmnPlanSourceSchema,
   rbdCalculationDetailSchema,
   rbdPlanSourceSchema,
   rptCalculationDetailSchema,
@@ -69,7 +74,10 @@ const previewStatuses: Readonly<Record<PreviewMode, RuntimeStatus>> = {
   },
 };
 
-export function createPreviewApi(mode: PreviewMode, sample: 'rbd' | 'rpt' = 'rbd'): ImpellerApi {
+export function createPreviewApi(
+  mode: PreviewMode,
+  sample: 'rbd' | 'rpt' | 'pmn' = 'rbd',
+): ImpellerApi {
   let status = previewStatuses[mode];
   let activeProject: ProjectOverview | null = null;
   let customer: CustomerProfile | null = null;
@@ -86,6 +94,7 @@ export function createPreviewApi(mode: PreviewMode, sample: 'rbd' | 'rpt' = 'rbd
   let reliabilityDatasets: readonly ReliabilityDatasetVersion[] = [];
   let rbdCalculations: readonly RbdCalculationDetail[] = [];
   let rptCalculations: readonly RptCalculationDetail[] = [];
+  let pmnCalculations: readonly PmnCalculationDetail[] = [];
   const recentProject: RecentProject = {
     path: 'C:\\Проекты\\Надёжность рабочего колеса.irproj',
     name: 'Надёжность рабочего колеса',
@@ -1075,6 +1084,92 @@ export function createPreviewApi(mode: PreviewMode, sample: 'rbd' | 'rpt' = 'rbd
         return Promise.resolve(detail === undefined ? notFound() : success(detail));
       },
     },
+    pmnCalculation: {
+      getSourceInputs: (executionId, selection) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        if (activeProject === null) return Promise.resolve(noProject());
+        const execution = reliabilityExecutions.find((item) => item.executionId === executionId);
+        if (execution === undefined || execution.method !== 'pmn')
+          return Promise.resolve(notFound());
+        return Promise.resolve(success(previewPmnPlanSource(execution, importedRun, selection)));
+      },
+      create: (command) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        if (activeProject === null) return Promise.resolve(noProject());
+        const existing = pmnCalculations.find(
+          (item) =>
+            item.calculationSnapshot.calculationSnapshotId === command.calculationSnapshotId,
+        );
+        if (existing !== undefined)
+          return Promise.resolve(success({ disposition: 'existing' as const, detail: existing }));
+        const execution = reliabilityExecutions.find(
+          (item) => item.executionId === command.executionId,
+        );
+        if (execution === undefined || execution.method !== 'pmn')
+          return Promise.resolve(notFound());
+        const requiredFields = new Set([
+          'nominal_rpm',
+          'speed_factor',
+          'target_cycles',
+          'acceleration_duration_s',
+          'steady_duration_s',
+          'deceleration_duration_s',
+        ]);
+        if (
+          command.selections.length !== 6 ||
+          command.selections.some(
+            (item) => !requiredFields.delete(item.field) || item.origin !== 'source',
+          ) ||
+          command.failureEvidence !== null
+        )
+          return Promise.resolve(
+            validationError('Synthetic preview поддерживает шесть исходных значений без T_ОТК.'),
+          );
+        const source = previewPmnPlanSource(execution, importedRun, command.planSelection);
+        const detail = previewPmnCalculationDetail(command, source);
+        pmnCalculations = [detail, ...pmnCalculations];
+        return Promise.resolve(success({ disposition: 'created' as const, detail }));
+      },
+      listPage: (wheelModelId, cursor, limit) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        if (activeProject === null) return Promise.resolve(noProject());
+        const pageLimit = limit ?? 25;
+        if (!Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > 50)
+          return Promise.resolve(validationError('Размер страницы должен быть от 1 до 50.'));
+        const offset = cursor === null || cursor === undefined ? 0 : Number.parseInt(cursor, 10);
+        if (!Number.isInteger(offset) || offset < 0 || String(offset) !== (cursor ?? '0'))
+          return Promise.resolve(validationError('Cursor списка повреждён.'));
+        const matching = pmnCalculations.filter((item) =>
+          reliabilityExecutions.some(
+            (execution) =>
+              execution.executionId === item.inputSnapshot.executionId &&
+              execution.wheelModelId === wheelModelId,
+          ),
+        );
+        return Promise.resolve(
+          success({
+            items: matching.slice(offset, offset + pageLimit).map((item) => ({
+              calculationSnapshotId: item.calculationSnapshot.calculationSnapshotId,
+              analysisInputSnapshotId: item.inputSnapshot.analysisInputSnapshotId,
+              executionId: item.inputSnapshot.executionId,
+              wheelModelId,
+              targetCycles: '2',
+              failureStatus: item.calculationSnapshot.resultSnapshot.failure_result.status,
+              createdAtUtc: item.calculationSnapshot.createdAtUtc,
+            })),
+            nextCursor: offset + pageLimit < matching.length ? String(offset + pageLimit) : null,
+          }),
+        );
+      },
+      getDetail: (calculationSnapshotId) => {
+        if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
+        if (activeProject === null) return Promise.resolve(noProject());
+        const detail = pmnCalculations.find(
+          (item) => item.calculationSnapshot.calculationSnapshotId === calculationSnapshotId,
+        );
+        return Promise.resolve(detail === undefined ? notFound() : success(detail));
+      },
+    },
   };
 }
 
@@ -1226,14 +1321,19 @@ function previewImportCancelled(jobId: string): RunPackageImportJob {
   });
 }
 
-function previewImportedRunDetail(sample: 'rbd' | 'rpt' = 'rbd'): ImportedRunDetail {
+function previewImportedRunDetail(sample: 'rbd' | 'rpt' | 'pmn' = 'rbd'): ImportedRunDetail {
   return importedRunDetailSchema.parse({
     summary: {
       localImportId: '60cdaf47-78e8-48b5-abcb-a465b42d3191',
       packageId: '1932f123-462a-4712-a86d-4d1ff8b651bf',
       exportRevision: 1,
       outerPackageSha256: 'c73d028a0aa5f0b7aacce2f216005048973c4895705b847b4c762b1d0e433c43',
-      runId: sample === 'rpt' ? 'normal_final_rpt' : 'normal_final_rbd',
+      runId:
+        sample === 'rpt'
+          ? 'normal_final_rpt'
+          : sample === 'pmn'
+            ? 'normal_final_pmn'
+            : 'normal_final_rbd',
       packageKind: 'final',
       packageSchema: 'r130sh.run-package.v1',
       packageCreatedAtUtc: '2026-08-31T10:00:00.000Z',
@@ -1300,7 +1400,7 @@ function previewImportedRunDetail(sample: 'rbd' | 'rpt' = 'rbd'): ImportedRunDet
       inspectionCount: 2,
       attachmentCount: 0,
       amendmentCount: 0,
-      creditingPolicy: sample === 'rpt' ? 'rpt.v1' : 'rbd.v1',
+      creditingPolicy: sample === 'rpt' ? 'rpt.v1' : sample === 'pmn' ? 'pmn.v1' : 'rbd.v1',
       acceptedElapsedS: '4',
     },
     inventory: [
@@ -1331,11 +1431,15 @@ function previewImportedRunDetail(sample: 'rbd' | 'rpt' = 'rbd'): ImportedRunDet
 }
 
 function previewPlan(
-  sample: 'rbd' | 'rpt' = 'rbd',
+  sample: 'rbd' | 'rpt' | 'pmn' = 'rbd',
 ): ImportedRunDetail['projection']['originalPlan'] {
   return {
     planId: planIdSchema.parse(
-      sample === 'rpt' ? 'plan-normal_final_rpt' : 'plan-normal_final_rbd',
+      sample === 'rpt'
+        ? 'plan-normal_final_rpt'
+        : sample === 'pmn'
+          ? 'plan-normal_final_pmn'
+          : 'plan-normal_final_rbd',
     ),
     planRevision: 1,
     mode: sample,
@@ -1344,20 +1448,236 @@ function previewPlan(
     laboratoryCaseReference: 'M9A-LAB-001',
     customerOrderReference: 'M9A-ORDER-001',
     nominalRpm: '1500',
-    targetCycles: sample === 'rpt' ? 3 : 1501,
-    targetMaxRpm: null,
+    targetCycles: sample === 'rpt' ? 3 : sample === 'pmn' ? 2 : 1501,
+    targetMaxRpm: sample === 'pmn' ? '1650' : null,
     lowerRpm: sample === 'rpt' ? '15' : null,
     upperRpm: sample === 'rpt' ? '1500' : null,
     targetSteadyDurationS: sample === 'rpt' ? null : '60.04',
-    totalDurationS: sample === 'rpt' ? '12' : '70.04',
+    totalDurationS: sample === 'rpt' ? '12' : sample === 'pmn' ? '10' : '70.04',
     lowerPointPolicy: sample === 'rpt' ? 'one_percent' : null,
     roundingPolicy: 'ceiling',
     requiredCyclesExact: sample === 'rpt' ? '3' : '1500.3',
     requiredSteadyDurationSExact: sample === 'rpt' ? null : '60.012',
     requiredTotalDurationSExact: sample === 'rpt' ? '12' : null,
-    cycleDurationSExact: sample === 'rpt' ? '4' : null,
-    targetMaxRpmExact: null,
+    cycleDurationSExact: sample === 'rpt' ? '4' : sample === 'pmn' ? '5' : null,
+    targetMaxRpmExact: sample === 'pmn' ? '1650' : null,
   };
+}
+
+function previewPmnPlanSource(
+  execution: ReliabilityExecution,
+  imported: ImportedRunDetail,
+  selection: 'original' | 'effective',
+): PmnPlanSource {
+  const plan =
+    selection === 'original' ? imported.projection.originalPlan : imported.projection.effectivePlan;
+  return pmnPlanSourceSchema.parse({
+    executionId: execution.executionId,
+    localImportId: imported.summary.localImportId,
+    packageId: imported.summary.packageId,
+    runId: imported.summary.runId,
+    exportRevision: imported.summary.exportRevision,
+    outerPackageSha256: imported.summary.outerPackageSha256,
+    sourceSnapshotSha256: imported.summary.sourceSnapshotSha256,
+    producerName: imported.summary.producerName,
+    producerVersion: imported.summary.producerVersion,
+    producerBuildId: imported.summary.producerBuildId,
+    producerGitCommit: imported.summary.producerGitCommit,
+    planSelection: selection,
+    payloadPath: selection === 'original' ? 'plan/original.json' : 'plan/effective.json',
+    payloadSha256: 'a'.repeat(64),
+    planId: plan.planId,
+    planRevision: plan.planRevision,
+    sourceValues: {
+      nominalRpm: '1500',
+      speedFactor: '1.1',
+      targetCycles: '2',
+      accelerationDurationS: '2',
+      steadyDurationS: '1',
+      decelerationDurationS: '2',
+    },
+    methodicalRequirements: {
+      targetMaxRpmExact: '1650',
+      cycleDurationSExact: '5',
+      totalDurationSExact: '10',
+    },
+    executionTargets: {
+      targetMaxRpm: '1650',
+      targetCycles: '2',
+      cycleDurationS: '5',
+      totalDurationS: '10',
+    },
+  });
+}
+
+function previewPmnCalculationDetail(
+  command: PmnCalculationCreateCommand,
+  source: PmnPlanSource,
+): PmnCalculationDetail {
+  // This fixed fixture demonstrates the UI shape; it does not execute engineering formulas.
+  const rational = (
+    numerator: string,
+    denominator: string,
+    decimal: string | null,
+    decimalPreview: string,
+  ) => ({
+    numerator,
+    denominator,
+    decimal,
+    decimal_preview: decimalPreview,
+  });
+  const zero = rational('0', '1', '0', '0');
+  const two = rational('2', '1', '2', '2');
+  const three = rational('3', '1', '3', '3');
+  const five = rational('5', '1', '5', '5');
+  const ten = rational('10', '1', '10', '10');
+  const rpm = rational('1650', '1', '1650', '1650');
+  const fields = [
+    'nominal_rpm',
+    'speed_factor',
+    'target_cycles',
+    'acceleration_duration_s',
+    'steady_duration_s',
+    'deceleration_duration_s',
+  ] as const;
+  const sourceValues = {
+    nominal_rpm: source.sourceValues.nominalRpm,
+    speed_factor: source.sourceValues.speedFactor,
+    target_cycles: source.sourceValues.targetCycles,
+    acceleration_duration_s: source.sourceValues.accelerationDurationS,
+    steady_duration_s: source.sourceValues.steadyDurationS,
+    deceleration_duration_s: source.sourceValues.decelerationDurationS,
+  };
+  const fieldUnits = {
+    nominal_rpm: 'rpm',
+    speed_factor: '1',
+    target_cycles: 'cycle',
+    acceleration_duration_s: 's',
+    steady_duration_s: 's',
+    deceleration_duration_s: 's',
+  };
+  const createdAtUtc = '2026-09-29T12:00:00.000Z';
+  const operationSha256 = 'b'.repeat(64);
+  const inputContentSha256 = 'c'.repeat(64);
+  return pmnCalculationDetailSchema.parse({
+    inputSnapshot: {
+      analysisInputSnapshotId: command.analysisInputSnapshotId,
+      executionId: command.executionId,
+      inputSnapshot: {
+        schemaVersion: 1,
+        operation: {
+          schemaVersion: 1,
+          ...command,
+          selections: command.selections.map((item) => ({
+            field: item.field,
+            origin: item.origin,
+            manual_value: null,
+            basis: '',
+            evidence: null,
+          })),
+          failureEvidence: null,
+          algorithmId: 'pmn_reference',
+          algorithmVersion: '1.0.0',
+          numericPolicy: 'exact_fraction_v1',
+        },
+        source: {
+          executionId: source.executionId,
+          localImportId: source.localImportId,
+          packageId: source.packageId,
+          runId: source.runId,
+          exportRevision: source.exportRevision,
+          outerPackageSha256: source.outerPackageSha256,
+          sourceSnapshotSha256: source.sourceSnapshotSha256,
+          producer: {
+            name: source.producerName,
+            version: source.producerVersion,
+            buildId: source.producerBuildId,
+            gitCommit: source.producerGitCommit,
+          },
+          planSelection: source.planSelection,
+          payloadPath: source.payloadPath,
+          payloadSha256: source.payloadSha256,
+          planId: source.planId,
+          planRevision: source.planRevision,
+          sourceValues,
+          methodicalRequirements: {
+            target_max_rpm_exact: source.methodicalRequirements.targetMaxRpmExact,
+            cycle_duration_s_exact: source.methodicalRequirements.cycleDurationSExact,
+            total_duration_s_exact: source.methodicalRequirements.totalDurationSExact,
+          },
+          executionTargets: {
+            target_max_rpm: source.executionTargets.targetMaxRpm,
+            target_cycles: source.executionTargets.targetCycles,
+            cycle_duration_s: source.executionTargets.cycleDurationS,
+            total_duration_s: source.executionTargets.totalDurationS,
+          },
+        },
+        fieldSelections: fields.map((field) => ({
+          field,
+          unit: fieldUnits[field],
+          origin: 'source',
+          value: sourceValues[field],
+          rawSourceValue: sourceValues[field],
+          sourceReference: `${source.payloadPath}#/${source.planSelection === 'effective' ? 'effective_plan/effective_plan/' : ''}source_values/${field}`,
+          basis: '',
+          document: null,
+        })),
+        failureEvidence: null,
+      },
+      contentSha256: inputContentSha256,
+      operationSha256,
+      actor: command.actor,
+      decisionReason: command.reason,
+      createdAtUtc,
+    },
+    calculationSnapshot: {
+      calculationSnapshotId: command.calculationSnapshotId,
+      analysisInputSnapshotId: command.analysisInputSnapshotId,
+      executionId: command.executionId,
+      algorithmId: 'pmn_reference',
+      algorithmVersion: '1.0.0',
+      numericPolicy: 'exact_fraction_v1',
+      resultSnapshot: {
+        algorithm_id: 'pmn_reference',
+        algorithm_version: '1.0.0',
+        numeric_policy: 'exact_fraction_v1',
+        maximum_rpm: rpm,
+        cycle_duration_s_exact: five,
+        total_duration_s_exact: ten,
+        total_duration_min_exact: rational('1', '6', null, '0.166666666666…'),
+        total_duration_h_exact: rational('1', '360', null, '0.002777777777…'),
+        failure_result: {
+          status: 'not_applicable',
+          cycles_to_failure: null,
+          reason_code: 'failure_duration_unavailable',
+        },
+        phases: [
+          { phase: 'acceleration', start_s: zero, end_s: two, start_rpm: zero, end_rpm: rpm },
+          { phase: 'steady_rotation', start_s: two, end_s: three, start_rpm: rpm, end_rpm: rpm },
+          { phase: 'deceleration', start_s: three, end_s: five, start_rpm: rpm, end_rpm: zero },
+        ],
+        diagram_points: [
+          { boundary: 'cycle_start', x: 0, y: 100 },
+          { boundary: 'acceleration_end', x: 400, y: 0 },
+          { boundary: 'steady_end', x: 600, y: 0 },
+          { boundary: 'cycle_end', x: 1000, y: 100 },
+          { boundary: 'repeat_acceleration_end', x: 1400, y: 0 },
+          { boundary: 'repeat_steady_end', x: 1600, y: 0 },
+          { boundary: 'repeat_cycle_end', x: 2000, y: 100 },
+        ],
+        formula_references: [
+          'ПМИ Р130У, редакция 01, 2024, страница 15, формула 8',
+          'ПМИ Р130У, редакция 01, 2024, страница 15, формула 9',
+          'ПМИ Р130У, редакция 01, 2024, страница 16, формула 10',
+          'ПМИ Р130У, редакция 01, 2024, страница 15, таблица 5',
+        ],
+      },
+      inputContentSha256,
+      operationSha256,
+      contentSha256: 'd'.repeat(64),
+      createdAtUtc,
+    },
+  });
 }
 
 function previewRptPlanSource(

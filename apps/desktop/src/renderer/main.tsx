@@ -27,8 +27,8 @@ async function resolveDesktopApi(): Promise<DesktopApiResolution> {
   const previewMode = new URLSearchParams(window.location.search).get('preview');
   if (import.meta.env.DEV && (previewMode === 'ready' || previewMode === 'unavailable')) {
     const { createPreviewApi } = await import('./preview-api');
-    const sample =
-      new URLSearchParams(window.location.search).get('sample') === 'rpt' ? 'rpt' : 'rbd';
+    const sampleParam = new URLSearchParams(window.location.search).get('sample');
+    const sample = sampleParam === 'rpt' || sampleParam === 'pmn' ? sampleParam : 'rbd';
     return { desktopApi: createPreviewApi(previewMode, sample), browserPreview: true };
   }
 

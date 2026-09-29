@@ -591,6 +591,7 @@ def test_dataset_schema_rejects_method_metric_mismatch() -> None:
         "DELETE FROM schema_migrations",
         "ALTER TABLE project_metadata ADD COLUMN unexpected TEXT",
         "CREATE TABLE unrecognized_project_data (value TEXT)",
+        "DROP TABLE pmn_calculation_snapshots; DROP TABLE pmn_analysis_input_snapshots",
     ],
 )
 def test_schema_v1_contract_is_rejected_without_mutation(

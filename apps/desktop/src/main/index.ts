@@ -35,6 +35,10 @@ import {
   reliabilityObservationCreateVersionCommandSchema,
   reliabilityObservationVersionIdPayloadSchema,
   reliabilityPagePayloadSchema,
+  pmnCalculationCreateCommandSchema,
+  pmnCalculationIdPayloadSchema,
+  pmnCalculationListPagePayloadSchema,
+  pmnSourceInputsPayloadSchema,
   rbdCalculationCreateCommandSchema,
   rbdCalculationIdPayloadSchema,
   rbdSourceInputsPayloadSchema,
@@ -751,6 +755,34 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
     if (!parsed.success) return validationFailure();
     return runProjectOperation(workerClient, async (client) =>
       client.request('rptCalculation.getDetail', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.pmnCalculationGetSourceInputs, (_event, raw: unknown) => {
+    const parsed = pmnSourceInputsPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('pmnCalculation.getSourceInputs', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.pmnCalculationCreate, (_event, raw: unknown) => {
+    const parsed = pmnCalculationCreateCommandSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('pmnCalculation.create', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.pmnCalculationListPage, (_event, raw: unknown) => {
+    const parsed = pmnCalculationListPagePayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('pmnCalculation.listPage', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.pmnCalculationGetDetail, (_event, raw: unknown) => {
+    const parsed = pmnCalculationIdPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runProjectOperation(workerClient, async (client) =>
+      client.request('pmnCalculation.getDetail', parsed.data),
     );
   });
 }

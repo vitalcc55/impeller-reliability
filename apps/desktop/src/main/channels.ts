@@ -72,4 +72,8 @@ export const IPC_CHANNELS = {
   rptCalculationCreate: 'impeller:rpt-calculation:create',
   rptCalculationListPage: 'impeller:rpt-calculation:list-page',
   rptCalculationGetDetail: 'impeller:rpt-calculation:get-detail',
+  pmnCalculationGetSourceInputs: 'impeller:pmn-calculation:get-source-inputs',
+  pmnCalculationCreate: 'impeller:pmn-calculation:create',
+  pmnCalculationListPage: 'impeller:pmn-calculation:list-page',
+  pmnCalculationGetDetail: 'impeller:pmn-calculation:get-detail',
 } as const;

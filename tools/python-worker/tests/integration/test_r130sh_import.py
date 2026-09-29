@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from contextlib import closing
 import csv
-from dataclasses import replace
+from dataclasses import asdict, replace
+from fractions import Fraction
 import hashlib
 import io
 import json
@@ -21,6 +22,9 @@ from pydantic import TypeAdapter
 import pytest
 
 from impeller_reliability.application.project_service import ProjectService
+from impeller_reliability.calculations.exact import exact_value
+from impeller_reliability.calculations.pmn_input_snapshot import PmnInputField
+from impeller_reliability.calculations.pmn_result_snapshot import PmnReferenceResultModel
 from impeller_reliability.calculations.rbd_input_snapshot import RbdSavedFieldSelectionModel
 from impeller_reliability.calculations.rpt_input_snapshot import RptInputField
 from impeller_reliability.integration.r130run.import_jobs import RunPackageImportJobManager
@@ -33,11 +37,13 @@ from impeller_reliability.integration.r130run.validator import (
     ValidationControl,
 )
 from impeller_reliability.persistence import (
+    pmn_calculations as pmn_calculations_module,
     r130sh_sources as r130sh_sources_module,
     rbd_calculations as rbd_calculations_module,
     reliability_domain as reliability_domain_module,
     rpt_calculations as rpt_calculations_module,
 )
+from impeller_reliability.persistence.pmn_calculations import PmnCalculationWriteResult, PmnEvidenceReference, PmnFailureEvidence, PmnFieldSelection
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.r130sh_sources import ImportedRunDetail, ImportedRunSummary, RbdPlanSourceSnapshot
 from impeller_reliability.persistence.rbd_calculations import (
@@ -55,6 +61,10 @@ from impeller_reliability.persistence.reliability_domain import (
 from impeller_reliability.persistence.rpt_calculations import RptCalculationWriteResult, RptEvidenceReference, RptFailureEvidence, RptFieldSelection
 from impeller_reliability.protocol.envelopes import (
     REQUEST_ENVELOPE_ADAPTER,
+    PmnCalculationDetailResult,
+    PmnCalculationPageResult,
+    PmnCalculationWriteResultModel,
+    PmnPlanSourceResult,
     RbdPlanSourceValuesResult,
     RptCalculationDetailResult,
     RptCalculationPageResult,
@@ -1025,6 +1035,500 @@ def test_pmn_source_reader_preserves_numeric_json_scalars_and_zero(tmp_path: Pat
     service.close()
 
 
+def _pmn_source_selections() -> tuple[PmnFieldSelection, ...]:
+    return tuple(
+        PmnFieldSelection(field=field, origin="source")
+        for field in (
+            "nominal_rpm",
+            "speed_factor",
+            "target_cycles",
+            "acceleration_duration_s",
+            "steady_duration_s",
+            "deceleration_duration_s",
+        )
+    )
+
+
+def test_pmn_calculation_immutable_pair_history_retry_and_reopen_without_zip(tmp_path: Path) -> None:
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    input_id, calculation_id = str(uuid4()), str(uuid4())
+    selections = _pmn_source_selections()
+    saved = service.create_pmn_calculation(
+        analysis_input_snapshot_id=input_id,
+        calculation_snapshot_id=calculation_id,
+        execution_id=execution.execution_id,
+        selection="effective",
+        selections=selections,
+        failure=None,
+        actor=" local_user ",
+        reason="  ПМН по исходному плану  ",
+        deadline=None,
+    )
+    assert saved.disposition == "created"
+    assert saved.detail.input_snapshot.actor == "local_user"
+    assert saved.detail.input_snapshot.decision_reason == "ПМН по исходному плану"
+    result = saved.detail.calculation_snapshot.result_snapshot
+    assert OBJECT_ADAPTER.validate_python(result["maximum_rpm"])["decimal"] == "1650"
+    assert OBJECT_ADAPTER.validate_python(result["cycle_duration_s_exact"])["decimal"] == "5"
+    assert OBJECT_ADAPTER.validate_python(result["total_duration_s_exact"])["decimal"] == "10"
+    assert OBJECT_ADAPTER.validate_python(result["failure_result"])["status"] == "not_applicable"
+    source = OBJECT_ADAPTER.validate_python(saved.detail.input_snapshot.input_snapshot["source"])
+    assert source["localImportId"] == imported.local_import_id
+    assert source["planSelection"] == "effective"
+    assert service.get_pmn_calculation_detail(calculation_id, None) == saved.detail
+    page = service.list_pmn_calculation_page(execution.wheel_model_id, None, 25, None)
+    assert [item.calculation_snapshot_id for item in page.items] == [calculation_id]
+    assert page.next_cursor is None
+    assert (
+        service.create_pmn_calculation(
+            analysis_input_snapshot_id=input_id,
+            calculation_snapshot_id=calculation_id,
+            execution_id=execution.execution_id,
+            selection="effective",
+            selections=selections,
+            failure=None,
+            actor=" local_user ",
+            reason="  ПМН по исходному плану  ",
+            deadline=None,
+        ).disposition
+        == "existing"
+    )
+    service.close()
+    _managed_path(project_path, imported).unlink()
+    service.open(path=str(project_path), application_instance_id="pmn-reopen")
+    assert service.get_pmn_calculation_detail(calculation_id, None) == saved.detail
+    assert (
+        service.create_pmn_calculation(
+            analysis_input_snapshot_id=input_id,
+            calculation_snapshot_id=calculation_id,
+            execution_id=execution.execution_id,
+            selection="effective",
+            selections=selections,
+            failure=None,
+            actor=" local_user ",
+            reason="  ПМН по исходному плану  ",
+            deadline=None,
+        ).disposition
+        == "existing"
+    )
+    service.close()
+
+
+@pytest.mark.parametrize(("failure_duration", "expected_cycles"), [("2", "1"), ("0", "0")])
+def test_pmn_manual_input_and_table_5_survive_document_change(tmp_path: Path, failure_duration: str, expected_cycles: str) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    document = service.create_case_document(
+        str(uuid4()),
+        {
+            "documentKind": "measurement_or_attestation_record",
+            "title": "Протокол точного времени до отказа",
+            "designation": "ПМН-ОТК-01",
+            "revisionLabel": "01",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "",
+        },
+        (),
+        (),
+        None,
+    )
+    evidence = PmnEvidenceReference(
+        document_id=document.case_document_id,
+        document_record_revision=document.record_revision,
+        document_locator="раздел 3, событие отказа и начало отсчёта",
+    )
+    selections = tuple(
+        PmnFieldSelection(
+            field=field,
+            origin="manual" if field == "speed_factor" else "source",
+            manual_value="1.2" if field == "speed_factor" else None,
+            basis="Коэффициент выбран инженером" if field == "speed_factor" else "",
+            evidence=evidence if field == "speed_factor" else None,
+        )
+        for field in (
+            "nominal_rpm",
+            "speed_factor",
+            "target_cycles",
+            "acceleration_duration_s",
+            "steady_duration_s",
+            "deceleration_duration_s",
+        )
+    )
+    failure = PmnFailureEvidence(
+        applicability="exact_supported",
+        duration_to_failure_s=failure_duration,
+        basis="Время до установленного отказа соответствует одному запуску и постоянному циклу",
+        evidence=evidence,
+    )
+    input_id, calculation_id = str(uuid4()), str(uuid4())
+    saved = service.create_pmn_calculation(
+        analysis_input_snapshot_id=input_id,
+        calculation_snapshot_id=calculation_id,
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=selections,
+        failure=failure,
+        actor="local_user",
+        reason="Ручное дополнение и таблица 5",
+        deadline=None,
+    )
+    saved_fields = FIELD_SELECTIONS_ADAPTER.validate_python(saved.detail.input_snapshot.input_snapshot["fieldSelections"])
+    speed = next(item for item in saved_fields if item["field"] == "speed_factor")
+    assert speed["rawSourceValue"] == "1.1"
+    assert speed["value"] == "1.2"
+    assert OBJECT_ADAPTER.validate_python(speed["document"])["recordRevision"] == document.record_revision
+    assert OBJECT_ADAPTER.validate_python(saved.detail.calculation_snapshot.result_snapshot["maximum_rpm"])["decimal"] == "1800"
+    assert OBJECT_ADAPTER.validate_python(saved.detail.calculation_snapshot.result_snapshot["failure_result"])["cycles_to_failure"] == expected_cycles
+    updated = service.update_case_document(
+        document.case_document_id,
+        document.record_revision,
+        {
+            "documentKind": "measurement_or_attestation_record",
+            "title": "Протокол уточнён",
+            "designation": "ПМН-ОТК-01",
+            "revisionLabel": "02",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "",
+        },
+        (),
+        (),
+        None,
+    )
+    service.set_case_document_archived(document.case_document_id, updated.record_revision, True, None)
+    assert service.get_pmn_calculation_detail(calculation_id, None) == saved.detail
+    assert (
+        service.create_pmn_calculation(
+            analysis_input_snapshot_id=input_id,
+            calculation_snapshot_id=calculation_id,
+            execution_id=execution.execution_id,
+            selection="original",
+            selections=selections,
+            failure=failure,
+            actor="local_user",
+            reason="Ручное дополнение и таблица 5",
+            deadline=None,
+        ).disposition
+        == "existing"
+    )
+    with pytest.raises(ProjectOperationError) as archived:
+        service.create_pmn_calculation(
+            analysis_input_snapshot_id=str(uuid4()),
+            calculation_snapshot_id=str(uuid4()),
+            execution_id=execution.execution_id,
+            selection="original",
+            selections=selections,
+            failure=failure,
+            actor="local_user",
+            reason="Новая запись по архивному документу",
+            deadline=None,
+        )
+    assert archived.value.code in {"entity_archived", "validation_error"}
+    service.close()
+    service.open(path=str(project_path), application_instance_id="pmn-document-reopen")
+    assert service.get_pmn_calculation_detail(calculation_id, None) == saved.detail
+    service.close()
+
+
+def test_pmn_calculation_rollback_conflicting_retry_and_bounded_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    selections = _pmn_source_selections()
+    input_id, calculation_id = str(uuid4()), str(uuid4())
+    with monkeypatch.context() as patch_context:
+
+        def fail_audit(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("injected pmn audit failure")
+
+        patch_context.setattr(pmn_calculations_module, "insert_audit", fail_audit)
+        with pytest.raises(RuntimeError, match="injected pmn audit failure"):
+            service.create_pmn_calculation(
+                analysis_input_snapshot_id=input_id,
+                calculation_snapshot_id=calculation_id,
+                execution_id=execution.execution_id,
+                selection="original",
+                selections=selections,
+                failure=None,
+                actor="local_user",
+                reason="Проверка атомарности",
+                deadline=None,
+            )
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        assert connection.execute("SELECT count(*) FROM pmn_analysis_input_snapshots").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM pmn_calculation_snapshots").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM project_audit_events WHERE event_type='pmn_calculation.created'").fetchone()[0] == 0
+    saved = service.create_pmn_calculation(
+        analysis_input_snapshot_id=input_id,
+        calculation_snapshot_id=calculation_id,
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=selections,
+        failure=None,
+        actor="local_user",
+        reason="Проверка атомарности",
+        deadline=None,
+    )
+    assert saved.disposition == "created"
+    for changed_input_id, changed_calculation_id, changed_reason in (
+        (input_id, calculation_id, "Иное основание"),
+        (input_id, str(uuid4()), "Проверка атомарности"),
+        (str(uuid4()), calculation_id, "Проверка атомарности"),
+    ):
+        with pytest.raises(ProjectOperationError) as conflicting:
+            service.create_pmn_calculation(
+                analysis_input_snapshot_id=changed_input_id,
+                calculation_snapshot_id=changed_calculation_id,
+                execution_id=execution.execution_id,
+                selection="original",
+                selections=selections,
+                failure=None,
+                actor="local_user",
+                reason=changed_reason,
+                deadline=None,
+            )
+        assert conflicting.value.code == "revision_conflict"
+    with pytest.raises(ProjectOperationError) as wrong_method:
+        service.get_rpt_calculation_detail(calculation_id, None)
+    assert wrong_method.value.code == "entity_not_found"
+    second_id = str(uuid4())
+    service.create_pmn_calculation(
+        analysis_input_snapshot_id=str(uuid4()),
+        calculation_snapshot_id=second_id,
+        execution_id=execution.execution_id,
+        selection="effective",
+        selections=selections,
+        failure=None,
+        actor="local_user",
+        reason="Вторая запись",
+        deadline=None,
+    )
+    first_page = service.list_pmn_calculation_page(execution.wheel_model_id, None, 1, None)
+    assert [item.calculation_snapshot_id for item in first_page.items] == [second_id]
+    assert first_page.next_cursor is not None
+    second_page = service.list_pmn_calculation_page(execution.wheel_model_id, first_page.next_cursor, 1, None)
+    assert [item.calculation_snapshot_id for item in second_page.items] == [calculation_id]
+    assert second_page.next_cursor is None
+    with pytest.raises(ProjectOperationError) as too_large:
+        service.list_pmn_calculation_page(execution.wheel_model_id, None, 51, None)
+    assert too_large.value.code == "validation_error"
+    service.close()
+
+
+def test_pmn_calculation_four_typed_dispatch_operations_and_bounded_envelope(tmp_path: Path) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    service.close()
+    dispatcher = Dispatcher(tmp_path)
+
+    def request(operation: str, payload: dict[str, object], revision: int) -> object:
+        envelope = REQUEST_ENVELOPE_ADAPTER.validate_python(
+            {
+                "protocolVersion": 1,
+                "requestId": f"pmn-{revision}",
+                "kind": "request",
+                "operation": operation,
+                "revision": revision,
+                "deadlineMs": 30_000 if operation in {"pmnCalculation.getSourceInputs", "pmnCalculation.create"} else 5_000,
+                "payload": payload,
+            }
+        )
+        response = dispatcher.dispatch(envelope)
+        assert len(response.model_dump_json().encode("utf-8")) < 1_048_576
+        return response.result
+
+    request("project.open", {"path": str(project_path), "applicationInstanceId": str(uuid4())}, 1)
+    source = request("pmnCalculation.getSourceInputs", {"executionId": execution.execution_id, "planSelection": "effective"}, 2)
+    assert isinstance(source, PmnPlanSourceResult)
+    assert source.sourceValues.speedFactor == "1.1"
+    assert source.sourceValues.targetCycles == "2"
+    assert source.methodicalRequirements.targetMaxRpmExact == "1650"
+    assert source.executionTargets.targetCycles == "2"
+    input_id, calculation_id = str(uuid4()), str(uuid4())
+    written = request(
+        "pmnCalculation.create",
+        {
+            "analysisInputSnapshotId": input_id,
+            "calculationSnapshotId": calculation_id,
+            "executionId": execution.execution_id,
+            "planSelection": "effective",
+            "selections": [
+                {"field": field, "origin": "source"}
+                for field in (
+                    "nominal_rpm",
+                    "speed_factor",
+                    "target_cycles",
+                    "acceleration_duration_s",
+                    "steady_duration_s",
+                    "deceleration_duration_s",
+                )
+            ],
+            "failureEvidence": None,
+            "actor": "local_user",
+            "reason": "Проверка production dispatcher",
+        },
+        3,
+    )
+    assert isinstance(written, PmnCalculationWriteResultModel)
+    assert written.detail.calculationSnapshot.resultSnapshot.maximum_rpm.decimal == "1650"
+    page = request("pmnCalculation.listPage", {"wheelModelId": execution.wheel_model_id}, 4)
+    assert isinstance(page, PmnCalculationPageResult)
+    assert [item.calculationSnapshotId for item in page.items] == [calculation_id]
+    detail = request("pmnCalculation.getDetail", {"calculationSnapshotId": calculation_id}, 5)
+    assert isinstance(detail, PmnCalculationDetailResult)
+    assert detail == written.detail
+    dispatcher.close()
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "speed_factor_nan",
+        "target_cycles_fraction",
+        "target_cycles_zero",
+        "cycle_zero",
+        "failure_duration_nan",
+        "failure_duration_too_large",
+        "wrong_unit",
+        "wrong_coordinate",
+        "wrong_plan_path",
+        "wrong_nested_type",
+        "wrong_failure_reason",
+        "wrong_result_frequency",
+        "wrong_result_cycle_duration",
+        "wrong_result_failure_count",
+        "changed_imported_speed_factor",
+        "changed_imported_target_cycles",
+    ],
+)
+def test_pmn_resealed_invalid_snapshot_is_rejected_by_detail_and_reopen(tmp_path: Path, damage: str) -> None:
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    document = service.create_case_document(
+        str(uuid4()),
+        {
+            "documentKind": "measurement_or_attestation_record",
+            "title": "Протокол отказа",
+            "designation": "ПМН-ОТК-02",
+            "revisionLabel": "01",
+            "documentDate": "2024-07-02",
+            "issuer": "ЛИЦ ВВУ",
+            "notes": "",
+        },
+        (),
+        (),
+        None,
+    )
+    evidence = PmnEvidenceReference(document.case_document_id, document.record_revision, "раздел 3")
+    chosen: dict[PmnInputField, str] = {
+        "nominal_rpm": "1500",
+        "speed_factor": "1.2",
+        "target_cycles": "2",
+        "acceleration_duration_s": "2",
+        "steady_duration_s": "1",
+        "deceleration_duration_s": "2",
+    }
+    saved = service.create_pmn_calculation(
+        analysis_input_snapshot_id=str(uuid4()),
+        calculation_snapshot_id=str(uuid4()),
+        execution_id=execution.execution_id,
+        selection="original",
+        selections=tuple(PmnFieldSelection(field=field, origin="manual", manual_value=value, basis="Сценарий инженера") for field, value in chosen.items()),
+        failure=PmnFailureEvidence("exact_supported", "8", "От начала до отказа", evidence),
+        actor="local_user",
+        reason="Проверка сохранённого входа",
+        deadline=None,
+    )
+    input_payload = dict(saved.detail.input_snapshot.input_snapshot)
+    result_payload = dict(saved.detail.calculation_snapshot.result_snapshot)
+    if damage in {"speed_factor_nan", "target_cycles_fraction", "target_cycles_zero", "cycle_zero"}:
+        field = "speed_factor" if damage == "speed_factor_nan" else "target_cycles" if damage.startswith("target_cycles") else "steady_duration_s"
+        value = "NaN" if damage == "speed_factor_nan" else "2.5" if damage == "target_cycles_fraction" else "0"
+        operation = OBJECT_ADAPTER.validate_python(input_payload["operation"])
+        operation_selections = FIELD_SELECTIONS_ADAPTER.validate_python(operation["selections"])
+        saved_selections = FIELD_SELECTIONS_ADAPTER.validate_python(input_payload["fieldSelections"])
+        for item in operation_selections:
+            if item["field"] == field or (damage == "cycle_zero" and item["field"] in {"acceleration_duration_s", "deceleration_duration_s"}):
+                item["manual_value"] = value
+        for item in saved_selections:
+            if item["field"] == field or (damage == "cycle_zero" and item["field"] in {"acceleration_duration_s", "deceleration_duration_s"}):
+                item["value"] = value
+        operation["selections"] = operation_selections
+        input_payload["operation"] = operation
+        input_payload["fieldSelections"] = saved_selections
+    elif damage in {"failure_duration_nan", "failure_duration_too_large"}:
+        value = "NaN" if damage.endswith("nan") else "1000000000001"
+        operation = OBJECT_ADAPTER.validate_python(input_payload["operation"])
+        operation_failure = OBJECT_ADAPTER.validate_python(operation["failureEvidence"])
+        saved_failure = OBJECT_ADAPTER.validate_python(input_payload["failureEvidence"])
+        operation_failure["duration_to_failure_s"] = value
+        saved_failure["durationToFailureS"] = value
+        operation["failureEvidence"] = operation_failure
+        input_payload["operation"] = operation
+        input_payload["failureEvidence"] = saved_failure
+    elif damage in {"wrong_unit", "wrong_coordinate"}:
+        saved_selections = FIELD_SELECTIONS_ADAPTER.validate_python(input_payload["fieldSelections"])
+        selected = next(item for item in saved_selections if item["field"] == "target_cycles")
+        selected["unit" if damage == "wrong_unit" else "sourceReference"] = "rpm" if damage == "wrong_unit" else "plan/original.json#/execution_targets/target_cycles"
+        input_payload["fieldSelections"] = saved_selections
+    elif damage == "wrong_nested_type":
+        source = OBJECT_ADAPTER.validate_python(input_payload["source"])
+        requirements = OBJECT_ADAPTER.validate_python(source["methodicalRequirements"])
+        requirements["target_max_rpm_exact"] = ["invalid"]
+        source["methodicalRequirements"] = requirements
+        input_payload["source"] = source
+    elif damage == "wrong_plan_path":
+        source = OBJECT_ADAPTER.validate_python(input_payload["source"])
+        source["payloadPath"] = "plan/effective.json"
+        input_payload["source"] = source
+    elif damage == "changed_imported_speed_factor":
+        source = OBJECT_ADAPTER.validate_python(input_payload["source"])
+        source_values = OBJECT_ADAPTER.validate_python(source["sourceValues"])
+        source_values["speed_factor"] = "1.3"
+        source["sourceValues"] = source_values
+        input_payload["source"] = source
+        selections = FIELD_SELECTIONS_ADAPTER.validate_python(input_payload["fieldSelections"])
+        next(item for item in selections if item["field"] == "speed_factor")["rawSourceValue"] = "1.3"
+        input_payload["fieldSelections"] = selections
+    elif damage == "changed_imported_target_cycles":
+        source = OBJECT_ADAPTER.validate_python(input_payload["source"])
+        targets = OBJECT_ADAPTER.validate_python(source["executionTargets"])
+        targets["target_cycles"] = "3"
+        source["executionTargets"] = targets
+        input_payload["source"] = source
+    elif damage == "wrong_failure_reason":
+        failure_result = OBJECT_ADAPTER.validate_python(result_payload["failure_result"])
+        failure_result.update(status="not_applicable", cycles_to_failure=None, reason_code="failure_cycle_variable")
+        result_payload["failure_result"] = failure_result
+    elif damage == "wrong_result_frequency":
+        changed = asdict(exact_value(Fraction(1801)))
+        result_payload["maximum_rpm"] = changed
+        phases = FIELD_SELECTIONS_ADAPTER.validate_python(result_payload["phases"])
+        phases[0]["end_rpm"] = changed
+        phases[1]["start_rpm"] = changed
+        phases[1]["end_rpm"] = changed
+        phases[2]["start_rpm"] = changed
+        result_payload["phases"] = phases
+    elif damage == "wrong_result_cycle_duration":
+        result_payload["cycle_duration_s_exact"] = asdict(exact_value(Fraction(6)))
+        result_payload["total_duration_s_exact"] = asdict(exact_value(Fraction(12)))
+        result_payload["total_duration_min_exact"] = asdict(exact_value(Fraction(1, 5)))
+        result_payload["total_duration_h_exact"] = asdict(exact_value(Fraction(1, 300)))
+        phases = FIELD_SELECTIONS_ADAPTER.validate_python(result_payload["phases"])
+        phases[2]["end_s"] = asdict(exact_value(Fraction(6)))
+        result_payload["phases"] = phases
+    else:
+        failure_result = OBJECT_ADAPTER.validate_python(result_payload["failure_result"])
+        failure_result["cycles_to_failure"] = "3"
+        result_payload["failure_result"] = failure_result
+    if damage.startswith("wrong_result_"):
+        PmnReferenceResultModel.model_validate_json(_canonical_package_json(result_payload))
+    _reseal_saved_calculation_snapshot(project_path, saved, input_payload, result_payload, "pmn")
+    with pytest.raises(ProjectOperationError) as detail_corrupted:
+        service.get_pmn_calculation_detail(saved.detail.calculation_snapshot.calculation_snapshot_id, None)
+    assert detail_corrupted.value.code == "corrupt_project"
+    service.close()
+    with pytest.raises(ProjectOperationError) as reopen_corrupted:
+        service.open(path=str(project_path), application_instance_id="pmn-resealed-invalid")
+    assert reopen_corrupted.value.code == "corrupt_project"
+
+
 def test_pmn_source_reader_keeps_importer_valid_lexeme_outside_analytic_range(tmp_path: Path) -> None:
     synthetic = _package_with_plan_values(
         tmp_path,
@@ -1713,6 +2217,16 @@ def _reseal_saved_rpt_snapshot(
     input_payload: dict[str, object],
     result_payload: dict[str, object],
 ) -> None:
+    _reseal_saved_calculation_snapshot(project_path, saved, input_payload, result_payload, "rpt")
+
+
+def _reseal_saved_calculation_snapshot(
+    project_path: Path,
+    saved: RptCalculationWriteResult | PmnCalculationWriteResult,
+    input_payload: dict[str, object],
+    result_payload: dict[str, object],
+    method: Literal["rpt", "pmn"],
+) -> None:
     # The test changes all linked hashes and audit evidence, leaving only domain validation to detect corruption.
     detail = saved.detail
     input_snapshot = detail.input_snapshot
@@ -1748,8 +2262,8 @@ def _reseal_saved_rpt_snapshot(
     with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
         triggers: dict[str, str] = {}
         for name in (
-            "rpt_analysis_input_snapshots_no_update",
-            "rpt_calculation_snapshots_no_update",
+            f"{method}_analysis_input_snapshots_no_update",
+            f"{method}_calculation_snapshots_no_update",
             "project_audit_events_no_update",
         ):
             row = connection.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (name,)).fetchone()
@@ -1757,23 +2271,23 @@ def _reseal_saved_rpt_snapshot(
             triggers[name] = str(row[0])
             connection.execute(f"DROP TRIGGER {name}")
         connection.execute(
-            "UPDATE rpt_analysis_input_snapshots SET input_snapshot_json=?, operation_sha256=?, content_sha256=? WHERE analysis_input_snapshot_id=?",
+            f"UPDATE {method}_analysis_input_snapshots SET input_snapshot_json=?, operation_sha256=?, content_sha256=? WHERE analysis_input_snapshot_id=?",
             (canonical_json(input_payload), operation_hash, input_hash, input_snapshot.analysis_input_snapshot_id),
         )
         connection.execute(
-            "UPDATE rpt_calculation_snapshots SET result_snapshot_json=?, failure_status=?, input_content_sha256=?, operation_sha256=?, content_sha256=? WHERE calculation_snapshot_id=?",
+            f"UPDATE {method}_calculation_snapshots SET result_snapshot_json=?, failure_status=?, input_content_sha256=?, operation_sha256=?, content_sha256=? WHERE calculation_snapshot_id=?",
             (canonical_json(result_payload), failure_status, input_hash, operation_hash, result_hash, calculation.calculation_snapshot_id),
         )
         audit_row = connection.execute(
-            "SELECT payload_json FROM project_audit_events WHERE event_type='rpt_calculation.created' AND json_extract(payload_json, '$.calculationSnapshotId')=?",
-            (calculation.calculation_snapshot_id,),
+            "SELECT payload_json FROM project_audit_events WHERE event_type=? AND json_extract(payload_json, '$.calculationSnapshotId')=?",
+            (f"{method}_calculation.created", calculation.calculation_snapshot_id),
         ).fetchone()
         assert audit_row is not None
         audit_payload = OBJECT_ADAPTER.validate_json(str(audit_row[0]))
         audit_payload.update(inputContentSha256=input_hash, calculationContentSha256=result_hash, operationSha256=operation_hash)
         connection.execute(
-            "UPDATE project_audit_events SET payload_json=? WHERE event_type='rpt_calculation.created' AND json_extract(payload_json, '$.calculationSnapshotId')=?",
-            (canonical_json(audit_payload), calculation.calculation_snapshot_id),
+            "UPDATE project_audit_events SET payload_json=? WHERE event_type=? AND json_extract(payload_json, '$.calculationSnapshotId')=?",
+            (canonical_json(audit_payload), f"{method}_calculation.created", calculation.calculation_snapshot_id),
         )
         for sql in triggers.values():
             connection.execute(sql)
