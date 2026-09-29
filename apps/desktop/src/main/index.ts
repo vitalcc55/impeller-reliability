@@ -1123,6 +1123,7 @@ async function runSmokeIfRequested(): Promise<void> {
   let runPackageImportPassed = false;
   let rbdCalculationPassed = false;
   let rptCalculationPassed = false;
+  let pmnCalculationPassed = false;
   if (automatedProjectPath !== null && workerClient !== null) {
     const created = await workerClient.request('project.create', {
       path: automatedProjectPath,
@@ -1495,6 +1496,110 @@ async function runSmokeIfRequested(): Promise<void> {
                     limit: 25,
                   })
                 : null;
+            const pmnRunPath = process.env['IMPELLER_AUTOMATED_PMN_RUN_PATH'];
+            const pmnImportJobId = randomUUID();
+            let pmnImported =
+              pmnRunPath !== undefined
+                ? await workerClient.request('runPackageImport.start', {
+                    jobId: pmnImportJobId,
+                    sourcePath: resolve(pmnRunPath),
+                    allowDiagnosticPartial: false,
+                  })
+                : null;
+            const pmnImportDeadline = performance.now() + 180_000;
+            while (
+              pmnImported?.ok === true &&
+              !['completed', 'failed', 'cancelled'].includes(pmnImported.result.state) &&
+              performance.now() < pmnImportDeadline
+            ) {
+              await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 25));
+              pmnImported = await workerClient.request('runPackageImport.get', {
+                jobId: pmnImportJobId,
+              });
+            }
+            const pmnRun =
+              pmnImported?.ok === true &&
+              pmnImported.result.state === 'completed' &&
+              pmnImported.result.result !== null
+                ? pmnImported.result.result.importedRun
+                : null;
+            const pmnDiscarded =
+              pmnRun !== null
+                ? await workerClient.request('runPackageImport.discard', { jobId: pmnImportJobId })
+                : null;
+            const pmnVerified =
+              pmnRun !== null
+                ? await workerClient.request('importedRun.verifySource', {
+                    localImportId: pmnRun.localImportId,
+                  })
+                : null;
+            const pmnMaterialized =
+              pmnRun !== null
+                ? await workerClient.request('reliabilityExecution.materialize', {
+                    localImportId: pmnRun.localImportId,
+                  })
+                : null;
+            const pmnOriginalSource =
+              pmnMaterialized?.ok === true
+                ? await workerClient.request('pmnCalculation.getSourceInputs', {
+                    executionId: pmnMaterialized.result.executionId,
+                    planSelection: 'original',
+                  })
+                : null;
+            const pmnEffectiveSource =
+              pmnMaterialized?.ok === true
+                ? await workerClient.request('pmnCalculation.getSourceInputs', {
+                    executionId: pmnMaterialized.result.executionId,
+                    planSelection: 'effective',
+                  })
+                : null;
+            const pmnCalculationInputId = randomUUID();
+            const pmnCalculationResultId = randomUUID();
+            const pmnCalculation =
+              pmnEffectiveSource?.ok === true && globalDocument?.ok === true
+                ? await workerClient.request('pmnCalculation.create', {
+                    analysisInputSnapshotId: pmnCalculationInputId,
+                    calculationSnapshotId: pmnCalculationResultId,
+                    executionId: pmnEffectiveSource.result.executionId,
+                    planSelection: 'effective',
+                    selections: (
+                      [
+                        'nominal_rpm',
+                        'speed_factor',
+                        'target_cycles',
+                        'acceleration_duration_s',
+                        'steady_duration_s',
+                        'deceleration_duration_s',
+                      ] as const
+                    ).map((field) => ({
+                      field,
+                      origin: 'source' as const,
+                      manualValue: null,
+                      basis: '',
+                      evidence: null,
+                    })),
+                    failureEvidence: {
+                      applicability: 'exact_supported',
+                      durationToFailureS: '8',
+                      basis: 'Packaged PMN failure interval from the documented start',
+                      evidence: {
+                        documentId: globalDocument.result.caseDocumentId,
+                        documentRecordRevision: globalDocument.result.recordRevision,
+                        documentLocator: 'Section 3, start and failure',
+                      },
+                    },
+                    actor: 'local_user',
+                    reason: 'Проверка ПМН в поставке',
+                  })
+                : null;
+            const pmnHistory =
+              pmnCalculation?.ok === true
+                ? await workerClient.request('pmnCalculation.listPage', {
+                    wheelModelId: smokeWheelId,
+                    cursor: null,
+                    limit: 25,
+                  })
+                : null;
             const importClosed = await workerClient.request('project.close', {});
             const importReopened = await workerClient.request('project.open', {
               path: automatedProjectPath,
@@ -1513,6 +1618,72 @@ async function runSmokeIfRequested(): Promise<void> {
                     calculationSnapshotId: rptCalculationResultId,
                   })
                 : null;
+            const pmnAfterReopen =
+              pmnCalculation?.ok === true && importReopened.ok
+                ? await workerClient.request('pmnCalculation.getDetail', {
+                    calculationSnapshotId: pmnCalculationResultId,
+                  })
+                : null;
+            const pmnHistoryAfterReopen =
+              pmnCalculation?.ok === true && importReopened.ok
+                ? await workerClient.request('pmnCalculation.listPage', {
+                    wheelModelId: smokeWheelId,
+                    cursor: null,
+                    limit: 25,
+                  })
+                : null;
+            pmnCalculationPassed =
+              pmnRun !== null &&
+              pmnRun.mode === 'pmn' &&
+              pmnDiscarded?.ok === true &&
+              pmnVerified?.ok === true &&
+              pmnVerified.result.sourceIntegrity === 'verified' &&
+              pmnMaterialized?.ok === true &&
+              pmnMaterialized.result.method === 'pmn' &&
+              pmnOriginalSource?.ok === true &&
+              pmnOriginalSource.result.planSelection === 'original' &&
+              pmnOriginalSource.result.payloadPath === 'plan/original.json' &&
+              pmnEffectiveSource?.ok === true &&
+              pmnEffectiveSource.result.planSelection === 'effective' &&
+              pmnEffectiveSource.result.payloadPath === 'plan/effective.json' &&
+              pmnEffectiveSource.result.producerGitCommit ===
+                process.env['IMPELLER_AUTOMATED_PMN_PRODUCER_COMMIT'] &&
+              pmnEffectiveSource.result.outerPackageSha256 ===
+                process.env['IMPELLER_AUTOMATED_PMN_PACKAGE_SHA256'] &&
+              pmnEffectiveSource.result.sourceValues.nominalRpm === '1500' &&
+              pmnEffectiveSource.result.sourceValues.speedFactor === '1.1' &&
+              pmnEffectiveSource.result.sourceValues.targetCycles === '2' &&
+              pmnEffectiveSource.result.sourceValues.accelerationDurationS === '2' &&
+              pmnEffectiveSource.result.sourceValues.steadyDurationS === '1' &&
+              pmnEffectiveSource.result.sourceValues.decelerationDurationS === '2' &&
+              pmnEffectiveSource.result.methodicalRequirements.targetMaxRpmExact === '1650' &&
+              pmnEffectiveSource.result.executionTargets.targetCycles === '2' &&
+              pmnCalculation?.ok === true &&
+              pmnCalculation.result.detail.inputSnapshot.analysisInputSnapshotId ===
+                pmnCalculationInputId &&
+              pmnCalculation.result.detail.calculationSnapshot.calculationSnapshotId ===
+                pmnCalculationResultId &&
+              pmnCalculation.result.detail.calculationSnapshot.resultSnapshot.maximum_rpm
+                .decimal === '1650' &&
+              pmnCalculation.result.detail.calculationSnapshot.resultSnapshot.cycle_duration_s_exact
+                .decimal === '5' &&
+              pmnCalculation.result.detail.calculationSnapshot.resultSnapshot.total_duration_s_exact
+                .decimal === '10' &&
+              pmnCalculation.result.detail.calculationSnapshot.resultSnapshot.failure_result
+                .cycles_to_failure === '2' &&
+              pmnHistory?.ok === true &&
+              pmnHistory.result.items.some(
+                (item) => item.calculationSnapshotId === pmnCalculationResultId,
+              ) &&
+              pmnHistoryAfterReopen?.ok === true &&
+              pmnHistoryAfterReopen.result.items.some(
+                (item) => item.calculationSnapshotId === pmnCalculationResultId,
+              ) &&
+              pmnAfterReopen?.ok === true &&
+              pmnAfterReopen.result.inputSnapshot.contentSha256 ===
+                pmnCalculation.result.detail.inputSnapshot.contentSha256 &&
+              pmnAfterReopen.result.calculationSnapshot.contentSha256 ===
+                pmnCalculation.result.detail.calculationSnapshot.contentSha256;
             rptCalculationPassed =
               rptRun !== null &&
               rptRun.mode === 'rpt' &&
@@ -1599,10 +1770,13 @@ async function runSmokeIfRequested(): Promise<void> {
               importClosed.ok &&
               importReopened.ok &&
               listedAfterReopen.ok &&
-              listedAfterReopen.result.items.length === 2 &&
+              listedAfterReopen.result.items.length === 3 &&
               listedAfterReopen.result.items.some((item) => item.localImportId === localImportId) &&
               listedAfterReopen.result.items.some(
                 (item) => item.localImportId === rptRun?.localImportId,
+              ) &&
+              listedAfterReopen.result.items.some(
+                (item) => item.localImportId === pmnRun?.localImportId,
               );
           }
         }
@@ -1624,7 +1798,8 @@ async function runSmokeIfRequested(): Promise<void> {
           runPackageValidationPassed &&
           runPackageImportPassed &&
           rbdCalculationPassed &&
-          rptCalculationPassed,
+          rptCalculationPassed &&
+          pmnCalculationPassed,
         runtime,
         pingOk: ping?.ok === true,
         projectScenarioPassed,
@@ -1632,6 +1807,7 @@ async function runSmokeIfRequested(): Promise<void> {
         runPackageImportPassed,
         rbdCalculationPassed,
         rptCalculationPassed,
+        pmnCalculationPassed,
         elapsedMs: Math.round(performance.now() - startedAt),
         pid: process.pid,
         workerPid: workerClient?.processId ?? null,

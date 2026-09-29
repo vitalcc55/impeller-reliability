@@ -77,6 +77,7 @@ from support.r130run_builder import build_synthetic_r130run
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 M9A_ROOT = REPOSITORY_ROOT / "fixtures" / "contracts" / "r130run" / "v1" / "m9a"
+PMN_REFERENCE_ROOT = REPOSITORY_ROOT / "fixtures" / "contracts" / "r130run" / "v1" / "pmn-reference"
 OBJECT_ADAPTER: TypeAdapter[dict[str, object]] = TypeAdapter(dict[str, object])
 FIELD_SELECTIONS_ADAPTER: TypeAdapter[list[dict[str, object]]] = TypeAdapter(list[dict[str, object]])
 
@@ -933,6 +934,65 @@ def _project_with_rbd_execution(
     )
     execution = service.materialize_reliability_execution(imported.local_import_id, None)
     return service, project_path, imported, execution
+
+
+def test_current_r130sh_exporter_pmn_package_imports_calculates_and_reopens(tmp_path: Path) -> None:
+    provenance = OBJECT_ADAPTER.validate_json((PMN_REFERENCE_ROOT / "UPSTREAM_SOURCE.json").read_bytes())
+    producer_metadata = OBJECT_ADAPTER.validate_python(provenance["producer"])
+    package_metadata = OBJECT_ADAPTER.validate_python(provenance["package"])
+    seed_metadata = OBJECT_ADAPTER.validate_python(provenance["seed"])
+    producer_commit = str(producer_metadata["commit"])
+    package_hash = str(package_metadata["sha256"])
+    package = PMN_REFERENCE_ROOT / str(package_metadata["file"])
+    assert hashlib.sha256(package.read_bytes()).hexdigest() == package_hash
+    assert package.stat().st_size == package_metadata["sizeBytes"]
+    with ZipFile(package) as archive:
+        manifest = OBJECT_ADAPTER.validate_json(archive.read("manifest.json"))
+        producer = OBJECT_ADAPTER.validate_python(manifest["producer"])
+        assert producer == {
+            "name": "R130SH",
+            "version": producer_metadata["version"],
+            "build_id": seed_metadata["buildId"],
+            "git_commit": producer_commit,
+        }
+        assert manifest["run_id"] == package_metadata["runId"]
+        assert manifest["package_id"] == package_metadata["packageId"]
+        assert manifest["export_revision"] == package_metadata["exportRevision"]
+        assert manifest["source_snapshot_sha256"] == package_metadata["sourceSnapshotSha256"]
+        assert manifest["package_kind"] == "final"
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, package)
+    assert imported.outer_package_sha256 == package_hash
+    assert imported.export_revision == package_metadata["exportRevision"]
+    for selection in ("original", "effective"):
+        source = service.get_pmn_source_inputs(execution.execution_id, selection, None)
+        assert source.producer_git_commit == producer_commit
+        assert source.source_values.nominal_rpm == "1500"
+        assert source.source_values.speed_factor == "1.1"
+        assert source.source_values.target_cycles == "2"
+        assert source.methodical_requirements.target_max_rpm_exact == "1650"
+        assert source.execution_targets.cycle_duration_s == "5"
+        assert source.payload_path == f"plan/{selection}.json"
+    saved = service.create_pmn_calculation(
+        analysis_input_snapshot_id=str(uuid4()),
+        calculation_snapshot_id=str(uuid4()),
+        execution_id=execution.execution_id,
+        selection="effective",
+        selections=_pmn_source_selections(),
+        failure=None,
+        actor="local_user",
+        reason="Сверка текущего exporter R130SH",
+        deadline=None,
+    )
+    assert saved.disposition == "created"
+    result = saved.detail.calculation_snapshot.result_snapshot
+    assert OBJECT_ADAPTER.validate_python(result["maximum_rpm"])["decimal"] == "1650"
+    assert OBJECT_ADAPTER.validate_python(result["cycle_duration_s_exact"])["decimal"] == "5"
+    assert OBJECT_ADAPTER.validate_python(result["total_duration_s_exact"])["decimal"] == "10"
+    calculation_id = saved.detail.calculation_snapshot.calculation_snapshot_id
+    service.close()
+    service.open(path=str(project_path), application_instance_id="current-pmn-export-reopen")
+    assert service.get_pmn_calculation_detail(calculation_id, None) == saved.detail
+    service.close()
 
 
 @pytest.mark.parametrize("selection", ["original", "effective"])
