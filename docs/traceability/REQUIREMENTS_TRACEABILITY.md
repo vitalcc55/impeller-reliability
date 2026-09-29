@@ -77,3 +77,6 @@
 | Atomic immutable calculation | input/result/audit pair, exact/conflicting retry, rollback and bounded history | Python transaction tests + Electron close/reopen |
 | Bounded calculation IPC | four typed operations, no calculated outputs from Renderer, UTF-8 JSONL envelope under 1 MiB | Pydantic/Zod/Vitest/process tests |
 | RBD production path | import → bind/materialize → explicit input UI → calculation → history/detail after reopen | Electron E2E + WinUnpacked/Portable calculation smoke |
+| PMN mathematical contract and Table 5 | Python `pmn_reference` exact Fraction formulas 8–10 and documented exact failure ceiling | independent numeric unit vectors, limits and not-applicable cases |
+| PMN source and immutable history | verified original/effective plan reader, six source/manual selections, separate input/result snapshots and audit | source/provenance, retry/conflict/rollback/tamper/reopen pytest and producer export integration |
+| PMN typed production path | four PMN operations through Python/Main/Preload/Zod and renderer draft/history lifecycle | contract/Vitest, Electron E2E with two frozen results and WinUnpacked/Portable calculation smoke; Browser preview verifies UI interactions only |
