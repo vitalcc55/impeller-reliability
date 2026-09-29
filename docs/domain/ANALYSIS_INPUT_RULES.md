@@ -93,7 +93,7 @@ Source `methodicalRequirements` и округлённые `executionTargets` о�
 
 ## ПМН `pmn_reference` 1.0.0
 
-ПМН выбирает exact исполнение, export revision и `original` либо `effective` план. Шесть входов: `nominal_rpm` (`nP`), `speed_factor` (`k3`), `target_cycles` (`NЦ3`), `acceleration_duration_s` (`tР3`), `steady_duration_s` (`tУСТ3`) и `deceleration_duration_s` (`tТ3`). Для каждого инженер явно выбирает source либо документированное manual значение; исходная лексема, координата JSON member, выбранное значение, единица и основание сохраняются раздельно. Source `methodicalRequirements` и округлённые `executionTargets` не подменяют выбранные входы или результат.
+ПМН выбирает exact исполнение, export revision и `original` либо `effective` план. Шесть входов: `nominal_rpm` (`nP`), `speed_factor` (`k3`), `target_cycles` (`NЦ3`), `acceleration_duration_s` (`tР3`), `steady_duration_s` (`tУСТ3`) и `deceleration_duration_s` (`tТ3`). Для каждого инженер явно выбирает source либо документированное manual значение; исходная лексема, координата JSON member, выбранное значение, единица и основание сохраняются раздельно. Source `methodicalRequirements` и исполняемые уставки `executionTargets` не подменяют выбранные входы или результат.
 
 Python точно вычисляет формулы ПМИ Р130У: `nmax3=k3×nP`, `TЦ3=tР3+tУСТ3+tТ3`, `T03=NЦ3×TЦ3`. `NЦ3` — положительное целое до `10^12`, `nP` и `k3` — положительные bounded ASCII decimal до `10^6`, длительности — неотрицательные до `10^9 с`, `TЦ3>0`; decimal scale не больше 12. Как и в РПТ, расчёт использует `Fraction` без binary float, сохраняет точные дроби и ограниченный display preview. Схема нагрузки иллюстрирует выбранный цикл, не является измерением и не масштабируется по времени.
 

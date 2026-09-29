@@ -160,7 +160,10 @@ test('saves two PMN results, keeps a separate draft, and reopens frozen history'
     const result = page.getByRole('region', { name: 'Зафиксированный результат' });
     await expect(result).toContainText('2250 об/мин');
     await expect(result).toContainText('10 с');
-    await expect(result).toContainText('циклов до отказа: 2');
+    await expect(result).toContainText(
+      'Количество циклов до отказа по таблице 5 ПМИ, округление вверх: 2',
+    );
+    await expect(result).toContainText('не число полностью завершённых или зачтённых циклов');
     await expect(result).toContainText('T_ОТК: 8 с');
     const saved = await page.evaluate(async () => {
       const api = window.impeller;
@@ -215,7 +218,9 @@ test('saves two PMN results, keeps a separate draft, and reopens frozen history'
     await reason.fill('Повторный расчёт по эффективному плану');
     await page.getByRole('button', { name: 'Рассчитать и сохранить ПМН' }).click();
     await expect(page.getByText(/Расчёт ПМН сохранён/u)).toBeVisible();
-    await expect(result).toContainText('циклов до отказа: 0');
+    await expect(result).toContainText(
+      'Количество циклов до отказа по таблице 5 ПМИ, округление вверх: 0',
+    );
     const second = await page.evaluate(async () => {
       const api = window.impeller;
       if (api === undefined) throw new Error('preload_api_missing');

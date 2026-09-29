@@ -1074,12 +1074,15 @@ function PmnResultDetail({ detail }: { readonly detail: PmnCalculationDetail }):
         ))}
       </dl>
       <Text size="sm">
-        Таблица 5:{' '}
         {result.failure_result.status === 'calculated'
-          ? `циклов до отказа: ${result.failure_result.cycles_to_failure}`
-          : `не рассчитана — ${failureReason(result.failure_result.reason_code)}`}
-        .
+          ? `Количество циклов до отказа по таблице 5 ПМИ, округление вверх: ${result.failure_result.cycles_to_failure}.`
+          : `Таблица 5: не рассчитана — ${failureReason(result.failure_result.reason_code)}.`}
       </Text>
+      {result.failure_result.status === 'calculated' ? (
+        <Text size="xs" c="dimmed">
+          Это не число полностью завершённых или зачтённых циклов.
+        </Text>
+      ) : null}
       {input.failureEvidence !== null ? (
         <Text size="sm">
           T_ОТК:{' '}
