@@ -303,7 +303,13 @@ describe('browser preview api', () => {
       }),
     ).resolves.toMatchObject({ ok: true, result: { state: 'copying' } });
     const listed = await api.importedRun.list();
-    expect(listed).toMatchObject({ ok: true, result: [{ sourceIntegrity: 'verified' }] });
+    expect(listed).toMatchObject({
+      ok: true,
+      result: [
+        { sourceIntegrity: 'verified', packageKind: 'final' },
+        { sourceIntegrity: 'verified', packageKind: 'diagnostic_partial' },
+      ],
+    });
     if (!listed.ok || listed.result[0] === undefined) throw new Error('missing preview import');
     const summary = listed.result[0];
     await expect(api.importedRun.get(summary.localImportId)).resolves.toMatchObject({

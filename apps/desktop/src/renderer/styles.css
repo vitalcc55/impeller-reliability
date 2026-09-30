@@ -784,6 +784,31 @@ h3 {
   overflow-wrap: anywhere;
   font-variant-numeric: tabular-nums;
 }
+.source-materials .source-data-list dd {
+  white-space: pre-wrap;
+}
+.source-material-list {
+  display: grid;
+  gap: 16px;
+  padding-left: 20px;
+}
+.source-material-list > li > strong,
+.source-material-list > li > span {
+  display: block;
+}
+.source-material-list .source-data-list {
+  margin-block: 12px;
+}
+.source-materials .mantine-Button-root {
+  max-width: 100%;
+  height: auto;
+  min-height: var(--button-height);
+}
+.source-materials .mantine-Button-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
 .source-analyst-columns {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

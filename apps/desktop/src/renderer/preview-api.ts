@@ -3,6 +3,8 @@ import type {
   CaseDocumentCreateCommand,
   CaseDocumentSummary,
   DesktopResult,
+  MaterialOrigin,
+  MaterialPageQuery,
   CustomerProfile,
   ImpellerApi,
   ImportedRunDetail,
@@ -33,6 +35,10 @@ import type {
   WheelModelSummary,
 } from '@impeller-reliability/contracts';
 import {
+  materialPagePayloadSchema,
+  materialReadPayloadSchema,
+  materialInspectionPayloadSchema,
+  materialOpenPayloadSchema,
   importedRunDetailSchema,
   pmnCalculationDetailSchema,
   pmnPlanSourceSchema,
@@ -48,6 +54,8 @@ import {
   runPackageValidationJobSchema,
   specimenSourceIdSchema,
 } from '@impeller-reliability/contracts';
+import { previewMaterials } from './preview-materials';
+import { sameMaterialOrigin } from './features/projects/material-origin';
 
 export type PreviewMode = 'ready' | 'unavailable';
 
@@ -102,6 +110,98 @@ export function createPreviewApi(
     lastOpenedAtUtc: '2026-08-25T15:00:00.000Z',
   };
   const listeners = new Set<(nextStatus: RuntimeStatus) => void>();
+  const diagnosticImportId = '1f782baf-13e5-4cbe-89f6-f8dcd6c33355';
+  let diagnosticResolutions: ImportedRunDetail['enrichmentResolutions'] = [];
+  function diagnosticImport(): ImportedRunDetail {
+    return importedRunDetailSchema.parse({
+      ...importedRun,
+      enrichmentResolutions: diagnosticResolutions,
+      summary: {
+        ...importedRun.summary,
+        localImportId: diagnosticImportId,
+        packageId: 'a745d23b-7314-4295-b59e-7599070b03fe',
+        runId: 'synthetic-diagnostic-materials',
+        exportRevision: 2,
+        outerPackageSha256: 'd'.repeat(64),
+        packageKind: 'diagnostic_partial',
+        technicalStatus: 'interrupted',
+        terminationReason: 'manual_abort',
+        runValidity: 'invalid',
+        dataCompleteness: 'partial',
+        specimenOutcome: 'inconclusive',
+      },
+      projection: {
+        ...importedRun.projection,
+        attachmentCount: 5,
+        resumeAvailable: true,
+        partialReasons: ['Недоступная фотография в синтетическом примере'],
+      },
+    });
+  }
+  function materialOrigin(selected: MaterialOrigin): DesktopResult<MaterialOrigin> {
+    if (status.workerStatus !== 'ready') return workerUnavailable();
+    if (activeProject === null)
+      return {
+        ok: false,
+        error: {
+          code: 'cancelled',
+          message: 'Материалы не относятся к открытой сессии дела.',
+          details: {},
+          retryable: false,
+        },
+      };
+    const source = selected.localImportId === diagnosticImportId ? diagnosticImport() : importedRun;
+    const expected = {
+      projectId: activeProject.projectId,
+      localImportId: source.summary.localImportId,
+      packageId: source.summary.packageId,
+      runId: source.summary.runId,
+      exportRevision: source.summary.exportRevision,
+      outerPackageSha256: source.summary.outerPackageSha256,
+    };
+    return sameMaterialOrigin(selected, expected)
+      ? success(expected)
+      : {
+          ok: false,
+          error: {
+            code: 'file_integrity_mismatch',
+            message: 'Редакция материала не соответствует выбранному синтетическому источнику.',
+            details: {},
+            retryable: false,
+          },
+        };
+  }
+  function materialPage<T>(
+    items: readonly T[],
+    query: MaterialPageQuery,
+    kind: string,
+  ): DesktopResult<{
+    readonly items: T[];
+    readonly nextCursor: string | null;
+    readonly pageBound: 'item_limit' | null;
+  }> {
+    const prefix = `preview-${kind}-${query.origin.localImportId}-${query.origin.exportRevision}-${query.origin.outerPackageSha256}-`;
+    const cursor = query.cursor;
+    const suffix =
+      cursor == null ? '0' : cursor.startsWith(prefix) ? cursor.slice(prefix.length) : '';
+    const start = /^[0-9]+$/.test(suffix) ? Number(suffix) : -1;
+    if (!Number.isSafeInteger(start) || start < 0 || start > items.length)
+      return {
+        ok: false,
+        error: {
+          code: 'validation_error',
+          message: 'Страница не относится к выбранным материалам.',
+          details: {},
+          retryable: false,
+        },
+      };
+    const end = Math.min(items.length, start + (query.limit ?? 25));
+    return success({
+      items: items.slice(start, end),
+      nextCursor: end < items.length ? `${prefix}${end}` : null,
+      pageBound: end < items.length ? 'item_limit' : null,
+    });
+  }
   return {
     system: {
       getStatus: () => Promise.resolve(status),
@@ -512,53 +612,96 @@ export function createPreviewApi(
       },
     },
     importedRun: {
-      list: () => Promise.resolve(success([importedRun.summary])),
+      list: () => Promise.resolve(success([importedRun.summary, diagnosticImport().summary])),
       get: (localImportId) =>
         Promise.resolve(
-          localImportId === importedRun.summary.localImportId ? success(importedRun) : notFound(),
+          localImportId === importedRun.summary.localImportId
+            ? success(importedRun)
+            : localImportId === diagnosticImportId
+              ? success(diagnosticImport())
+              : notFound(),
         ),
-      listInspectionPage: () =>
-        Promise.resolve({
-          ok: false,
-          error: {
-            code: 'validation_error',
-            message: 'Предпросмотр материалов этого запуска ещё не подготовлен.',
-            details: {},
-            retryable: false,
-          },
-        }),
-      getInspection: () =>
-        Promise.resolve({
-          ok: false,
-          error: {
-            code: 'validation_error',
-            message: 'Предпросмотр материалов этого запуска ещё не подготовлен.',
-            details: {},
-            retryable: false,
-          },
-        }),
-      listPhotoPage: () =>
-        Promise.resolve({
-          ok: false,
-          error: {
-            code: 'validation_error',
-            message: 'Предпросмотр материалов этого запуска ещё не подготовлен.',
-            details: {},
-            retryable: false,
-          },
-        }),
-      getProtocol: () =>
-        Promise.resolve({
-          ok: false,
-          error: {
-            code: 'validation_error',
-            message: 'Предпросмотр материалов этого запуска ещё не подготовлен.',
-            details: {},
-            retryable: false,
-          },
-        }),
-      openMaterial: () =>
-        Promise.resolve({
+      listInspectionPage: (raw) => {
+        const parsed = materialPagePayloadSchema.safeParse(raw);
+        if (!parsed.success)
+          return Promise.resolve(validationError('Запрос материалов не соответствует контракту.'));
+        const checked = materialOrigin(parsed.data.origin);
+        if (!checked.ok) return Promise.resolve(checked);
+        const value = previewMaterials(
+          checked.result,
+          checked.result.localImportId === diagnosticImportId,
+        ).inspections;
+        const page = materialPage(value.items, parsed.data, 'inspection');
+        return Promise.resolve(page.ok ? success({ ...value, ...page.result }) : page);
+      },
+      getInspection: (raw) => {
+        const parsed = materialInspectionPayloadSchema.safeParse(raw);
+        if (!parsed.success)
+          return Promise.resolve(validationError('Запрос материалов не соответствует контракту.'));
+        const checked = materialOrigin(parsed.data.origin);
+        if (!checked.ok) return Promise.resolve(checked);
+        const value = previewMaterials(
+          checked.result,
+          checked.result.localImportId === diagnosticImportId,
+        ).inspections;
+        const item = value.items.find(
+          (candidate) => candidate.materialId === parsed.data.inspectionId,
+        );
+        return Promise.resolve(
+          item === undefined
+            ? notFound()
+            : success({ origin: value.origin, verification: value.verification, item }),
+        );
+      },
+      listPhotoPage: (raw) => {
+        const parsed = materialPagePayloadSchema.safeParse(raw);
+        if (!parsed.success)
+          return Promise.resolve(validationError('Запрос материалов не соответствует контракту.'));
+        const checked = materialOrigin(parsed.data.origin);
+        if (!checked.ok) return Promise.resolve(checked);
+        const value = previewMaterials(
+          checked.result,
+          checked.result.localImportId === diagnosticImportId,
+        ).photos;
+        const page = materialPage(value.items, parsed.data, 'photo');
+        return Promise.resolve(page.ok ? success({ ...value, ...page.result }) : page);
+      },
+      getProtocol: (raw) => {
+        const parsed = materialReadPayloadSchema.safeParse(raw);
+        if (!parsed.success)
+          return Promise.resolve(validationError('Запрос материалов не соответствует контракту.'));
+        const checked = materialOrigin(parsed.data.origin);
+        if (!checked.ok) return Promise.resolve(checked);
+        return Promise.resolve(
+          success(
+            previewMaterials(checked.result, checked.result.localImportId === diagnosticImportId)
+              .protocol,
+          ),
+        );
+      },
+      openMaterial: (raw) => {
+        const parsed = materialOpenPayloadSchema.safeParse(raw);
+        if (!parsed.success)
+          return Promise.resolve(validationError('Недопустимый запрос открытия материала.'));
+        const checked = materialOrigin(parsed.data.identity.origin);
+        if (!checked.ok) return Promise.resolve(checked);
+        const value = previewMaterials(
+          checked.result,
+          checked.result.localImportId === diagnosticImportId,
+        );
+        const item =
+          parsed.data.identity.kind === 'protocol'
+            ? value.protocol.item
+            : value.photos.items.find(
+                (photo) => photo.materialId === parsed.data.identity.materialId,
+              );
+        if (
+          item === undefined ||
+          item.materialId !== parsed.data.identity.materialId ||
+          item.state !== 'verified'
+        )
+          return Promise.resolve(notFound());
+        return Promise.resolve({
           ok: false,
           error: {
             code: 'material_open_failed',
@@ -566,11 +709,13 @@ export function createPreviewApi(
             details: {},
             retryable: false,
           },
-        }),
+        });
+      },
       cancelMaterialOpen: () => Promise.resolve({ ok: true, result: { cancelled: false } }),
       verifySource: (localImportId) =>
         Promise.resolve(
-          localImportId === importedRun.summary.localImportId
+          localImportId === importedRun.summary.localImportId ||
+            localImportId === diagnosticImportId
             ? success({ localImportId, sourceIntegrity: 'verified' as const })
             : notFound(),
         ),
@@ -596,12 +741,17 @@ export function createPreviewApi(
         return Promise.resolve(success(previewBinding(importedRun.summary)));
       },
       applyEnrichmentResolution: (command) => {
-        if (command.localImportId !== importedRun.summary.localImportId)
+        if (
+          command.localImportId !== importedRun.summary.localImportId &&
+          command.localImportId !== diagnosticImportId
+        )
           return Promise.resolve(notFound());
-        importedRun = importedRunDetailSchema.parse({
-          ...importedRun,
+        const selected =
+          command.localImportId === diagnosticImportId ? diagnosticImport() : importedRun;
+        const updated = importedRunDetailSchema.parse({
+          ...selected,
           enrichmentResolutions: [
-            ...importedRun.enrichmentResolutions,
+            ...selected.enrichmentResolutions,
             {
               resolutionId: command.resolutionId,
               sourcePayloadPath: command.sourcePayloadPath,
@@ -616,14 +766,22 @@ export function createPreviewApi(
             },
           ],
         });
-        return Promise.resolve(success(importedRun));
+        if (command.localImportId === diagnosticImportId)
+          diagnosticResolutions = updated.enrichmentResolutions;
+        else importedRun = updated;
+        return Promise.resolve(success(updated));
       },
     },
     reliabilityExecution: {
       materialize: (localImportId) => {
         if (status.workerStatus !== 'ready') return Promise.resolve(workerUnavailable());
-        if (localImportId !== importedRun.summary.localImportId) return Promise.resolve(notFound());
-        if (importedRun.summary.localSpecimenId === null)
+        if (
+          localImportId !== importedRun.summary.localImportId &&
+          localImportId !== diagnosticImportId
+        )
+          return Promise.resolve(notFound());
+        const selected = localImportId === diagnosticImportId ? diagnosticImport() : importedRun;
+        if (selected.summary.localSpecimenId === null)
           return Promise.resolve({
             ok: false,
             error: {
@@ -636,25 +794,29 @@ export function createPreviewApi(
         const existing = reliabilityExecutions.find((item) => item.localImportId === localImportId);
         if (existing !== undefined) return Promise.resolve(success(existing));
         const execution = reliabilityExecutionSchema.parse({
-          executionId: '4c7462d8-2222-4d19-8b8c-222222222222',
+          executionId:
+            localImportId === diagnosticImportId
+              ? '4c7462d8-2222-4d19-8b8c-333333333333'
+              : '4c7462d8-2222-4d19-8b8c-222222222222',
           localImportId,
-          localSpecimenId: importedRun.summary.localSpecimenId,
+          localSpecimenId: selected.summary.localSpecimenId,
           wheelModelId:
-            specimens.get(importedRun.summary.localSpecimenId)?.wheelModelId ??
+            specimens.get(selected.summary.localSpecimenId)?.wheelModelId ??
             '00000000-0000-4000-8000-000000000001',
-          sourceSpecimenId: importedRun.summary.sourceSpecimenId,
-          sourceRunId: importedRun.summary.runId,
-          exportRevision: importedRun.summary.exportRevision,
-          packageKind: importedRun.summary.packageKind,
-          method: importedRun.summary.mode,
-          lifecycleStatus: 'completed',
+          sourceSpecimenId: selected.summary.sourceSpecimenId,
+          sourceRunId: selected.summary.runId,
+          exportRevision: selected.summary.exportRevision,
+          packageKind: selected.summary.packageKind,
+          method: selected.summary.mode,
+          lifecycleStatus:
+            selected.summary.technicalStatus === 'completed' ? 'completed' : 'interrupted',
           plannedParametersSnapshot: {},
           resultSummary: {},
-          sourceOuterPackageSha256: importedRun.summary.outerPackageSha256,
+          sourceOuterPackageSha256: selected.summary.outerPackageSha256,
           materializedAtUtc: '2026-09-01T12:00:00.000Z',
           failureObservations: [],
         });
-        reliabilityExecutions = [execution];
+        reliabilityExecutions = [...reliabilityExecutions, execution];
         return Promise.resolve(success(execution));
       },
       listPage: (wheelModelId, cursor, limit) => {
@@ -665,6 +827,10 @@ export function createPreviewApi(
         const items = reliabilityExecutions
           .filter((execution) => execution.wheelModelId === wheelModelId)
           .map((execution) => {
+            const source =
+              execution.localImportId === diagnosticImportId
+                ? diagnosticImport().summary
+                : importedRun.summary;
             const current = reliabilityObservations
               .filter((item) => item.executionId === execution.executionId)
               .sort((left, right) => right.versionNumber - left.versionNumber)[0];
@@ -672,15 +838,15 @@ export function createPreviewApi(
               executionId: execution.executionId,
               localSpecimenId: execution.localSpecimenId,
               sourceSpecimenId: execution.sourceSpecimenId,
-              sourceRunId: importedRun.summary.runId,
-              exportRevision: importedRun.summary.exportRevision,
-              packageKind: importedRun.summary.packageKind,
+              sourceRunId: execution.sourceRunId,
+              exportRevision: execution.exportRevision,
+              packageKind: execution.packageKind,
               method: execution.method,
               lifecycleStatus: execution.lifecycleStatus,
-              technicalStatus: importedRun.summary.technicalStatus,
-              specimenOutcome: importedRun.summary.specimenOutcome,
-              runValidity: importedRun.summary.runValidity,
-              dataCompleteness: importedRun.summary.dataCompleteness,
+              technicalStatus: source.technicalStatus,
+              specimenOutcome: source.specimenOutcome,
+              runValidity: source.runValidity,
+              dataCompleteness: source.dataCompleteness,
               materializedAtUtc: execution.materializedAtUtc,
               failureObservationCount: execution.failureObservations.length,
               currentObservationVersionId: current?.observationVersionId ?? null,
@@ -1449,7 +1615,7 @@ function previewImportedRunDetail(sample: 'rbd' | 'rpt' | 'pmn' = 'rbd'): Import
       acceptedMeasurementCount: 1,
       eventCount: 5,
       inspectionCount: 2,
-      attachmentCount: 0,
+      attachmentCount: 2,
       amendmentCount: 0,
       creditingPolicy: sample === 'rpt' ? 'rpt.v1' : sample === 'pmn' ? 'pmn.v1' : 'rbd.v1',
       acceptedElapsedS: '4',

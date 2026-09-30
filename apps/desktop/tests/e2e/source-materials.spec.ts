@@ -24,6 +24,14 @@ test('reads exact unbound materials through production Main Preload and worker, 
   });
   try {
     const page = await app.firstWindow();
+    await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      if (window === undefined) throw new Error('window_missing');
+      window.setContentSize(1280, 720);
+    });
+    await expect
+      .poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
+      .toEqual({ width: 1280, height: 720 });
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.getByRole('button', { name: 'Создать проект' }).click();
@@ -99,6 +107,26 @@ test('reads exact unbound materials through production Main Preload and worker, 
     expect(material.foreign).toMatchObject({ ok: false, error: { code: 'validation_error' } });
     expect(material.missing).toMatchObject({ ok: false, error: { code: 'file_missing' } });
     expect(JSON.stringify(material)).not.toContain('absolutePath');
+    await page.getByRole('button', { name: 'Проверить и показать материалы', exact: true }).click();
+    await expect(
+      page.getByText('Протокол не включён в эту редакцию пакета', { exact: true }),
+    ).toBeVisible();
+    if (!material.inspections.ok) throw new Error('material_page_missing');
+    const firstInspection = material.inspections.result.items[0];
+    if (firstInspection?.materialId == null) throw new Error('inspection_id_missing');
+    await page
+      .getByRole('button', { name: `Показать осмотр ${firstInspection.materialId}`, exact: true })
+      .click();
+    const inspectionUi = page.getByRole('region', { name: 'Деталь осмотра' });
+    await expect(inspectionUi.getByText('Нет (false)', { exact: true }).first()).toBeVisible();
+    await expect(inspectionUi.getByText('0', { exact: true })).toBeVisible();
+    await inspectionUi.scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: join(root, '.tmp/.codex/evidence/material-ui/electron-1280-inspection.png'),
+    });
+    await expect(
+      page.getByText('В этой редакции нет зарегистрированных фотографий.', { exact: true }),
+    ).toBeVisible();
     expect(readdirSync(join(evidenceRoot, 'user-data', 'state', 'source-material-copies'))).toEqual(
       ['owner'],
     );
