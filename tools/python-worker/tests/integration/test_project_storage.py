@@ -442,6 +442,35 @@ def test_unpublished_schema_zero_is_not_migrated_or_modified(tmp_path: Path) -> 
     assert list((project_path / "backups").iterdir()) == []
 
 
+def test_metadata_only_schema_v1_is_rejected_before_lock_or_write(tmp_path: Path) -> None:
+    project_id = str(uuid4())
+    project_path = tmp_path / "metadata-only-v1.irproj"
+    database_path = _create_container_shell(project_path, project_id)
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute(f"PRAGMA application_id = {project_database.PROJECT_APPLICATION_ID}")
+        connection.execute("PRAGMA user_version = 1")
+        connection.execute("CREATE TABLE project_metadata (project_id TEXT NOT NULL, name TEXT NOT NULL)")
+        connection.execute("INSERT INTO project_metadata VALUES (?, ?)", (project_id, "Старое дело"))
+        connection.execute("CREATE TABLE project_audit_events (sequence INTEGER PRIMARY KEY, event_type TEXT NOT NULL)")
+        connection.execute("INSERT INTO project_audit_events VALUES (1, 'project.created')")
+        connection.commit()
+    manifest_path = project_path / "project-manifest.json"
+    before_database_hash = _sha256(database_path)
+    before_database_mtime = database_path.stat().st_mtime_ns
+    before_manifest_hash = _sha256(manifest_path)
+    before_entries = {entry.name for entry in project_path.iterdir()}
+
+    with pytest.raises(ProjectOperationError) as raised:
+        ProjectService().open(path=str(project_path), application_instance_id=str(uuid4()))
+
+    assert raised.value.code == "corrupt_project"
+    assert _sha256(database_path) == before_database_hash
+    assert database_path.stat().st_mtime_ns == before_database_mtime
+    assert _sha256(manifest_path) == before_manifest_hash
+    assert {entry.name for entry in project_path.iterdir()} == before_entries
+    assert list((project_path / "backups").iterdir()) == []
+
+
 @pytest.mark.parametrize("link_kind", ["hardlink", "symlink"])
 def test_linked_project_database_is_rejected_without_touching_target(
     tmp_path: Path,
@@ -591,6 +620,7 @@ def test_dataset_schema_rejects_method_metric_mismatch() -> None:
         "DELETE FROM schema_migrations",
         "ALTER TABLE project_metadata ADD COLUMN unexpected TEXT",
         "CREATE TABLE unrecognized_project_data (value TEXT)",
+        "DROP TABLE pmn_calculation_snapshots; DROP TABLE pmn_analysis_input_snapshots",
     ],
 )
 def test_schema_v1_contract_is_rejected_without_mutation(

@@ -10,6 +10,7 @@ import type {
 } from '@impeller-reliability/contracts';
 
 import { AnalystDossier, type AnalystDossierHandle, type DossierSection } from './AnalystDossier';
+import { PmnCalculation, type PmnCalculationHandle } from './PmnCalculation';
 import { RbdCalculation, type RbdCalculationHandle } from './RbdCalculation';
 import { RptCalculation, type RptCalculationHandle } from './RptCalculation';
 import { R130shResults, type R130shResultsHandle } from './R130shResults';
@@ -42,6 +43,7 @@ type WorkspaceSection =
   | 'reliability'
   | 'rbd-calculation'
   | 'rpt-calculation'
+  | 'pmn-calculation'
   | DossierSection;
 
 export interface ProjectWorkspaceHandle {
@@ -73,6 +75,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     const [calculationPending, setCalculationPending] = useState(false);
     const [rptCalculationDirty, setRptCalculationDirty] = useState(false);
     const [rptCalculationPending, setRptCalculationPending] = useState(false);
+    const [pmnCalculationDirty, setPmnCalculationDirty] = useState(false);
+    const [pmnCalculationPending, setPmnCalculationPending] = useState(false);
     const [pendingTransition, setPendingTransition] = useState<{
       readonly action: () => void;
       readonly discard: () => void;
@@ -91,7 +95,9 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
               ? calculationDirty
               : section === 'rpt-calculation'
                 ? rptCalculationDirty
-                : dossierDirty);
+                : section === 'pmn-calculation'
+                  ? pmnCalculationDirty
+                  : dossierDirty);
     const dirtyRef = useRef(dirty);
     const pendingSaveRef = useRef<Promise<void> | null>(null);
     const dossierRef = useRef<AnalystDossierHandle>(null);
@@ -99,12 +105,14 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
     const reliabilityRef = useRef<ReliabilityPreparationHandle>(null);
     const calculationRef = useRef<RbdCalculationHandle>(null);
     const rptCalculationRef = useRef<RptCalculationHandle>(null);
+    const pmnCalculationRef = useRef<PmnCalculationHandle>(null);
     const sectionPending =
       dossierPending ||
       resultsPending ||
       reliabilityPending ||
       calculationPending ||
-      rptCalculationPending;
+      rptCalculationPending ||
+      pmnCalculationPending;
     const detached = project !== null && (!workerReady || reattachBlocked);
     useEffect(() => {
       dirtyRef.current = dirty;
@@ -164,6 +172,8 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
       setCalculationPending(false);
       setRptCalculationDirty(false);
       setRptCalculationPending(false);
+      setPmnCalculationDirty(false);
+      setPmnCalculationPending(false);
       setPendingTransition(null);
       setMessage(notice);
       void refreshRecent();
@@ -340,12 +350,17 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           const reconciled = await rptCalculationRef.current?.verifyAfterReattach();
           if (reconciled !== true) throw new Error('rpt_calculation_reattach_failed');
         }
+        if (section === 'pmn-calculation') {
+          const reconciled = await pmnCalculationRef.current?.verifyAfterReattach();
+          if (reconciled !== true) throw new Error('pmn_calculation_reattach_failed');
+        }
         const dossierReattach =
           section === 'overview' ||
           section === 'r130sh-results' ||
           section === 'reliability' ||
           section === 'rbd-calculation' ||
-          section === 'rpt-calculation'
+          section === 'rpt-calculation' ||
+          section === 'pmn-calculation'
             ? { status: 'reconciled' as const }
             : await dossierRef.current?.verifyAfterReattach();
         if (dossierReattach?.status !== 'reconciled') {
@@ -397,6 +412,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
           await reliabilityRef.current?.waitForPendingSave();
           await calculationRef.current?.waitForPendingSave();
           await rptCalculationRef.current?.waitForPendingSave();
+          await pmnCalculationRef.current?.waitForPendingSave();
           return dirtyRef.current;
         },
         reattachAfterWorkerRestart,
@@ -648,6 +664,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
               ['reliability', 'Данные надёжности'],
               ['rbd-calculation', 'Расчёт РБД'],
               ['rpt-calculation', 'Расчёт РПТ'],
+              ['pmn-calculation', 'Расчёт ПМН'],
               ['customer', 'Заказчик'],
               ['wheels', 'Модели колёс'],
               ['specimens', 'Образцы'],
@@ -674,6 +691,7 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
                   else if (section === 'reliability') reliabilityRef.current?.discardDraft();
                   else if (section === 'rbd-calculation') calculationRef.current?.discardDraft();
                   else if (section === 'rpt-calculation') rptCalculationRef.current?.discardDraft();
+                  else if (section === 'pmn-calculation') pmnCalculationRef.current?.discardDraft();
                   else dossierRef.current?.discardActiveDraft();
                 };
                 if (dirty)
@@ -858,6 +876,14 @@ export const ProjectWorkspace = forwardRef<ProjectWorkspaceHandle, ProjectWorksp
             disabled={detached || busy !== null || pendingTransition !== null}
             onDirtyChange={setRptCalculationDirty}
             onPendingChange={setRptCalculationPending}
+          />
+        ) : section === 'pmn-calculation' && desktopApi !== null ? (
+          <PmnCalculation
+            ref={pmnCalculationRef}
+            desktopApi={desktopApi}
+            disabled={detached || busy !== null || pendingTransition !== null}
+            onDirtyChange={setPmnCalculationDirty}
+            onPendingChange={setPmnCalculationPending}
           />
         ) : desktopApi === null || !isDossierSection(section) ? null : (
           <AnalystDossier

@@ -244,9 +244,9 @@ def read_m9a_package_facts(
         _checkpoint(checkpoint)
         manifest = _object(_load_json(archive, "manifest.json"), "manifest.json")
         _checkpoint(checkpoint)
-        original = _object(_load_json(archive, "plan/original.json"), "plan/original.json")
+        original = _object(_load_json(archive, "plan/original.json", preserve_decimal_lexemes=True), "plan/original.json")
         effective_envelope = _object(
-            _load_json(archive, "plan/effective.json"),
+            _load_json(archive, "plan/effective.json", preserve_decimal_lexemes=True),
             "plan/effective.json",
         )
         summary = _object(_load_json(archive, "run-summary.json"), "run-summary.json")
@@ -547,32 +547,41 @@ def _plan_summary(value: dict[str, JsonValue]) -> dict[str, JsonValue]:
             "customer_order_reference",
         ),
     )
-    summary["source_values"] = _select_fields(
-        _optional_object(value.get("source_values")),
-        ("nominal_rpm",),
+    source_fields: tuple[str, ...] = ("nominal_rpm",)
+    if value.get("mode") == "pmn":
+        source_fields += (
+            "speed_factor",
+            "target_cycles",
+            "acceleration_duration_s",
+            "steady_duration_s",
+            "deceleration_duration_s",
+        )
+    summary["source_values"] = _select_fields(_optional_object(value.get("source_values")), source_fields)
+    requirement_fields: tuple[str, ...] = (
+        "required_cycles_exact",
+        "required_steady_duration_s_exact",
+        "required_total_duration_s_exact",
+        "cycle_duration_s_exact",
+        "target_max_rpm_exact",
     )
-    summary["methodical_requirements"] = _select_fields(
-        _optional_object(value.get("methodical_requirements")),
-        (
-            "required_cycles_exact",
-            "required_steady_duration_s_exact",
-            "required_total_duration_s_exact",
-            "cycle_duration_s_exact",
-            "target_max_rpm_exact",
-        ),
+    if value.get("mode") == "pmn":
+        requirement_fields += ("total_duration_s_exact",)
+    summary["methodical_requirements"] = _select_fields(_optional_object(value.get("methodical_requirements")), requirement_fields)
+    target_fields: tuple[str, ...] = (
+        "target_cycles",
+        "target_max_rpm",
+        "lower_rpm",
+        "upper_rpm",
+        "target_steady_duration_s",
+        "total_duration_s",
+        "lower_point_policy",
+        "rounding_policy",
     )
+    if value.get("mode") == "pmn":
+        target_fields += ("cycle_duration_s",)
     summary["execution_targets"] = _select_fields(
         _optional_object(value.get("execution_targets")),
-        (
-            "target_cycles",
-            "target_max_rpm",
-            "lower_rpm",
-            "upper_rpm",
-            "target_steady_duration_s",
-            "total_duration_s",
-            "lower_point_policy",
-            "rounding_policy",
-        ),
+        target_fields,
     )
     return summary
 
@@ -624,9 +633,9 @@ def _optional_object(value: object) -> dict[str, JsonValue]:
     return {} if value is None else _object(value, "projection")
 
 
-def _load_json(archive: ZipFile, path: str) -> JsonValue:
+def _load_json(archive: ZipFile, path: str, *, preserve_decimal_lexemes: bool = False) -> JsonValue:
     try:
-        return cast(JsonValue, json.loads(archive.read(path).decode("utf-8")))
+        return cast(JsonValue, json.loads(archive.read(path).decode("utf-8"), parse_float=str if preserve_decimal_lexemes else float))
     except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise M9aContractError(f"invalid_json:{path}") from error
 

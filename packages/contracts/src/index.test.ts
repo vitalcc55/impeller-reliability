@@ -19,6 +19,9 @@ import {
   rbdInputSnapshotPayloadSchema,
   rbdSavedFieldSelectionSchema,
   rptCalculationCreateCommandSchema,
+  pmnCalculationCreateCommandSchema,
+  pmnCalculationListPagePayloadSchema,
+  pmnResultSnapshotSchema,
   reliabilityDatasetCreateVersionCommandSchema,
   reliabilityExecutionPageSchema,
   reliabilityObservationCreateVersionCommandSchema,
@@ -35,6 +38,70 @@ import {
 } from './index';
 
 describe('worker contracts', () => {
+  it('requires six PMN choices and bounded typed history requests', () => {
+    const command = {
+      analysisInputSnapshotId: '113ec2c8-9439-4ce8-823d-3e2b0de8f001',
+      calculationSnapshotId: '223ec2c8-9439-4ce8-823d-3e2b0de8f002',
+      executionId: '333ec2c8-9439-4ce8-823d-3e2b0de8f003',
+      planSelection: 'effective',
+      selections: [
+        'nominal_rpm',
+        'speed_factor',
+        'target_cycles',
+        'acceleration_duration_s',
+        'steady_duration_s',
+        'deceleration_duration_s',
+      ].map((field) => ({ field, origin: 'source' })),
+      failureEvidence: null,
+      actor: 'Инженер',
+      reason: 'Расчёт ПМН',
+    };
+    expect(pmnCalculationCreateCommandSchema.safeParse(command).success).toBe(true);
+    expect(
+      pmnCalculationCreateCommandSchema.safeParse({ ...command, calculatedOutputs: {} }).success,
+    ).toBe(false);
+    expect(
+      pmnCalculationCreateCommandSchema.safeParse({
+        ...command,
+        selections: command.selections.slice(1),
+      }).success,
+    ).toBe(false);
+    expect(
+      pmnCalculationCreateCommandSchema.safeParse({
+        ...command,
+        selections: Array.from({ length: 6 }, () => command.selections[0]),
+      }).success,
+    ).toBe(false);
+    expect(
+      pmnCalculationCreateCommandSchema.safeParse({ ...command, reason: '\ud800' }).success,
+    ).toBe(false);
+    expect(
+      pmnCalculationCreateCommandSchema.safeParse({ ...command, reason: '🔧'.repeat(501) }).success,
+    ).toBe(false);
+    expect(
+      pmnCalculationCreateCommandSchema.safeParse({
+        ...command,
+        failureEvidence: {
+          applicability: 'exact_supported',
+          durationToFailureS: '0',
+          basis: 'Документированное время',
+          evidence: null,
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      pmnCalculationListPagePayloadSchema.safeParse({
+        wheelModelId: command.executionId,
+        limit: 50,
+      }).success,
+    ).toBe(true);
+    expect(
+      pmnCalculationListPagePayloadSchema.safeParse({
+        wheelModelId: command.executionId,
+        limit: 51,
+      }).success,
+    ).toBe(false);
+  });
   it('requires six RPT choices and rejects supplied results and malformed Unicode', () => {
     const command = {
       analysisInputSnapshotId: '113ec2c8-9439-4ce8-823d-3e2b0de8f001',
@@ -160,6 +227,48 @@ describe('worker contracts', () => {
     expect(rbdResultSnapshotSchema.safeParse({ ...result, formula_references: [] }).success).toBe(
       false,
     );
+  });
+  it('rejects contradictory PMN table 5 outcomes at the TypeScript boundary', () => {
+    const exact = { numerator: '0', denominator: '1', decimal: '0', decimal_preview: '0' };
+    const phase = {
+      phase: 'acceleration',
+      start_s: exact,
+      end_s: exact,
+      start_rpm: exact,
+      end_rpm: exact,
+    };
+    const boundaries = [
+      'cycle_start',
+      'acceleration_end',
+      'steady_end',
+      'cycle_end',
+      'repeat_acceleration_end',
+      'repeat_steady_end',
+      'repeat_cycle_end',
+    ];
+    const result = {
+      algorithm_id: 'pmn_reference',
+      algorithm_version: '1.0.0',
+      numeric_policy: 'exact_fraction_v1',
+      maximum_rpm: exact,
+      cycle_duration_s_exact: exact,
+      total_duration_s_exact: exact,
+      total_duration_min_exact: exact,
+      total_duration_h_exact: exact,
+      failure_result: { status: 'calculated', cycles_to_failure: '2', reason_code: null },
+      phases: [phase, { ...phase, phase: 'steady_rotation' }, { ...phase, phase: 'deceleration' }],
+      diagram_points: boundaries.map((boundary) => ({ boundary, x: 0, y: 0 })),
+      formula_references: ['1', '2', '3', '4'],
+    };
+    expect(pmnResultSnapshotSchema.safeParse(result).success).toBe(true);
+    for (const failure_result of [
+      { status: 'calculated', cycles_to_failure: null, reason_code: null },
+      { status: 'calculated', cycles_to_failure: '2', reason_code: 'failure_not_observed' },
+      { status: 'not_applicable', cycles_to_failure: '2', reason_code: 'failure_not_observed' },
+      { status: 'not_applicable', cycles_to_failure: null, reason_code: null },
+    ]) {
+      expect(pmnResultSnapshotSchema.safeParse({ ...result, failure_result }).success).toBe(false);
+    }
   });
   it('accepts source Unicode code points consistently with the Python response boundary', () => {
     const source = {

@@ -362,6 +362,26 @@ export const WORKER_OPERATION_POLICIES = {
     transportTimeoutMs: 7_000,
     terminateWorkerOnTimeout: false,
   },
+  'pmnCalculation.getSourceInputs': {
+    domainDeadlineMs: 30_000,
+    transportTimeoutMs: 35_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'pmnCalculation.create': {
+    domainDeadlineMs: 30_000,
+    transportTimeoutMs: 35_000,
+    terminateWorkerOnTimeout: true,
+  },
+  'pmnCalculation.listPage': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
+  'pmnCalculation.getDetail': {
+    domainDeadlineMs: 5_000,
+    transportTimeoutMs: 7_000,
+    terminateWorkerOnTimeout: false,
+  },
 } as const satisfies Readonly<Record<WorkerOperation, WorkerOperationPolicy>>;
 
 export interface WorkerLifecycleEvent {

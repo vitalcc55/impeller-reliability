@@ -40,6 +40,14 @@ import {
   reliabilityObservationVersionSchema,
   reliabilityObservationWriteResultSchema,
   reliabilityPagePayloadSchema,
+  pmnCalculationCreateCommandSchema,
+  pmnCalculationDetailSchema,
+  pmnCalculationIdPayloadSchema,
+  pmnCalculationListPagePayloadSchema,
+  pmnCalculationPageSchema,
+  pmnCalculationWriteResultSchema,
+  pmnPlanSourceSchema,
+  pmnSourceInputsPayloadSchema,
   rbdCalculationCreateCommandSchema,
   rbdCalculationDetailSchema,
   rbdCalculationIdPayloadSchema,
@@ -580,6 +588,36 @@ const api: ImpellerApi = {
         rptCalculationIdPayloadSchema,
         { calculationSnapshotId },
         createDesktopResultSchema(rptCalculationDetailSchema),
+      ),
+  },
+  pmnCalculation: {
+    getSourceInputs: async (executionId, planSelection) =>
+      invokeValidated(
+        IPC_CHANNELS.pmnCalculationGetSourceInputs,
+        pmnSourceInputsPayloadSchema,
+        { executionId, planSelection },
+        createDesktopResultSchema(pmnPlanSourceSchema),
+      ),
+    create: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.pmnCalculationCreate,
+        pmnCalculationCreateCommandSchema,
+        command,
+        createDesktopResultSchema(pmnCalculationWriteResultSchema),
+      ),
+    listPage: async (wheelModelId, cursor = null, limit = 25) =>
+      invokeValidated(
+        IPC_CHANNELS.pmnCalculationListPage,
+        pmnCalculationListPagePayloadSchema,
+        { wheelModelId, cursor, limit },
+        createDesktopResultSchema(pmnCalculationPageSchema),
+      ),
+    getDetail: async (calculationSnapshotId) =>
+      invokeValidated(
+        IPC_CHANNELS.pmnCalculationGetDetail,
+        pmnCalculationIdPayloadSchema,
+        { calculationSnapshotId },
+        createDesktopResultSchema(pmnCalculationDetailSchema),
       ),
   },
 };

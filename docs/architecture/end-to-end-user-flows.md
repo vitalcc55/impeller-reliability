@@ -111,6 +111,14 @@ Worker -> Project: "Python-расчёт РПТ + атомарные снимки
 User -> Renderer: "прочитать результат, историю и повторно открыть дело"
 Project -> Renderer: "тот же immutable результат и provenance без пересчёта и чтения ZIP"
 
+User -> Renderer: "Выбрать exact исполнение ПМН и original/effective план"
+Renderer -> Worker: "получить шесть source inputs, требования и уставки из verified managed archive"
+User -> Renderer: "явно выбрать source/manual значения и применимость таблицы 5"
+Renderer -> Worker: "выборы, документированное T_ОТК и два UUID без готовых результатов"
+Worker -> Project: "Python-расчёт ПМН + атомарные снимки и audit"
+User -> Renderer: "прочитать результат, историю и повторно открыть дело"
+Project -> Renderer: "тот же immutable результат и provenance без пересчёта и чтения ZIP"
+
 User -> Renderer: "Запустить анализ/выпустить отчёт (M05+)"
 Renderer -> Worker: "selected immutable inputs"
 Worker -> Project: "analysis/report snapshot"

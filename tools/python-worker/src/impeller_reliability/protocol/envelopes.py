@@ -4,6 +4,9 @@ from typing import Annotated, Literal, cast
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from impeller_reliability.calculations.pmn import PmnFailureApplicability
+from impeller_reliability.calculations.pmn_input_snapshot import PmnInputField, PmnInputSnapshotModel
+from impeller_reliability.calculations.pmn_result_snapshot import PmnReferenceResultModel
 from impeller_reliability.calculations.rbd_input_snapshot import RbdInputSnapshotModel
 from impeller_reliability.calculations.rbd_result_snapshot import RbdReferenceResultModel as RbdReferenceResultModel
 from impeller_reliability.calculations.rpt_input_snapshot import RptFailureApplicability, RptInputField, RptInputSnapshotModel
@@ -93,6 +96,10 @@ Operation = Literal[
     "rptCalculation.create",
     "rptCalculation.listPage",
     "rptCalculation.getDetail",
+    "pmnCalculation.getSourceInputs",
+    "pmnCalculation.create",
+    "pmnCalculation.listPage",
+    "pmnCalculation.getDetail",
 ]
 
 ProjectStatus = Literal["draft", "active", "completed", "archived"]
@@ -742,6 +749,78 @@ class RptCalculationListPagePayload(BaseModel):
     limit: int = Field(default=25, ge=1, le=50)
 
 
+class PmnEvidenceReferencePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    documentId: EntityId
+    documentRecordRevision: int = Field(ge=1, le=9_007_199_254_740_991)
+    documentLocator: str = Field(min_length=1, max_length=1_000)
+
+
+class PmnFieldSelectionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    field: PmnInputField
+    origin: Literal["source", "manual"]
+    manualValue: str | None = Field(default=None, max_length=64)
+    basis: str = Field(default="", max_length=2_000)
+    evidence: PmnEvidenceReferencePayload | None = None
+
+
+class PmnFailureEvidencePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    applicability: PmnFailureApplicability
+    durationToFailureS: str | None = Field(default=None, max_length=64)
+    basis: str = Field(default="", max_length=2_000)
+    evidence: PmnEvidenceReferencePayload | None = None
+
+
+class PmnSourceInputsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    executionId: EntityId
+    planSelection: Literal["original", "effective"]
+
+
+class PmnCalculationCreatePayload(PmnSourceInputsPayload):
+    analysisInputSnapshotId: EntityId
+    calculationSnapshotId: EntityId
+    selections: list[PmnFieldSelectionPayload] = Field(min_length=6, max_length=6)
+    failureEvidence: PmnFailureEvidencePayload | None
+    actor: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_fixed_selections(self) -> PmnCalculationCreatePayload:
+        if {item.field for item in self.selections} != {"nominal_rpm", "speed_factor", "target_cycles", "acceleration_duration_s", "steady_duration_s", "deceleration_duration_s"}:
+            raise ValueError("pmn_field_selections_invalid")
+        _require_utf8_tree(self.model_dump(mode="python"))
+        _require_utf8_bytes(self.actor, 200)
+        _require_utf8_bytes(self.reason, 2_000)
+        for selection in self.selections:
+            _require_utf8_bytes(selection.basis, 2_000)
+            if selection.manualValue is not None:
+                _require_utf8_bytes(selection.manualValue, 64)
+            if selection.evidence is not None:
+                _require_utf8_bytes(selection.evidence.documentLocator, 1_000)
+        if self.failureEvidence is not None:
+            _require_utf8_bytes(self.failureEvidence.basis, 2_000)
+            if self.failureEvidence.durationToFailureS is not None:
+                _require_utf8_bytes(self.failureEvidence.durationToFailureS, 64)
+            if self.failureEvidence.evidence is not None:
+                _require_utf8_bytes(self.failureEvidence.evidence.documentLocator, 1_000)
+        return self
+
+
+class PmnCalculationIdPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    calculationSnapshotId: EntityId
+
+
+class PmnCalculationListPagePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    wheelModelId: EntityId
+    cursor: str | None = Field(default=None, min_length=1, max_length=512)
+    limit: int = Field(default=25, ge=1, le=50)
+
+
 class CustomerGetRequest(RequestBase):
     operation: Literal["caseCustomer.get"]
     payload: EmptyPayload
@@ -1017,6 +1096,26 @@ class RptCalculationGetDetailRequest(RequestBase):
     payload: RptCalculationIdPayload
 
 
+class PmnCalculationGetSourceInputsRequest(RequestBase):
+    operation: Literal["pmnCalculation.getSourceInputs"]
+    payload: PmnSourceInputsPayload
+
+
+class PmnCalculationCreateRequest(RequestBase):
+    operation: Literal["pmnCalculation.create"]
+    payload: PmnCalculationCreatePayload
+
+
+class PmnCalculationListPageRequest(RequestBase):
+    operation: Literal["pmnCalculation.listPage"]
+    payload: PmnCalculationListPagePayload
+
+
+class PmnCalculationGetDetailRequest(RequestBase):
+    operation: Literal["pmnCalculation.getDetail"]
+    payload: PmnCalculationIdPayload
+
+
 type RequestEnvelope = Annotated[
     HandshakeRequest
     | PingRequest
@@ -1082,7 +1181,11 @@ type RequestEnvelope = Annotated[
     | RptCalculationGetSourceInputsRequest
     | RptCalculationCreateRequest
     | RptCalculationListPageRequest
-    | RptCalculationGetDetailRequest,
+    | RptCalculationGetDetailRequest
+    | PmnCalculationGetSourceInputsRequest
+    | PmnCalculationCreateRequest
+    | PmnCalculationListPageRequest
+    | PmnCalculationGetDetailRequest,
     Field(discriminator="operation"),
 ]
 REQUEST_ENVELOPE_ADAPTER: TypeAdapter[RequestEnvelope] = TypeAdapter(RequestEnvelope)
@@ -1729,6 +1832,115 @@ class RptCalculationPageResult(BaseModel):
     nextCursor: str | None = Field(default=None, max_length=512)
 
 
+class PmnPlanSourceValuesResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    nominalRpm: str | None = Field(default=None, max_length=512)
+    speedFactor: str | None = Field(default=None, max_length=512)
+    targetCycles: str | None = Field(default=None, max_length=512)
+    accelerationDurationS: str | None = Field(default=None, max_length=512)
+    steadyDurationS: str | None = Field(default=None, max_length=512)
+    decelerationDurationS: str | None = Field(default=None, max_length=512)
+
+
+class PmnMethodicalRequirementsResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    targetMaxRpmExact: str = Field(max_length=512)
+    cycleDurationSExact: str = Field(max_length=512)
+    totalDurationSExact: str = Field(max_length=512)
+
+
+class PmnExecutionTargetsResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    targetMaxRpm: str = Field(max_length=512)
+    targetCycles: str = Field(pattern=r"^(?:0|[1-9][0-9]{0,63})$")
+    cycleDurationS: str = Field(max_length=512)
+    totalDurationS: str = Field(max_length=512)
+
+
+class PmnPlanSourceResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    executionId: EntityId
+    localImportId: EntityId
+    packageId: str = Field(min_length=1, max_length=200)
+    runId: str = Field(min_length=1, max_length=200)
+    exportRevision: int = Field(ge=1, le=9_007_199_254_740_991)
+    outerPackageSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sourceSnapshotSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    producerName: str = Field(min_length=1, max_length=200)
+    producerVersion: str = Field(min_length=1, max_length=200)
+    producerBuildId: str = Field(min_length=1, max_length=200)
+    producerGitCommit: str = Field(min_length=1, max_length=200)
+    planSelection: Literal["original", "effective"]
+    payloadPath: Literal["plan/original.json", "plan/effective.json"]
+    payloadSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    planId: str = Field(min_length=1, max_length=200)
+    planRevision: int = Field(ge=1, le=9_007_199_254_740_991)
+    sourceValues: PmnPlanSourceValuesResult
+    methodicalRequirements: PmnMethodicalRequirementsResult
+    executionTargets: PmnExecutionTargetsResult
+
+    @model_validator(mode="after")
+    def validate_source_text_utf8(self) -> PmnPlanSourceResult:
+        _require_utf8_tree(self.model_dump(mode="python"))
+        return self
+
+
+class PmnAnalysisInputSnapshotResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    analysisInputSnapshotId: EntityId
+    executionId: EntityId
+    inputSnapshot: PmnInputSnapshotModel
+    contentSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    operationSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    actor: str = Field(min_length=1, max_length=200)
+    decisionReason: str = Field(min_length=1, max_length=2_000)
+    createdAtUtc: CanonicalUtcTimestamp
+
+
+class PmnCalculationSnapshotResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    calculationSnapshotId: EntityId
+    analysisInputSnapshotId: EntityId
+    executionId: EntityId
+    algorithmId: Literal["pmn_reference"]
+    algorithmVersion: Literal["1.0.0"]
+    numericPolicy: Literal["exact_fraction_v1"]
+    resultSnapshot: PmnReferenceResultModel
+    inputContentSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    operationSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    contentSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    createdAtUtc: CanonicalUtcTimestamp
+
+
+class PmnCalculationDetailResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    inputSnapshot: PmnAnalysisInputSnapshotResult
+    calculationSnapshot: PmnCalculationSnapshotResult
+
+
+class PmnCalculationWriteResultModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    disposition: Literal["created", "existing"]
+    detail: PmnCalculationDetailResult
+
+
+class PmnCalculationSummaryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    calculationSnapshotId: EntityId
+    analysisInputSnapshotId: EntityId
+    executionId: EntityId
+    wheelModelId: EntityId
+    targetCycles: str = Field(pattern=r"^(?:0|[1-9][0-9]{0,12})$")
+    failureStatus: Literal["calculated", "not_applicable"]
+    createdAtUtc: CanonicalUtcTimestamp
+
+
+class PmnCalculationPageResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    items: list[PmnCalculationSummaryResult] = Field(max_length=50)
+    nextCursor: str | None = Field(default=None, max_length=512)
+
+
 class ErrorPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -1819,6 +2031,10 @@ type SuccessResponseType = (
     | SuccessResponse[RptCalculationDetailResult]
     | SuccessResponse[RptCalculationWriteResultModel]
     | SuccessResponse[RptCalculationPageResult]
+    | SuccessResponse[PmnPlanSourceResult]
+    | SuccessResponse[PmnCalculationDetailResult]
+    | SuccessResponse[PmnCalculationWriteResultModel]
+    | SuccessResponse[PmnCalculationPageResult]
 )
 
 

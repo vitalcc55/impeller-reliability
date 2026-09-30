@@ -14,7 +14,14 @@ from impeller_reliability.integration.r130run.import_models import (
 from impeller_reliability.integration.r130run.jobs import RunPackageValidationJobManager
 from impeller_reliability.integration.r130run.m9a import M9aPackageFacts
 from impeller_reliability.integration.r130run.models import RunPackageValidationReport
-from impeller_reliability.persistence.r130sh_sources import ImportedRunSummary, RbdPlanSourceSnapshot, RptPlanSourceSnapshot
+from impeller_reliability.persistence.pmn_calculations import (
+    PmnCalculationDetail,
+    PmnCalculationSummary,
+    PmnEvidenceReference,
+    PmnFailureEvidence,
+    PmnFieldSelection,
+)
+from impeller_reliability.persistence.r130sh_sources import ImportedRunSummary, PmnPlanSourceSnapshot, RbdPlanSourceSnapshot, RptPlanSourceSnapshot
 from impeller_reliability.persistence.rbd_calculations import (
     RbdCalculationDetail,
     RbdCalculationSummary,
@@ -64,6 +71,19 @@ from impeller_reliability.protocol.envelopes import (
     Operation,
     PingRequest,
     PingResult,
+    PmnCalculationCreateRequest,
+    PmnCalculationDetailResult,
+    PmnCalculationGetDetailRequest,
+    PmnCalculationGetSourceInputsRequest,
+    PmnCalculationListPageRequest,
+    PmnCalculationPageResult,
+    PmnCalculationSummaryResult,
+    PmnCalculationWriteResultModel,
+    PmnEvidenceReferencePayload,
+    PmnExecutionTargetsResult,
+    PmnMethodicalRequirementsResult,
+    PmnPlanSourceResult,
+    PmnPlanSourceValuesResult,
     ProjectBackupResult,
     ProjectCloseRequest,
     ProjectCloseResult,
@@ -221,6 +241,10 @@ CAPABILITIES: list[Operation] = [
     "rptCalculation.create",
     "rptCalculation.listPage",
     "rptCalculation.getDetail",
+    "pmnCalculation.getSourceInputs",
+    "pmnCalculation.create",
+    "pmnCalculation.listPage",
+    "pmnCalculation.getDetail",
 ]
 
 
@@ -251,7 +275,7 @@ class Dispatcher:
                     numpyVersion=version("numpy"),
                     scipyVersion=version("scipy"),
                     databaseSchemaVersions=[SCHEMA_VERSION],
-                    algorithmVersions={"rbd_reference": "1.0.0", "rpt_reference": "1.0.0"},
+                    algorithmVersions={"rbd_reference": "1.0.0", "rpt_reference": "1.0.0", "pmn_reference": "1.0.0"},
                     supportedRunPackageSchemas=["r130sh.run-package.v1"],
                     supportedPlanSchemas=[],
                     capabilities=CAPABILITIES,
@@ -334,6 +358,9 @@ class Dispatcher:
             "rptCalculation.getSourceInputs",
             "rptCalculation.listPage",
             "rptCalculation.getDetail",
+            "pmnCalculation.getSourceInputs",
+            "pmnCalculation.listPage",
+            "pmnCalculation.getDetail",
         }:
             from impeller_reliability.persistence.project_errors import ProjectOperationError
 
@@ -905,6 +932,83 @@ class Dispatcher:
                     revision=request.revision,
                     result=self._rpt_calculation_detail_result(rpt_detail),
                 )
+            case PmnCalculationGetSourceInputsRequest():
+                pmn_source = self._projects.get_pmn_source_inputs(
+                    request.payload.executionId,
+                    request.payload.planSelection,
+                    active_deadline,
+                )
+                return SuccessResponse[PmnPlanSourceResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._pmn_plan_source_result(pmn_source),
+                )
+            case PmnCalculationCreateRequest():
+                pmn_selections = tuple(
+                    PmnFieldSelection(
+                        field=item.field,
+                        origin=item.origin,
+                        manual_value=item.manualValue,
+                        basis=item.basis,
+                        evidence=self._pmn_evidence_reference(item.evidence),
+                    )
+                    for item in request.payload.selections
+                )
+                pmn_failure_payload = request.payload.failureEvidence
+                pmn_failure = (
+                    None
+                    if pmn_failure_payload is None
+                    else PmnFailureEvidence(
+                        applicability=pmn_failure_payload.applicability,
+                        duration_to_failure_s=pmn_failure_payload.durationToFailureS,
+                        basis=pmn_failure_payload.basis,
+                        evidence=self._pmn_evidence_reference(pmn_failure_payload.evidence),
+                    )
+                )
+                pmn_written = self._projects.create_pmn_calculation(
+                    analysis_input_snapshot_id=request.payload.analysisInputSnapshotId,
+                    calculation_snapshot_id=request.payload.calculationSnapshotId,
+                    execution_id=request.payload.executionId,
+                    selection=request.payload.planSelection,
+                    selections=pmn_selections,
+                    failure=pmn_failure,
+                    actor=request.payload.actor,
+                    reason=request.payload.reason,
+                    deadline=active_deadline,
+                )
+                return SuccessResponse[PmnCalculationWriteResultModel](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=PmnCalculationWriteResultModel(
+                        disposition=pmn_written.disposition,
+                        detail=self._pmn_calculation_detail_result(pmn_written.detail),
+                    ),
+                )
+            case PmnCalculationListPageRequest():
+                pmn_page = self._projects.list_pmn_calculation_page(
+                    request.payload.wheelModelId,
+                    request.payload.cursor,
+                    request.payload.limit,
+                    active_deadline,
+                )
+                return SuccessResponse[PmnCalculationPageResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=PmnCalculationPageResult(
+                        items=[self._pmn_calculation_summary_result(item) for item in pmn_page.items],
+                        nextCursor=pmn_page.next_cursor,
+                    ),
+                )
+            case PmnCalculationGetDetailRequest():
+                pmn_detail = self._projects.get_pmn_calculation_detail(
+                    request.payload.calculationSnapshotId,
+                    active_deadline,
+                )
+                return SuccessResponse[PmnCalculationDetailResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=self._pmn_calculation_detail_result(pmn_detail),
+                )
 
     def close(self) -> None:
         if not self._run_package_jobs_shutdown:
@@ -1396,6 +1500,101 @@ class Dispatcher:
             executionId=item.execution_id,
             wheelModelId=item.wheel_model_id,
             requiredCycles=item.required_cycles_exact,
+            failureStatus=item.failure_status,
+            createdAtUtc=item.created_at_utc,
+        )
+
+    @staticmethod
+    def _pmn_plan_source_result(source: PmnPlanSourceSnapshot) -> PmnPlanSourceResult:
+        return PmnPlanSourceResult(
+            executionId=source.execution_id,
+            localImportId=source.local_import_id,
+            packageId=source.package_id,
+            runId=source.run_id,
+            exportRevision=source.export_revision,
+            outerPackageSha256=source.outer_package_sha256,
+            sourceSnapshotSha256=source.source_snapshot_sha256,
+            producerName=source.producer_name,
+            producerVersion=source.producer_version,
+            producerBuildId=source.producer_build_id,
+            producerGitCommit=source.producer_git_commit,
+            planSelection=source.selection,
+            payloadPath=source.payload_path,
+            payloadSha256=source.payload_sha256,
+            planId=source.plan_id,
+            planRevision=source.plan_revision,
+            sourceValues=PmnPlanSourceValuesResult(
+                nominalRpm=source.source_values.nominal_rpm,
+                speedFactor=source.source_values.speed_factor,
+                targetCycles=source.source_values.target_cycles,
+                accelerationDurationS=source.source_values.acceleration_duration_s,
+                steadyDurationS=source.source_values.steady_duration_s,
+                decelerationDurationS=source.source_values.deceleration_duration_s,
+            ),
+            methodicalRequirements=PmnMethodicalRequirementsResult(
+                targetMaxRpmExact=source.methodical_requirements.target_max_rpm_exact,
+                cycleDurationSExact=source.methodical_requirements.cycle_duration_s_exact,
+                totalDurationSExact=source.methodical_requirements.total_duration_s_exact,
+            ),
+            executionTargets=PmnExecutionTargetsResult(
+                targetMaxRpm=source.execution_targets.target_max_rpm,
+                targetCycles=source.execution_targets.target_cycles,
+                cycleDurationS=source.execution_targets.cycle_duration_s,
+                totalDurationS=source.execution_targets.total_duration_s,
+            ),
+        )
+
+    @staticmethod
+    def _pmn_evidence_reference(payload: PmnEvidenceReferencePayload | None) -> PmnEvidenceReference | None:
+        if payload is None:
+            return None
+        return PmnEvidenceReference(
+            document_id=payload.documentId,
+            document_record_revision=payload.documentRecordRevision,
+            document_locator=payload.documentLocator,
+        )
+
+    @staticmethod
+    def _pmn_calculation_detail_result(detail: PmnCalculationDetail) -> PmnCalculationDetailResult:
+        input_snapshot = detail.input_snapshot
+        calculation = detail.calculation_snapshot
+        return PmnCalculationDetailResult.model_validate(
+            {
+                "inputSnapshot": {
+                    "analysisInputSnapshotId": input_snapshot.analysis_input_snapshot_id,
+                    "executionId": input_snapshot.execution_id,
+                    "inputSnapshot": input_snapshot.input_snapshot,
+                    "contentSha256": input_snapshot.content_sha256,
+                    "operationSha256": input_snapshot.operation_sha256,
+                    "actor": input_snapshot.actor,
+                    "decisionReason": input_snapshot.decision_reason,
+                    "createdAtUtc": input_snapshot.created_at_utc,
+                },
+                "calculationSnapshot": {
+                    "calculationSnapshotId": calculation.calculation_snapshot_id,
+                    "analysisInputSnapshotId": calculation.analysis_input_snapshot_id,
+                    "executionId": calculation.execution_id,
+                    "algorithmId": calculation.algorithm_id,
+                    "algorithmVersion": calculation.algorithm_version,
+                    "numericPolicy": calculation.numeric_policy,
+                    "resultSnapshot": calculation.result_snapshot,
+                    "inputContentSha256": calculation.input_content_sha256,
+                    "operationSha256": calculation.operation_sha256,
+                    "contentSha256": calculation.content_sha256,
+                    "createdAtUtc": calculation.created_at_utc,
+                },
+            },
+            strict=True,
+        )
+
+    @staticmethod
+    def _pmn_calculation_summary_result(item: PmnCalculationSummary) -> PmnCalculationSummaryResult:
+        return PmnCalculationSummaryResult(
+            calculationSnapshotId=item.calculation_snapshot_id,
+            analysisInputSnapshotId=item.analysis_input_snapshot_id,
+            executionId=item.execution_id,
+            wheelModelId=item.wheel_model_id,
+            targetCycles=item.target_cycles,
             failureStatus=item.failure_status,
             createdAtUtc=item.created_at_utc,
         )

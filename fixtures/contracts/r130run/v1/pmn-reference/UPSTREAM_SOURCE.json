@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "impeller.pmn-producer-fixture.v1",
+  "producer": {
+    "repository": "R130SH",
+    "commit": "d480509d45cf4eb1d1f4a959294797efc9fd9d27",
+    "version": "0.9.47",
+    "exportService": "r130sh.application.test_runs.run_package_export.RunPackageExportService"
+  },
+  "package": {
+    "file": "pmn_reference_export.r130run",
+    "sha256": "201df4c8fd85c609092daee0d5aeff936931113bd63af93977916e490ac8d453",
+    "sizeBytes": 9203,
+    "packageId": "19bdc942-8008-4531-b689-c1b59675f13c",
+    "runId": "pmn_reference_export",
+    "exportRevision": 1,
+    "sourceSnapshotSha256": "433df49fff330a9bc14684fdb17239a114be9e42f0ca09ba356aa52e684cad8b"
+  },
+  "seed": {
+    "source": "R130SH tests/helpers/m9a_run_packages.py PMN synthetic source and persisted facts",
+    "provenanceAdjustment": "In an isolated git archive only, app_version, build_id and git_commit were set to this producer version, a synthetic build label and the exact commit before export.",
+    "buildId": "pmn-synthetic-export-d480509d",
+    "hardwareAcceptance": false
+  }
+}

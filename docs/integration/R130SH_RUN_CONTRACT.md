@@ -4,7 +4,7 @@
 
 M03A остаётся read-only validation foundation. Его downstream synthetic fixtures служат unit/negative/safety tests и не являются producer compatibility proof. M03B хранит отдельный immutable offline snapshot `fixtures/contracts/r130run/v1/m9a`: exact index, все 21 archives и `UPSTREAM_SOURCE.json`; CI не зависит от сети или соседнего checkout. Drift gate запрещает missing/extra package и проверяет size/outer SHA каждого файла; snapshot не обновляется автоматически.
 
-Impeller Reliability не создаёт исходящий контракт, не передаёт план, не запускает R130SH, не читает его SQLite и не меняет первичные факты пакета. M03B разделяет immutable `r130sh_source`, editable `analyst_enrichment` и будущий `derived_analysis`. Original/effective plan сохраняются как source snapshots, а не исполняемый план Impeller Reliability; полный `measurements.csv`, включая rejected rows, остаётся в exact archive, узкая projection хранит только необходимые summaries/counts.
+Impeller Reliability не создаёт исходящий контракт, не передаёт план, не запускает R130SH, не читает его SQLite и не меняет первичные факты пакета. M03B разделяет immutable `r130sh_source`, editable `analyst_enrichment` и `derived_analysis`. Original/effective plan сохраняются как source snapshots, а не исполняемый план Impeller Reliability; полный `measurements.csv`, включая rejected rows, остаётся в exact archive, узкая projection хранит только необходимые summaries/counts.
 
 M02.2B CaseDocument остаётся редактируемым `analyst_enrichment` и не смешивается с R130SH inventory/attachments.
 
@@ -46,3 +46,5 @@ plan id/revision и producer provenance сохраняются раздельн�
 не materialize ради получения scalar plan fields.
 
 РПТ использует тот же verified managed archive seam и exact identity `execution_id`/`local_import_id`, но читает шесть собственных полей плана, включая `steady_duration_s`, а также source methodical requirements, округлённые execution targets и политику нижней точки. Numeric JSON scalar сохраняется как исходная лексема без float-преобразования; расчётная граница проверяет её отдельно. Для importer-valid крупного plan member действует существующий лимит импортёра, а не прежний локальный RBD read-limit. Путь к архиву Renderer не получает; позднее отсутствие managed ZIP не переписывает сохранённый результат.
+
+ПМН через тот же verified managed archive читает exact `execution_id`/`local_import_id`, original/effective план и шесть собственных полей: `nominal_rpm`, `speed_factor`, `target_cycles` и три длительности фаз. Source-лексема и координата member сохраняются без float-преобразования; methodical requirements и execution targets остаются отдельными свидетельствами. Измерения не подставляются вместо scalar plan inputs. Отдельный producer-generated эталон текущего R130SH и его происхождение зафиксированы в `fixtures/contracts/r130run/v1/pmn-reference/UPSTREAM_SOURCE.json`; он не меняет замороженные M9a пакеты. Поздняя недоступность ZIP не меняет сохранённый расчёт.
