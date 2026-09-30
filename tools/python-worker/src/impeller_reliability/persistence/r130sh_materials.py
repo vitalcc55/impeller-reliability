@@ -219,6 +219,23 @@ def inspection_detail(snapshot: MaterialSnapshot, identity: str, deadline: Reque
     return MaterialDetail[InspectionMaterialData](origin=snapshot.origin, verification=snapshot.verification, item=item)
 
 
+def photo_detail(snapshot: MaterialSnapshot, identity: str, deadline: RequestDeadline) -> MaterialDetail[PhotoMaterialData]:
+    records = _records(snapshot, "attachments/index.json", "attachments")
+    indices: list[int] = []
+    for index, record in enumerate(records):
+        deadline.check("material_photo_lookup")
+        if record["attachment_id"] == identity:
+            indices.append(index)
+    if not indices:
+        raise ProjectOperationError("entity_not_found", "Фотография отсутствует в выбранной редакции.")
+    if len(indices) != 1:
+        raise ProjectOperationError("validation_error", "Идентификатор фотографии неоднозначен; подстановка запрещена.", details={"reason": "material_id_ambiguous"})
+    own = _counts(records, "attachment_id", deadline)
+    inspections = _counts(_records(snapshot, "inspections.json", "inspections"), "inspection_id", deadline)
+    item = _photo_item(indices[0], records[indices[0]], own, inspections, deadline)
+    return MaterialDetail[PhotoMaterialData](origin=snapshot.origin, verification=snapshot.verification, item=item)
+
+
 def protocol_detail(snapshot: MaterialSnapshot, deadline: RequestDeadline) -> MaterialDetail[ProtocolMaterialData]:
     raw = snapshot.payloads.get("protocol/release.json")
     if raw is None:

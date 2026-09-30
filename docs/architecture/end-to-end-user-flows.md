@@ -86,6 +86,16 @@ Worker -> Project: "binding mutation или append-only provenance; source uncha
 User -> Renderer: "Закрыть/открыть дело"
 Project -> Renderer: "тот же source/archive/provenance; broken archive локализован"
 
+Renderer -> Main: "прочитать осмотры, фото и включённый протокол exact импорта"
+Main -> Worker: "bounded source-only read с project/import/package/revision/SHA"
+Worker -> Renderer: "metadata и текущая проверка материалов, без путей и записи в дело"
+Renderer -> Main: "открыть один материал по exact identity и UUID операции"
+Main -> Worker: "разрешённый каталог и бюджет одной временной копии"
+Worker -> Main: "проверенные JPEG/PNG/PDF bytes, внутренний путь и файловая identity"
+Main -> User: "проверка копии и актуальной сессии, передача системному приложению"
+Main -> Worker: "при отмене/отказе удалить копию по native identity"
+
+
 User -> Renderer: "Интерпретировать исполнение (M04B)"
 Renderer -> Worker: "classification + endpoint/life metric + document/evidence + expected head"
 Worker -> Project: "immutable ReliabilityObservation version + audit"

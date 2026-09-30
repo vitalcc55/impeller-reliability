@@ -257,6 +257,36 @@ export const WORKER_OPERATION_POLICIES = {
     transportTimeoutMs: 35_000,
     terminateWorkerOnTimeout: false,
   },
+  'importedRun.listInspectionPage': {
+    domainDeadlineMs: 30000,
+    transportTimeoutMs: 35000,
+    terminateWorkerOnTimeout: false,
+  },
+  'importedRun.getInspection': {
+    domainDeadlineMs: 30000,
+    transportTimeoutMs: 35000,
+    terminateWorkerOnTimeout: false,
+  },
+  'importedRun.listPhotoPage': {
+    domainDeadlineMs: 30000,
+    transportTimeoutMs: 35000,
+    terminateWorkerOnTimeout: false,
+  },
+  'importedRun.getProtocol': {
+    domainDeadlineMs: 30000,
+    transportTimeoutMs: 35000,
+    terminateWorkerOnTimeout: false,
+  },
+  'importedRun.resolveMaterial': {
+    domainDeadlineMs: 30000,
+    transportTimeoutMs: 35000,
+    terminateWorkerOnTimeout: false,
+  },
+  'materialCopy.discard': {
+    domainDeadlineMs: 5000,
+    transportTimeoutMs: 7000,
+    terminateWorkerOnTimeout: false,
+  },
   'importedRun.verifySource': {
     domainDeadlineMs: 30_000,
     transportTimeoutMs: 35_000,

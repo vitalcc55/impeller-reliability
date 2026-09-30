@@ -517,6 +517,57 @@ export function createPreviewApi(
         Promise.resolve(
           localImportId === importedRun.summary.localImportId ? success(importedRun) : notFound(),
         ),
+      listInspectionPage: () =>
+        Promise.resolve({
+          ok: false,
+          error: {
+            code: 'validation_error',
+            message: 'Предпросмотр материалов этого запуска ещё не подготовлен.',
+            details: {},
+            retryable: false,
+          },
+        }),
+      getInspection: () =>
+        Promise.resolve({
+          ok: false,
+          error: {
+            code: 'validation_error',
+            message: 'Предпросмотр материалов этого запуска ещё не подготовлен.',
+            details: {},
+            retryable: false,
+          },
+        }),
+      listPhotoPage: () =>
+        Promise.resolve({
+          ok: false,
+          error: {
+            code: 'validation_error',
+            message: 'Предпросмотр материалов этого запуска ещё не подготовлен.',
+            details: {},
+            retryable: false,
+          },
+        }),
+      getProtocol: () =>
+        Promise.resolve({
+          ok: false,
+          error: {
+            code: 'validation_error',
+            message: 'Предпросмотр материалов этого запуска ещё не подготовлен.',
+            details: {},
+            retryable: false,
+          },
+        }),
+      openMaterial: () =>
+        Promise.resolve({
+          ok: false,
+          error: {
+            code: 'material_open_failed',
+            message: 'Системное открытие доступно в настольном приложении.',
+            details: {},
+            retryable: false,
+          },
+        }),
+      cancelMaterialOpen: () => Promise.resolve({ ok: true, result: { cancelled: false } }),
       verifySource: (localImportId) =>
         Promise.resolve(
           localImportId === importedRun.summary.localImportId

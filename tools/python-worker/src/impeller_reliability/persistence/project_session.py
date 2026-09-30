@@ -6,7 +6,7 @@ import sqlite3
 from typing import Literal, Self
 
 from impeller_reliability.integration.r130run.m9a import M9aPackageFacts
-from impeller_reliability.integration.r130run.material_models import InspectionMaterialData, MaterialDetail, MaterialPage, PhotoMaterialData, ProtocolMaterialData
+from impeller_reliability.integration.r130run.material_models import InspectionMaterialData, MaterialDetail, MaterialIdentity, MaterialPage, PhotoMaterialData, ProtocolMaterialData
 from impeller_reliability.integration.r130run.models import RunPackageValidationReport
 from impeller_reliability.persistence.analyst_dossier import (
     AnalystDossierRepository,
@@ -46,6 +46,7 @@ from impeller_reliability.persistence.r130sh_sources import (
     PmnPlanSourceSnapshot,
     R130shSourceRepository,
     RbdPlanSourceSnapshot,
+    ResolvedRunMaterial,
     RptPlanSourceSnapshot,
     SourceIntegrityStatus,
     SpecimenBinding,
@@ -446,6 +447,11 @@ class ProjectSession:
 
     def get_imported_run_protocol(self, local_import_id: str, deadline: RequestDeadline | None = None) -> MaterialDetail[ProtocolMaterialData]:
         return self._r130sh_sources.get_protocol(local_import_id, deadline)
+
+    def resolve_imported_run_material(
+        self, identity: MaterialIdentity, output_directory: Path, deadline: RequestDeadline | None = None, *, copy_id: str | None = None, copy_byte_limit: int = 100 * 1024 * 1024
+    ) -> ResolvedRunMaterial:
+        return self._r130sh_sources.resolve_material(identity, output_directory, deadline, copy_id=copy_id, copy_byte_limit=copy_byte_limit)
 
     def read_rbd_plan_source(
         self,

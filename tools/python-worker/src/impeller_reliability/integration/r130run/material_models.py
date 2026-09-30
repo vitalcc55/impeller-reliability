@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny
+from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, model_validator
 from pydantic.alias_generators import to_camel
 
 from impeller_reliability.integration.r130run.models import RunPackageMaterialValidationReport
+
+type PositiveIntegerText = Annotated[str, Field(pattern=r"^[1-9][0-9]*$", max_length=16 * 1024)]
 
 
 class MaterialModel(BaseModel):
@@ -17,8 +19,14 @@ class MaterialOrigin(MaterialModel):
     local_import_id: str
     package_id: str
     run_id: str
-    export_revision: int
+    export_revision: int = Field(ge=1, le=9_007_199_254_740_991)
     outer_package_sha256: str
+
+
+class MaterialIdentity(MaterialModel):
+    origin: MaterialOrigin
+    kind: Literal["photo", "protocol"]
+    material_id: str = Field(min_length=1, max_length=16 * 1024)
 
 
 class MaterialActor(MaterialModel):
@@ -55,7 +63,7 @@ class InspectionMaterialData(MaterialModel):
     inspection_id: str
     run_id: str
     stage: Literal["pre_test", "post_trial_run", "vibration_pause", "post_rbd", "post_rpt", "post_pmn"]
-    trip_index: str | None
+    trip_index: PositiveIntegerText | None
     performed_at_utc: str
     run_elapsed_s: str
     actor: MaterialActor
@@ -72,8 +80,8 @@ class PhotoMaterialData(MaterialModel):
     media_type: Literal["image/jpeg", "image/png"]
     size: int
     sha256: str
-    width_px: str
-    height_px: str
+    width_px: PositiveIntegerText
+    height_px: PositiveIntegerText
     actor: PhotoActor
     attached_at_utc: str
     availability: Literal["available", "unavailable"]
@@ -83,8 +91,8 @@ class PhotoMaterialData(MaterialModel):
 class ProtocolMaterialData(MaterialModel):
     schema_version: Literal["r130sh.protocol-release.v1"]
     run_id: str
-    release_id: str
-    revision_number: str
+    release_id: PositiveIntegerText
+    revision_number: PositiveIntegerText
     protocol_number: str
     template_version: str
     content_sha256: str
@@ -101,12 +109,20 @@ class MaterialReference(MaterialModel):
 
 
 class MaterialItem[DataT: BaseModel](MaterialModel):
-    source_index: int
+    source_index: int = Field(ge=0, le=9_007_199_254_740_991)
     material_id: str | None
     state: Literal["verified", "ambiguous", "unavailable", "too_large", "not_included"]
     data: SerializeAsAny[DataT] | None
     references: tuple[MaterialReference, ...] = ()
     detail: str | None = None
+
+    @model_validator(mode="after")
+    def validate_item_state(self) -> MaterialItem[DataT]:
+        if (self.state in {"verified", "ambiguous", "unavailable"}) != (self.data is not None):
+            raise ValueError("material_state_data_mismatch")
+        if (self.state == "not_included") != (self.material_id is None):
+            raise ValueError("material_state_identity_mismatch")
+        return self
 
 
 class MaterialPage[DataT: BaseModel](MaterialModel):

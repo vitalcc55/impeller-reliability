@@ -49,6 +49,12 @@ export const workerOperationSchema = z.enum([
   'runPackageImport.discard',
   'importedRun.list',
   'importedRun.get',
+  'importedRun.listInspectionPage',
+  'importedRun.getInspection',
+  'importedRun.listPhotoPage',
+  'importedRun.getProtocol',
+  'importedRun.resolveMaterial',
+  'materialCopy.discard',
   'importedRun.verifySource',
   'importedRun.getResolutionState',
   'importedRun.bindSpecimen',
@@ -1156,6 +1162,266 @@ const rbdSourceTextSchema = (maximumCodePoints: number) =>
     (value) => Array.from(value).length >= 1 && Array.from(value).length <= maximumCodePoints,
     'Длина исходного текста вне допустимых границ.',
   );
+const materialTextSchema = textWithinUtf8Bytes(16 * 1024);
+const materialIntegerTextSchema = materialTextSchema.regex(/^[1-9][0-9]*$/);
+export const materialOriginSchema = z
+  .object({
+    projectId: projectIdSchema,
+    localImportId: entityIdSchema,
+    packageId: z.string().min(1).max(200),
+    runId: z.string().min(1).max(200),
+    exportRevision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    outerPackageSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+export const materialIdentitySchema = z
+  .object({
+    origin: materialOriginSchema,
+    kind: z.enum(['photo', 'protocol']),
+    materialId: materialTextSchema.min(1),
+  })
+  .strict();
+export const materialReadPayloadSchema = z.object({ origin: materialOriginSchema }).strict();
+export const materialPagePayloadSchema = materialReadPayloadSchema
+  .extend({
+    cursor: z
+      .string()
+      .min(1)
+      .max(512)
+      .regex(/^[A-Za-z0-9_=-]+$/)
+      .nullable()
+      .default(null),
+    limit: z.number().int().min(1).max(50).default(25),
+  })
+  .strict();
+export const materialInspectionPayloadSchema = materialReadPayloadSchema
+  .extend({ inspectionId: z.string().min(1).max(200) })
+  .strict();
+export const materialResolvePayloadSchema = z
+  .object({
+    identity: materialIdentitySchema,
+    outputDirectory: z.string().min(1).max(32767),
+    copyId: entityIdSchema,
+    copyByteLimit: z
+      .number()
+      .int()
+      .min(1)
+      .max(100 * 1024 * 1024)
+      .default(100 * 1024 * 1024),
+  })
+  .strict();
+const materialActorSchema = z
+  .object({
+    employeeId: materialTextSchema,
+    fullName: materialTextSchema,
+    position: materialTextSchema,
+  })
+  .strict();
+const inspectionMaterialDataSchema = z
+  .object({
+    schemaVersion: z.literal('r130sh.inspection.v1'),
+    inspectionId: materialTextSchema,
+    runId: materialTextSchema,
+    stage: z.enum([
+      'pre_test',
+      'post_trial_run',
+      'vibration_pause',
+      'post_rbd',
+      'post_rpt',
+      'post_pmn',
+    ]),
+    tripIndex: materialIntegerTextSchema.nullable(),
+    performedAtUtc: materialTextSchema,
+    runElapsedS: materialTextSchema,
+    actor: materialActorSchema,
+    findings: z
+      .object({
+        cracks: z.boolean(),
+        chips: z.boolean(),
+        deformation: z.boolean(),
+        partialDestruction: z.boolean(),
+        totalDestruction: z.boolean(),
+        balancingElementsState: z.enum(['intact', 'damaged', 'not_assessed']),
+        otherFindings: materialTextSchema,
+      })
+      .strict(),
+    inspectionOutcome: z.enum(['clear', 'blocking_damage', 'inconclusive']),
+    comment: materialTextSchema,
+    attachmentIds: z.array(materialTextSchema),
+  })
+  .strict();
+const photoMaterialDataSchema = z
+  .object({
+    attachmentId: materialTextSchema,
+    runId: materialTextSchema,
+    inspectionId: materialTextSchema.nullable(),
+    mediaType: z.enum(['image/jpeg', 'image/png']),
+    size: z
+      .number()
+      .int()
+      .min(1)
+      .max(25 * 1024 * 1024),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    widthPx: materialIntegerTextSchema,
+    heightPx: materialIntegerTextSchema,
+    actor: materialActorSchema.extend({ legacy: z.boolean() }).strict(),
+    attachedAtUtc: materialTextSchema,
+    availability: z.enum(['available', 'unavailable']),
+    unavailableReason: materialTextSchema.nullable(),
+  })
+  .strict();
+const protocolMaterialDataSchema = z
+  .object({
+    schemaVersion: z.literal('r130sh.protocol-release.v1'),
+    runId: materialTextSchema,
+    releaseId: materialIntegerTextSchema,
+    revisionNumber: materialIntegerTextSchema,
+    protocolNumber: materialTextSchema,
+    templateVersion: materialTextSchema,
+    contentSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    releasedAtUtc: materialTextSchema,
+    releasedByActor: z
+      .object({
+        employeeId: materialTextSchema.nullable(),
+        fullName: materialTextSchema.nullable(),
+        position: materialTextSchema.nullable(),
+        legacy: z.boolean().nullable(),
+        sourceJson: materialTextSchema,
+      })
+      .strict(),
+    photoIds: z.array(materialTextSchema),
+    pdfSizeBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+const materialReferenceSchema = z
+  .object({
+    kind: z.enum(['inspection', 'photo']),
+    materialId: materialTextSchema,
+    status: z.enum(['resolved', 'unresolved', 'ambiguous']),
+  })
+  .strict();
+const materialItemSchema = <T extends z.ZodType>(data: T) =>
+  z
+    .object({
+      sourceIndex: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      materialId: materialTextSchema.nullable(),
+      state: z.enum(['verified', 'ambiguous', 'unavailable', 'too_large', 'not_included']),
+      data: data.nullable(),
+      references: z.array(materialReferenceSchema),
+      detail: materialTextSchema.nullable(),
+    })
+    .strict()
+    .refine(
+      (item) =>
+        ['verified', 'ambiguous', 'unavailable'].includes(item.state) ===
+        ('data' in item && item.data !== null),
+      'Состояние материала не согласовано с данными.',
+    )
+    .refine(
+      (item) => (item.state === 'not_included') === (item.materialId === null),
+      'Состояние материала не согласовано с identity.',
+    )
+    .refine(
+      (item) => new TextEncoder().encode(JSON.stringify(item)).length <= 64 * 1024,
+      'Запись материала превышает предел.',
+    );
+const materialVerificationSchema = z
+  .object({
+    validatorVersion: z.literal('m03b.3'),
+    validationContractCommit: z.literal('b7792758b407ffc52d2fff051243056f63dbf18f'),
+    scope: z.literal('source_material_metadata'),
+    semanticVerdict: z.enum(['passed', 'failed']),
+    findingCounts: runPackageFindingCountsSchema,
+    findings: z.array(runPackageFindingSchema).max(200),
+  })
+  .strict();
+const materialPageSchema = <T extends z.ZodType>(data: T) =>
+  z
+    .object({
+      origin: materialOriginSchema,
+      verification: materialVerificationSchema,
+      items: z.array(materialItemSchema(data)).max(50),
+      nextCursor: z.string().max(512).nullable(),
+      pageBound: z.enum(['item_limit', 'byte_limit']).nullable(),
+    })
+    .strict()
+    .refine(
+      (page) => new TextEncoder().encode(JSON.stringify(page)).length <= 256 * 1024,
+      'Страница материалов превышает предел.',
+    );
+const materialDetailSchema = <T extends z.ZodType>(data: T) =>
+  z
+    .object({
+      origin: materialOriginSchema,
+      verification: materialVerificationSchema,
+      item: materialItemSchema(data),
+    })
+    .strict();
+export const inspectionMaterialPageSchema = materialPageSchema(inspectionMaterialDataSchema);
+export const inspectionMaterialDetailSchema = materialDetailSchema(inspectionMaterialDataSchema);
+export const photoMaterialPageSchema = materialPageSchema(photoMaterialDataSchema);
+export const protocolMaterialDetailSchema = materialDetailSchema(protocolMaterialDataSchema);
+export const materialCopyFileIdentitySchema = z
+  .object({
+    fileId: z.string().regex(/^[0-9a-f]{32}$/u),
+    volumeId: z.string().regex(/^[0-9a-f]{16}$/u),
+  })
+  .strict();
+export const materialCopyDiscardPayloadSchema = z
+  .object({
+    approvedDirectory: z.string().min(1).max(32767),
+    copyId: entityIdSchema,
+    mediaType: z.enum(['image/jpeg', 'image/png', 'application/pdf']),
+    fileIdentity: materialCopyFileIdentitySchema,
+  })
+  .strict();
+export const materialCopyDiscardResultSchema = z.object({ discarded: z.boolean() }).strict();
+export const materialCopyResultSchema = z
+  .object({
+    identity: materialIdentitySchema,
+    absolutePath: z.string().min(1).max(32767),
+    mediaType: z.enum(['image/jpeg', 'image/png', 'application/pdf']),
+    sizeBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(100 * 1024 * 1024),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    fileIdentity: materialCopyFileIdentitySchema,
+  })
+  .strict();
+export const materialOpenPayloadSchema = z
+  .object({ identity: materialIdentitySchema, operationId: entityIdSchema })
+  .strict();
+export const materialCancelOpenPayloadSchema = z.object({ operationId: entityIdSchema }).strict();
+export const materialOpenedResultSchema = z
+  .object({
+    identity: materialIdentitySchema,
+    opened: z.literal(true),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    sizeBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(100 * 1024 * 1024),
+  })
+  .strict();
+export const materialCancelledResultSchema = z.object({ cancelled: z.boolean() }).strict();
+export type MaterialOrigin = z.infer<typeof materialOriginSchema>;
+export type MaterialIdentity = z.infer<typeof materialIdentitySchema>;
+export type MaterialPageQuery = z.input<typeof materialPagePayloadSchema>;
+export type MaterialReadQuery = z.infer<typeof materialReadPayloadSchema>;
+export type MaterialInspectionQuery = z.infer<typeof materialInspectionPayloadSchema>;
+export type InspectionMaterialPage = z.infer<typeof inspectionMaterialPageSchema>;
+export type InspectionMaterialDetail = z.infer<typeof inspectionMaterialDetailSchema>;
+export type PhotoMaterialPage = z.infer<typeof photoMaterialPageSchema>;
+export type ProtocolMaterialDetail = z.infer<typeof protocolMaterialDetailSchema>;
+export type MaterialCopyResult = z.infer<typeof materialCopyResultSchema>;
+export type MaterialCopyFileIdentity = z.infer<typeof materialCopyFileIdentitySchema>;
+export type MaterialCopyDiscardCommand = z.infer<typeof materialCopyDiscardPayloadSchema>;
+export type MaterialOpenCommand = z.infer<typeof materialOpenPayloadSchema>;
+export type MaterialOpenedResult = z.infer<typeof materialOpenedResultSchema>;
+
 export const rbdEvidenceReferenceSchema = z
   .object({
     documentId: entityIdSchema.nullable().default(null),
@@ -2652,6 +2918,30 @@ export interface WorkerOperationMap {
     readonly request: z.infer<typeof importedRunIdPayloadSchema>;
     readonly result: ImportedRunDetail;
   };
+  readonly 'importedRun.listInspectionPage': {
+    readonly request: z.infer<typeof materialPagePayloadSchema>;
+    readonly result: InspectionMaterialPage;
+  };
+  readonly 'importedRun.getInspection': {
+    readonly request: z.infer<typeof materialInspectionPayloadSchema>;
+    readonly result: InspectionMaterialDetail;
+  };
+  readonly 'importedRun.listPhotoPage': {
+    readonly request: z.infer<typeof materialPagePayloadSchema>;
+    readonly result: PhotoMaterialPage;
+  };
+  readonly 'importedRun.getProtocol': {
+    readonly request: z.infer<typeof materialReadPayloadSchema>;
+    readonly result: ProtocolMaterialDetail;
+  };
+  readonly 'importedRun.resolveMaterial': {
+    readonly request: z.infer<typeof materialResolvePayloadSchema>;
+    readonly result: MaterialCopyResult;
+  };
+  readonly 'materialCopy.discard': {
+    readonly request: MaterialCopyDiscardCommand;
+    readonly result: z.infer<typeof materialCopyDiscardResultSchema>;
+  };
   readonly 'importedRun.verifySource': {
     readonly request: z.infer<typeof importedRunIdPayloadSchema>;
     readonly result: z.infer<typeof importedRunVerifyResultSchema>;
@@ -2950,6 +3240,39 @@ export const workerRequestSchema = z.discriminatedUnion('operation', [
     .extend({
       operation: z.literal('runPackageImport.discard'),
       payload: runPackageImportJobPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('importedRun.listInspectionPage'),
+      payload: materialPagePayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('importedRun.getInspection'),
+      payload: materialInspectionPayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('importedRun.listPhotoPage'),
+      payload: materialPagePayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({ operation: z.literal('importedRun.getProtocol'), payload: materialReadPayloadSchema })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('importedRun.resolveMaterial'),
+      payload: materialResolvePayloadSchema,
+    })
+    .strict(),
+  requestBaseSchema
+    .extend({
+      operation: z.literal('materialCopy.discard'),
+      payload: materialCopyDiscardPayloadSchema,
     })
     .strict(),
   requestBaseSchema
@@ -3272,6 +3595,30 @@ export const workerErrorResponseSchema = responseBaseSchema
   })
   .strict();
 
+const listInspectionPageMaterialResponseSchema = z.union([
+  createSuccessResponseSchema(inspectionMaterialPageSchema),
+  workerErrorResponseSchema,
+]);
+const getInspectionMaterialResponseSchema = z.union([
+  createSuccessResponseSchema(inspectionMaterialDetailSchema),
+  workerErrorResponseSchema,
+]);
+const listPhotoPageMaterialResponseSchema = z.union([
+  createSuccessResponseSchema(photoMaterialPageSchema),
+  workerErrorResponseSchema,
+]);
+const getProtocolMaterialResponseSchema = z.union([
+  createSuccessResponseSchema(protocolMaterialDetailSchema),
+  workerErrorResponseSchema,
+]);
+const resolveMaterialMaterialResponseSchema = z.union([
+  createSuccessResponseSchema(materialCopyResultSchema),
+  workerErrorResponseSchema,
+]);
+const discardMaterialCopyResponseSchema = z.union([
+  createSuccessResponseSchema(materialCopyDiscardResultSchema),
+  workerErrorResponseSchema,
+]);
 const handshakeResponseSchema = z.union([
   handshakeSuccessResponseSchema,
   workerErrorResponseSchema,
@@ -3487,6 +3834,14 @@ export interface WorkerResponseMap {
   readonly 'runPackageImport.discard': z.infer<typeof runPackageImportDiscardResponseSchema>;
   readonly 'importedRun.list': z.infer<typeof importedRunListResponseSchema>;
   readonly 'importedRun.get': z.infer<typeof importedRunDetailResponseSchema>;
+  readonly 'importedRun.listInspectionPage': z.infer<
+    typeof listInspectionPageMaterialResponseSchema
+  >;
+  readonly 'importedRun.getInspection': z.infer<typeof getInspectionMaterialResponseSchema>;
+  readonly 'importedRun.listPhotoPage': z.infer<typeof listPhotoPageMaterialResponseSchema>;
+  readonly 'importedRun.getProtocol': z.infer<typeof getProtocolMaterialResponseSchema>;
+  readonly 'importedRun.resolveMaterial': z.infer<typeof resolveMaterialMaterialResponseSchema>;
+  readonly 'materialCopy.discard': z.infer<typeof discardMaterialCopyResponseSchema>;
   readonly 'importedRun.verifySource': z.infer<typeof importedRunVerifyResponseSchema>;
   readonly 'importedRun.getResolutionState': z.infer<typeof specimenBindingResponseSchema>;
   readonly 'importedRun.bindSpecimen': z.infer<typeof specimenBindingResponseSchema>;
@@ -3635,6 +3990,18 @@ export function parseWorkerResponse(operation: WorkerOperation, input: unknown):
     case 'importedRun.get':
     case 'importedRun.applyEnrichmentResolution':
       return importedRunDetailResponseSchema.parse(input);
+    case 'importedRun.listInspectionPage':
+      return listInspectionPageMaterialResponseSchema.parse(input);
+    case 'importedRun.getInspection':
+      return getInspectionMaterialResponseSchema.parse(input);
+    case 'importedRun.listPhotoPage':
+      return listPhotoPageMaterialResponseSchema.parse(input);
+    case 'importedRun.getProtocol':
+      return getProtocolMaterialResponseSchema.parse(input);
+    case 'importedRun.resolveMaterial':
+      return resolveMaterialMaterialResponseSchema.parse(input);
+    case 'materialCopy.discard':
+      return discardMaterialCopyResponseSchema.parse(input);
     case 'importedRun.verifySource':
       return importedRunVerifyResponseSchema.parse(input);
     case 'importedRun.getResolutionState':
@@ -3705,6 +4072,7 @@ export type RuntimeStatus = z.infer<typeof runtimeStatusSchema>;
 export const desktopErrorSchema = z
   .object({
     code: z.enum([
+      'material_open_failed',
       'cancelled',
       'contract_error',
       'validation_error',
@@ -3851,6 +4219,14 @@ export interface ImpellerApi {
   readonly importedRun: {
     list(): Promise<DesktopResult<readonly ImportedRunSummary[]>>;
     get(localImportId: string): Promise<DesktopResult<ImportedRunDetail>>;
+    listInspectionPage(query: MaterialPageQuery): Promise<DesktopResult<InspectionMaterialPage>>;
+    getInspection(query: MaterialInspectionQuery): Promise<DesktopResult<InspectionMaterialDetail>>;
+    listPhotoPage(query: MaterialPageQuery): Promise<DesktopResult<PhotoMaterialPage>>;
+    getProtocol(query: MaterialReadQuery): Promise<DesktopResult<ProtocolMaterialDetail>>;
+    openMaterial(command: MaterialOpenCommand): Promise<DesktopResult<MaterialOpenedResult>>;
+    cancelMaterialOpen(
+      operationId: string,
+    ): Promise<DesktopResult<{ readonly cancelled: boolean }>>;
     verifySource(
       localImportId: string,
     ): Promise<DesktopResult<z.infer<typeof importedRunVerifyResultSchema>>>;

@@ -13,7 +13,9 @@ from impeller_reliability.integration.r130run.import_models import (
 )
 from impeller_reliability.integration.r130run.jobs import RunPackageValidationJobManager
 from impeller_reliability.integration.r130run.m9a import M9aPackageFacts
+from impeller_reliability.integration.r130run.material_models import MaterialIdentity, MaterialOrigin
 from impeller_reliability.integration.r130run.models import RunPackageValidationReport
+from impeller_reliability.persistence.material_copies import discard_material_copy
 from impeller_reliability.persistence.pmn_calculations import (
     PmnCalculationDetail,
     PmnCalculationSummary,
@@ -21,6 +23,7 @@ from impeller_reliability.persistence.pmn_calculations import (
     PmnFailureEvidence,
     PmnFieldSelection,
 )
+from impeller_reliability.persistence.project_paths import ManagedFileIdentity
 from impeller_reliability.persistence.r130sh_sources import ImportedRunSummary, PmnPlanSourceSnapshot, RbdPlanSourceSnapshot, RptPlanSourceSnapshot
 from impeller_reliability.persistence.rbd_calculations import (
     RbdCalculationDetail,
@@ -65,9 +68,18 @@ from impeller_reliability.protocol.envelopes import (
     ImportedRunBindSpecimenRequest,
     ImportedRunGetRequest,
     ImportedRunGetResolutionStateRequest,
+    ImportedRunInspectionPageRequest,
+    ImportedRunInspectionRequest,
     ImportedRunListRequest,
     ImportedRunListResult,
+    ImportedRunMaterialCopyResult,
+    ImportedRunPhotoPageRequest,
+    ImportedRunProtocolRequest,
+    ImportedRunResolveMaterialRequest,
     ImportedRunVerifySourceRequest,
+    MaterialCopyDiscardRequest,
+    MaterialCopyDiscardResult,
+    MaterialCopyFileIdentity,
     Operation,
     PingRequest,
     PingResult,
@@ -220,6 +232,12 @@ CAPABILITIES: list[Operation] = [
     "runPackageImport.discard",
     "importedRun.list",
     "importedRun.get",
+    "importedRun.listInspectionPage",
+    "importedRun.getInspection",
+    "importedRun.listPhotoPage",
+    "importedRun.getProtocol",
+    "importedRun.resolveMaterial",
+    "materialCopy.discard",
     "importedRun.verifySource",
     "importedRun.getResolutionState",
     "importedRun.bindSpecimen",
@@ -344,6 +362,12 @@ class Dispatcher:
             "runPackageImport.discard",
             "importedRun.list",
             "importedRun.get",
+            "importedRun.listInspectionPage",
+            "importedRun.getInspection",
+            "importedRun.listPhotoPage",
+            "importedRun.getProtocol",
+            "importedRun.resolveMaterial",
+            "materialCopy.discard",
             "importedRun.verifySource",
             "importedRun.getResolutionState",
             "reliabilityExecution.listPage",
@@ -595,6 +619,68 @@ class Dispatcher:
                         self._projects.get_imported_run(request.payload.localImportId, active_deadline),
                     ),
                 )
+            case ImportedRunInspectionPageRequest():
+                inspection_page = self._projects.list_imported_run_inspection_page(request.payload.origin.local_import_id, request.payload.cursor, request.payload.limit, active_deadline)
+                expected = MaterialOrigin.model_validate(request.payload.origin.model_dump(mode="json"))
+                if inspection_page.origin != expected:
+                    from impeller_reliability.persistence.project_errors import ProjectOperationError
+
+                    raise ProjectOperationError("validation_error", "Ответ материалов относится к другой редакции или делу.")
+                return SuccessResponse(requestId=request.requestId, revision=request.revision, result=inspection_page)
+            case ImportedRunInspectionRequest():
+                inspection_detail = self._projects.get_imported_run_inspection(request.payload.origin.local_import_id, request.payload.inspectionId, active_deadline)
+                expected = MaterialOrigin.model_validate(request.payload.origin.model_dump(mode="json"))
+                if inspection_detail.origin != expected:
+                    from impeller_reliability.persistence.project_errors import ProjectOperationError
+
+                    raise ProjectOperationError("validation_error", "Ответ материалов относится к другой редакции или делу.")
+                return SuccessResponse(requestId=request.requestId, revision=request.revision, result=inspection_detail)
+            case ImportedRunPhotoPageRequest():
+                photo_page = self._projects.list_imported_run_photo_page(request.payload.origin.local_import_id, request.payload.cursor, request.payload.limit, active_deadline)
+                expected = MaterialOrigin.model_validate(request.payload.origin.model_dump(mode="json"))
+                if photo_page.origin != expected:
+                    from impeller_reliability.persistence.project_errors import ProjectOperationError
+
+                    raise ProjectOperationError("validation_error", "Ответ материалов относится к другой редакции или делу.")
+                return SuccessResponse(requestId=request.requestId, revision=request.revision, result=photo_page)
+            case ImportedRunProtocolRequest():
+                protocol_detail = self._projects.get_imported_run_protocol(request.payload.origin.local_import_id, active_deadline)
+                expected = MaterialOrigin.model_validate(request.payload.origin.model_dump(mode="json"))
+                if protocol_detail.origin != expected:
+                    from impeller_reliability.persistence.project_errors import ProjectOperationError
+
+                    raise ProjectOperationError("validation_error", "Ответ материалов относится к другой редакции или делу.")
+                return SuccessResponse(requestId=request.requestId, revision=request.revision, result=protocol_detail)
+            case ImportedRunResolveMaterialRequest():
+                identity = MaterialIdentity.model_validate(request.payload.identity.model_dump(mode="json"))
+                copied = self._projects.resolve_imported_run_material(
+                    identity,
+                    Path(request.payload.outputDirectory),
+                    active_deadline,
+                    copy_id=request.payload.copyId,
+                    copy_byte_limit=request.payload.copyByteLimit,
+                )
+                return SuccessResponse[ImportedRunMaterialCopyResult](
+                    requestId=request.requestId,
+                    revision=request.revision,
+                    result=ImportedRunMaterialCopyResult(
+                        identity=copied.identity,
+                        absolutePath=str(copied.absolute_path),
+                        mediaType=copied.media_type,
+                        sizeBytes=copied.size_bytes,
+                        sha256=copied.sha256,
+                        fileIdentity=MaterialCopyFileIdentity(fileId=copied.file_identity.file_id, volumeId=copied.file_identity.volume_id),
+                    ),
+                )
+            case MaterialCopyDiscardRequest():
+                discarded = discard_material_copy(
+                    Path(request.payload.approvedDirectory),
+                    request.payload.copyId,
+                    request.payload.mediaType,
+                    ManagedFileIdentity(request.payload.fileIdentity.volumeId, request.payload.fileIdentity.fileId),
+                    active_deadline,
+                )
+                return SuccessResponse[MaterialCopyDiscardResult](requestId=request.requestId, revision=request.revision, result=MaterialCopyDiscardResult(discarded=discarded))
             case ImportedRunVerifySourceRequest():
                 return SuccessResponse(
                     requestId=request.requestId,

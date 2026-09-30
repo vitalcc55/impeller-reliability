@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -12,7 +14,7 @@ import struct
 from threading import Event
 from time import monotonic
 from typing import BinaryIO, Final, Literal, cast
-from uuid import RFC_4122, UUID
+from uuid import RFC_4122, UUID, uuid4
 from zipfile import BadZipFile, ZipFile
 import zlib
 
@@ -20,7 +22,7 @@ from impeller_reliability.integration.r130run.m9a import (
     M9aPackageFacts,
     canonical_json,
 )
-from impeller_reliability.integration.r130run.material_models import InspectionMaterialData, MaterialDetail, MaterialOrigin, MaterialPage, PhotoMaterialData, ProtocolMaterialData
+from impeller_reliability.integration.r130run.material_models import InspectionMaterialData, MaterialDetail, MaterialIdentity, MaterialOrigin, MaterialPage, PhotoMaterialData, ProtocolMaterialData
 from impeller_reliability.integration.r130run.models import (
     UPSTREAM_ACCEPTANCE_COMMIT,
     VALIDATOR_VERSION,
@@ -40,14 +42,20 @@ from impeller_reliability.integration.r130run.validator import (
     validate_material_metadata,
 )
 from impeller_reliability.persistence.audit import audit_now, insert_audit
+from impeller_reliability.persistence.file_signatures import matches_media_signature
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_paths import (
+    ManagedFileIdentity,
+    discard_opened_managed_file,
     ensure_managed_directory,
     inspect_opened_regular_file,
     inspect_reserved_directory,
     inspect_reserved_file,
+    open_new_managed_file,
+    opened_file_identity,
+    pin_reserved_directory,
 )
-from impeller_reliability.persistence.r130sh_materials import MaterialSnapshot, inspection_detail, inspection_page, photo_page, protocol_detail
+from impeller_reliability.persistence.r130sh_materials import MaterialSnapshot, inspection_detail, inspection_page, photo_detail, photo_page, protocol_detail
 from impeller_reliability.persistence.timestamps import require_canonical_utc_timestamp
 from impeller_reliability.worker.deadline import RequestDeadline
 
@@ -64,6 +72,17 @@ STAGING_NAME_RE: Final = re.compile(r"^[0-9a-f-]{36}\.part$")
 STREAM_CHUNK_BYTES: Final = 1024 * 1024
 WINDOWS_REPARSE_POINT_ATTRIBUTE: Final = 0x0400
 MAX_SAFE_JSON_INTEGER: Final = 9_007_199_254_740_991
+MAX_MATERIAL_COPY_BYTES: Final = 100 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedRunMaterial:
+    identity: MaterialIdentity
+    absolute_path: Path
+    media_type: Literal["image/jpeg", "image/png", "application/pdf"]
+    size_bytes: int
+    sha256: str
+    file_identity: ManagedFileIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -633,7 +652,8 @@ class R130shSourceRepository:
         _check_deadline(deadline, "r130sh_get")
         return result
 
-    def _read_material_snapshot(self, local_import_id: str, deadline: RequestDeadline) -> MaterialSnapshot:
+    @contextmanager
+    def _open_material_source(self, local_import_id: str, deadline: RequestDeadline, expected_origin: MaterialOrigin | None = None) -> Generator[tuple[MaterialSnapshot, ZipFile]]:
         local_import_id = _uuid4(local_import_id)
         deadline.check("material_source_lookup")
         row = self._connection.execute(
@@ -648,6 +668,8 @@ class R130shSourceRepository:
         if row is None:
             raise ProjectOperationError("entity_not_found", "Импортированная редакция не найдена в активном деле.")
         origin = MaterialOrigin(project_id=str(row[0]), local_import_id=local_import_id, package_id=str(row[1]), export_revision=int(row[2]), run_id=str(row[3]), outer_package_sha256=str(row[4]))
+        if expected_origin is not None and origin != expected_origin:
+            raise ProjectOperationError("validation_error", "Выбранный материал относится к другой редакции или делу.")
         relative_path = str(row[6])
         if relative_path != f"imports/r130sh/{origin.package_id}/rev-{origin.export_revision}/{origin.outer_package_sha256}.r130run":
             raise ProjectOperationError("file_integrity_mismatch", "Путь managed archive не соответствует выбранной редакции.")
@@ -706,6 +728,12 @@ class R130shSourceRepository:
                         if len(content) != member.size or hashlib.sha256(content).hexdigest() != member.sha256:
                             raise ProjectOperationError("file_integrity_mismatch", "Хеш member материалов не соответствует inventory.")
                         payloads[member.path] = parse_material_json(bytes(content), member.path, control)
+                    verification = validate_material_metadata(manifest, payloads, control)
+                    if verification.semanticVerdict != "passed":
+                        raise ProjectOperationError(
+                            "validation_error", "Первичные материалы не прошли текущую семантическую проверку.", details={"materialValidation": verification.model_dump(mode="json")}
+                        )
+                    yield MaterialSnapshot(origin, manifest, verification, payloads), archive
                 # Restored timestamps cannot prove that unselected archive bytes stayed unchanged.
                 if _hash_material_source(stream, deadline) != origin.outer_package_sha256:
                     raise ProjectOperationError("file_integrity_mismatch", "Managed archive изменился во время чтения материалов.")
@@ -713,11 +741,7 @@ class R130shSourceRepository:
                 inspect_opened_regular_file(stream.fileno(), "material source")
                 if _file_signature_from_stat(os.fstat(stream.fileno())) != before or _file_signature_from_stat(os.lstat(path)) != before:
                     raise ProjectOperationError("file_integrity_mismatch", "Managed archive изменился во время чтения материалов.")
-            verification = validate_material_metadata(manifest, payloads, control)
-            if verification.semanticVerdict != "passed":
-                raise ProjectOperationError("validation_error", "Первичные материалы не прошли текущую семантическую проверку.", details={"materialValidation": verification.model_dump(mode="json")})
             deadline.check("material_source_complete")
-            return MaterialSnapshot(origin, manifest, verification, payloads)
         except MaterialMetadataError as error:
             raise ProjectOperationError(
                 "validation_error", "JSON первичных материалов повреждён или превышает технический предел.", details={"finding": error.finding.model_dump(mode="json")}
@@ -733,19 +757,60 @@ class R130shSourceRepository:
 
     def list_inspection_page(self, local_import_id: str, cursor: str | None, limit: int, deadline: RequestDeadline | None = None) -> MaterialPage[InspectionMaterialData]:
         effective = deadline or RequestDeadline.start(30_000)
-        return inspection_page(self._read_material_snapshot(local_import_id, effective), cursor, limit, effective)
+        with self._open_material_source(local_import_id, effective) as (snapshot, _archive):
+            return inspection_page(snapshot, cursor, limit, effective)
 
     def get_inspection(self, local_import_id: str, inspection_id: str, deadline: RequestDeadline | None = None) -> MaterialDetail[InspectionMaterialData]:
         effective = deadline or RequestDeadline.start(30_000)
-        return inspection_detail(self._read_material_snapshot(local_import_id, effective), inspection_id, effective)
+        with self._open_material_source(local_import_id, effective) as (snapshot, _archive):
+            return inspection_detail(snapshot, inspection_id, effective)
 
     def list_photo_page(self, local_import_id: str, cursor: str | None, limit: int, deadline: RequestDeadline | None = None) -> MaterialPage[PhotoMaterialData]:
         effective = deadline or RequestDeadline.start(30_000)
-        return photo_page(self._read_material_snapshot(local_import_id, effective), cursor, limit, effective)
+        with self._open_material_source(local_import_id, effective) as (snapshot, _archive):
+            return photo_page(snapshot, cursor, limit, effective)
 
     def get_protocol(self, local_import_id: str, deadline: RequestDeadline | None = None) -> MaterialDetail[ProtocolMaterialData]:
         effective = deadline or RequestDeadline.start(30_000)
-        return protocol_detail(self._read_material_snapshot(local_import_id, effective), effective)
+        with self._open_material_source(local_import_id, effective) as (snapshot, _archive):
+            return protocol_detail(snapshot, effective)
+
+    def resolve_material(
+        self, identity: MaterialIdentity, output_directory: Path, deadline: RequestDeadline | None = None, *, copy_id: str | None = None, copy_byte_limit: int = 100 * 1024 * 1024
+    ) -> ResolvedRunMaterial:
+        effective = deadline or RequestDeadline.start(30_000)
+        with ExitStack() as resources:
+            with self._open_material_source(identity.origin.local_import_id, effective, identity.origin) as (snapshot, archive):
+                media_type: Literal["image/jpeg", "image/png", "application/pdf"]
+                if identity.kind == "photo":
+                    item = photo_detail(snapshot, identity.material_id, effective).item
+                    if item.state == "too_large":
+                        raise ProjectOperationError("file_too_large", "Метаданные фотографии превышают предел просмотра.")
+                    if item.state == "unavailable":
+                        raise ProjectOperationError("file_missing", "Фотография недоступна в первичном источнике.", details={"reason": "source_photo_unavailable"})
+                    if item.state != "verified" or item.data is None:
+                        raise ProjectOperationError("validation_error", "Фотография не может быть разрешена однозначно.")
+                    data = item.data
+                    media_type = data.media_type
+                    suffix = ".png" if media_type == "image/png" else ".jpg"
+                    member_path = f"attachments/photos/{data.attachment_id}{suffix}"
+                    expected_size, expected_sha = data.size, data.sha256
+                else:
+                    protocol = protocol_detail(snapshot, effective).item
+                    if protocol.state == "not_included":
+                        raise ProjectOperationError("file_missing", "Протокол не включён в выбранную редакцию пакета.", details={"reason": "protocol_not_included"})
+                    if protocol.state == "too_large":
+                        raise ProjectOperationError("file_too_large", "Метаданные протокола превышают предел просмотра.")
+                    if protocol.data is None or protocol.data.release_id != identity.material_id:
+                        raise ProjectOperationError("entity_not_found", "Выпуск протокола отсутствует в выбранной редакции.")
+                    media_type, suffix, member_path = "application/pdf", ".pdf", "protocol/protocol.pdf"
+                    expected_size, expected_sha = protocol.data.pdf_size_bytes, protocol.data.content_sha256
+                copied = resources.enter_context(
+                    _copy_material_member(
+                        archive, member_path, identity, output_directory, suffix, media_type, expected_size, expected_sha, effective, copy_id=copy_id, copy_byte_limit=copy_byte_limit
+                    )
+                )
+            return copied
 
     def verify_source(
         self,
@@ -2176,6 +2241,86 @@ def _hash_material_source(stream: BinaryIO, deadline: RequestDeadline) -> str:
         digest.update(chunk)
     deadline.check("material_source_hash_complete")
     return digest.hexdigest()
+
+
+@contextmanager
+def _copy_material_member(
+    archive: ZipFile,
+    member_path: str,
+    identity: MaterialIdentity,
+    directory: Path,
+    suffix: str,
+    media_type: Literal["image/jpeg", "image/png", "application/pdf"],
+    expected_size: int,
+    expected_sha: str,
+    deadline: RequestDeadline,
+    *,
+    copy_id: str | None = None,
+    copy_byte_limit: int = 100 * 1024 * 1024,
+) -> Generator[ResolvedRunMaterial]:
+    if expected_size < 1:
+        raise ProjectOperationError("unsupported_file_type", "Первичный материал пуст и не соответствует заявленному типу.")
+    if type(copy_byte_limit) is not int or not 1 <= copy_byte_limit <= MAX_MATERIAL_COPY_BYTES:
+        raise ProjectOperationError("validation_error", "Предел временной копии недопустим.")
+    if expected_size > min(MAX_MATERIAL_COPY_BYTES, copy_byte_limit):
+        raise ProjectOperationError("file_too_large", "Первичный материал превышает доступный предел временной копии.")
+    copy_id = str(uuid4()) if copy_id is None else _uuid4(copy_id)
+    final = directory / f"{copy_id}{suffix}"
+    try:
+        if not directory.is_absolute() or directory.resolve(strict=True) != directory or any(parent.suffix.lower() == ".irproj" for parent in (directory, *directory.parents)):
+            raise ProjectOperationError("validation_error", "Временная копия требует отдельного разрешённого каталога вне аналитического дела.")
+    except OSError as error:
+        raise ProjectOperationError("storage_error", "Каталог назначения временной копии недоступен.") from error
+    accepted = False
+    try:
+        with pin_reserved_directory(directory, "material copy directory"):
+            inspect_reserved_directory(directory, "material copy directory")
+            entry = archive.getinfo(member_path)
+            if entry.file_size != expected_size:
+                raise ProjectOperationError("file_integrity_mismatch", "Размер выбранного материала не соответствует inventory.")
+            digest, size, prefix = hashlib.sha256(), 0, b""
+            # The unique final name is never exposed until this context and
+            # the surrounding archive verification have both succeeded.
+            with open_new_managed_file(final) as destination:
+                try:
+                    inspect_opened_regular_file(destination.fileno(), "material copy")
+                    opened = os.fstat(destination.fileno())
+                    owned_identity = opened.st_dev, opened.st_ino
+                    with archive.open(entry) as source:
+                        for chunk in iter(lambda: source.read(STREAM_CHUNK_BYTES), b""):
+                            deadline.check("material_copy")
+                            size += len(chunk)
+                            if size > expected_size or size > min(MAX_MATERIAL_COPY_BYTES, copy_byte_limit):
+                                raise ProjectOperationError("file_integrity_mismatch", "Размер выбранного материала изменился во время копирования.")
+                            if len(prefix) < 64:
+                                prefix += chunk[: 64 - len(prefix)]
+                            destination.write(chunk)
+                            digest.update(chunk)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+                    inspect_opened_regular_file(destination.fileno(), "material copy")
+                    if size != expected_size or digest.hexdigest() != expected_sha or os.fstat(destination.fileno()).st_size != size:
+                        raise ProjectOperationError("file_integrity_mismatch", "Байты выбранного материала не соответствуют inventory.")
+                    if not matches_media_signature(prefix, media_type):
+                        raise ProjectOperationError("unsupported_file_type", "Содержимое первичного материала не соответствует заявленному типу.")
+                    inspect_reserved_file(final, "material copy")
+                    path_stat = os.lstat(final)
+                    if (path_stat.st_dev, path_stat.st_ino) != owned_identity:
+                        raise ProjectOperationError("file_integrity_mismatch", "Временная копия была подменена.")
+                    deadline.check("material_copy_complete")
+                    # Keep file and directory handles pinned across the caller's
+                    # final source SHA check; an exception rolls back owned bytes.
+                    yield ResolvedRunMaterial(identity, final, media_type, size, expected_sha, opened_file_identity(destination.fileno()))
+                    accepted = True
+                finally:
+                    if not accepted:
+                        discard_opened_managed_file(destination.fileno())
+    except ProjectOperationError as error:
+        if error.code == "corrupt_project":
+            raise ProjectOperationError("file_integrity_mismatch", "Каталог или файл временной копии не является безопасным обычным объектом.") from error
+        raise
+    except OSError as error:
+        raise ProjectOperationError("storage_error", "Не удалось подготовить временную копию первичного материала.") from error
 
 
 def _cheap_integrity_evidence(
