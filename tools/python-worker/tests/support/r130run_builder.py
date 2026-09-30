@@ -144,6 +144,12 @@ def _manifest_path(item: dict[str, JsonValue]) -> str:
 
 
 def _media_type(path: str) -> str:
+    if path.endswith(".pdf"):
+        return "application/pdf"
+    if path.endswith(".jpg"):
+        return "image/jpeg"
+    if path.endswith(".png"):
+        return "image/png"
     if path.endswith(".json"):
         return "application/json"
     if path.endswith(".jsonl"):
