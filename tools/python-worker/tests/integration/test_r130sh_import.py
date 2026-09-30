@@ -144,8 +144,8 @@ def test_imports_all_m9a_packages_and_reopens_persisted_sources(tmp_path: Path) 
         assert imported.outer_package_sha256 == entry["sha256"]
         assert imported.outer_size_bytes == entry["size"]
         assert imported.source_integrity == "verified"
-        assert imported.validator_version == "m03b.2"
-        assert imported.validation_contract_commit == "09097561a6a58b1663a6912357a3c8d1daf7f28c"
+        assert imported.validator_version == "m03b.3"
+        assert imported.validation_contract_commit == "b7792758b407ffc52d2fff051243056f63dbf18f"
         case_name = str(entry["case_name"])
         detail = service.get_imported_run(imported.local_import_id)
         _assert_m9b_case(case_name, detail)

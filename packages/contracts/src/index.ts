@@ -582,10 +582,10 @@ export const runPackageFindingCountsSchema = z
   .strict();
 export const runPackageValidationReportSchema = z
   .object({
-    validatorVersion: z.literal('m03b.2'),
+    validatorVersion: z.literal('m03b.3'),
     validationLevel: z.literal('producer_m9a_contract'),
     upstreamRepository: z.literal('https://github.com/vitalcc55/R130SH'),
-    upstreamCommit: z.literal('09097561a6a58b1663a6912357a3c8d1daf7f28c'),
+    upstreamCommit: z.literal('b7792758b407ffc52d2fff051243056f63dbf18f'),
     contractSchema: z.literal('r130sh.run-package.v1'),
     sourceFileName: z
       .string()
@@ -720,7 +720,7 @@ export const importedRunSummarySchema = z
     outerSizeBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     importedAtUtc: canonicalUtcTimestampSchema,
     validatorVersion: z.string().min(1),
-    validationContractCommit: z.literal('09097561a6a58b1663a6912357a3c8d1daf7f28c'),
+    validationContractCommit: z.string().regex(/^[0-9a-f]{40}$/u),
     structuralVerdict: z.literal('passed'),
     semanticVerdict: z.enum(['passed', 'passed_with_warnings']),
     sourceIntegrity: importedRunSourceIntegritySchema,

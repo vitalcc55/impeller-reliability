@@ -635,6 +635,17 @@ describe('worker contracts', () => {
     expect(importedRunSummarySchema.parse(summary).packageCreatedAtUtc).toBe(
       '2026-08-31T10:00:00Z',
     );
+    expect(importedRunSummarySchema.parse(summary).validatorVersion).toBe('m03b.2');
+    expect(
+      importedRunSummarySchema.parse({
+        ...summary,
+        validatorVersion: 'm03b.3',
+        validationContractCommit: 'b7792758b407ffc52d2fff051243056f63dbf18f',
+      }).validationContractCommit,
+    ).toBe('b7792758b407ffc52d2fff051243056f63dbf18f');
+    expect(
+      importedRunSummarySchema.safeParse({ ...summary, validationContractCommit: 'bad' }).success,
+    ).toBe(false);
     expect(
       importedRunSummarySchema.safeParse({ ...summary, importedAtUtc: '2026-08-31T10:00:00Z' })
         .success,
@@ -783,10 +794,10 @@ describe('worker contracts', () => {
 
   it('validates terminal job invariants and rejects path or import claims in reports', () => {
     const report = {
-      validatorVersion: 'm03b.2',
+      validatorVersion: 'm03b.3',
       validationLevel: 'producer_m9a_contract',
       upstreamRepository: 'https://github.com/vitalcc55/R130SH',
-      upstreamCommit: '09097561a6a58b1663a6912357a3c8d1daf7f28c',
+      upstreamCommit: 'b7792758b407ffc52d2fff051243056f63dbf18f',
       contractSchema: 'r130sh.run-package.v1',
       sourceFileName: 'candidate.r130run',
       outerPackageSha256: 'a'.repeat(64),

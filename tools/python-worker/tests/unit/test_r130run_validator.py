@@ -52,8 +52,8 @@ def test_validates_downstream_synthetic_package_without_extraction(tmp_path: Pat
     assert report.semanticVerdict == "passed"
     assert report.packageId == "019d3c80-3d21-7a65-8e5a-111111111111"
     assert report.runId == RUN_ID
-    assert report.validatorVersion == "m03b.2"
-    assert report.upstreamCommit == "09097561a6a58b1663a6912357a3c8d1daf7f28c"
+    assert report.validatorVersion == "m03b.3"
+    assert report.upstreamCommit == "b7792758b407ffc52d2fff051243056f63dbf18f"
     assert report.outerPackageSha256 == hashlib.sha256(package.read_bytes()).hexdigest()
     assert report.findingCounts.error == 0
     assert {item.status for item in report.semanticCoverage} == {"covered"}
