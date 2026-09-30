@@ -82,6 +82,17 @@ class RunPackageValidationReport(BaseModel):
     finishedAtUtc: str
 
 
+class RunPackageMaterialValidationReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    validatorVersion: Literal["m03b.3"] = "m03b.3"
+    validationContractCommit: Literal["b7792758b407ffc52d2fff051243056f63dbf18f"] = "b7792758b407ffc52d2fff051243056f63dbf18f"
+    scope: Literal["source_material_metadata"] = "source_material_metadata"
+    semanticVerdict: Literal["passed", "failed"]
+    findingCounts: RunPackageFindingCounts
+    findings: list[RunPackageFinding] = Field(max_length=200)
+
+
 JobState = Literal["queued", "running", "cancelling", "completed", "failed", "cancelled"]
 JobPhase = Literal[
     "source_check",

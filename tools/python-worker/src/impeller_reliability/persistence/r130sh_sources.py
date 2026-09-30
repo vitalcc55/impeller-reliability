@@ -11,7 +11,7 @@ import stat
 import struct
 from threading import Event
 from time import monotonic
-from typing import Final, Literal, cast
+from typing import BinaryIO, Final, Literal, cast
 from uuid import RFC_4122, UUID
 from zipfile import BadZipFile, ZipFile
 import zlib
@@ -20,6 +20,7 @@ from impeller_reliability.integration.r130run.m9a import (
     M9aPackageFacts,
     canonical_json,
 )
+from impeller_reliability.integration.r130run.material_models import InspectionMaterialData, MaterialDetail, MaterialOrigin, MaterialPage, PhotoMaterialData, ProtocolMaterialData
 from impeller_reliability.integration.r130run.models import (
     UPSTREAM_ACCEPTANCE_COMMIT,
     VALIDATOR_VERSION,
@@ -27,17 +28,26 @@ from impeller_reliability.integration.r130run.models import (
 )
 from impeller_reliability.integration.r130run.validator import (
     MAX_JSON_BYTES,
+    MAX_MANIFEST_BYTES,
+    JsonValue,
+    MaterialMetadataError,
     RunPackageValidator,
     SourceChangedError,
     ValidationControl,
     ValidationTimeoutError,
+    parse_material_json,
+    parse_material_manifest,
+    validate_material_metadata,
 )
 from impeller_reliability.persistence.audit import audit_now, insert_audit
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.project_paths import (
     ensure_managed_directory,
+    inspect_opened_regular_file,
     inspect_reserved_directory,
+    inspect_reserved_file,
 )
+from impeller_reliability.persistence.r130sh_materials import MaterialSnapshot, inspection_detail, inspection_page, photo_page, protocol_detail
 from impeller_reliability.persistence.timestamps import require_canonical_utc_timestamp
 from impeller_reliability.worker.deadline import RequestDeadline
 
@@ -622,6 +632,120 @@ class R130shSourceRepository:
         )
         _check_deadline(deadline, "r130sh_get")
         return result
+
+    def _read_material_snapshot(self, local_import_id: str, deadline: RequestDeadline) -> MaterialSnapshot:
+        local_import_id = _uuid4(local_import_id)
+        deadline.check("material_source_lookup")
+        row = self._connection.execute(
+            """
+            SELECT p.project_id, s.package_id, s.export_revision, s.run_id,
+                   s.outer_package_sha256, s.outer_size_bytes, s.managed_relative_path,
+                   s.source_snapshot_sha256, s.package_kind
+            FROM r130sh_sources s CROSS JOIN project_metadata p WHERE s.local_import_id=?
+            """,
+            (local_import_id,),
+        ).fetchone()
+        if row is None:
+            raise ProjectOperationError("entity_not_found", "Импортированная редакция не найдена в активном деле.")
+        origin = MaterialOrigin(project_id=str(row[0]), local_import_id=local_import_id, package_id=str(row[1]), export_revision=int(row[2]), run_id=str(row[3]), outer_package_sha256=str(row[4]))
+        relative_path = str(row[6])
+        if relative_path != f"imports/r130sh/{origin.package_id}/rev-{origin.export_revision}/{origin.outer_package_sha256}.r130run":
+            raise ProjectOperationError("file_integrity_mismatch", "Путь managed archive не соответствует выбранной редакции.")
+        control = ValidationControl(Event(), monotonic() + deadline.remaining_seconds(30), _ignore_validation_progress)
+        try:
+            path = _managed_path(self._project_path, relative_path)
+            if not path.exists():
+                raise ProjectOperationError("file_missing", "Managed archive выбранной редакции отсутствует.")
+            _inspect_material_source_path(self._project_path, relative_path, path)
+            path_signature = _file_signature_from_stat(os.lstat(path))
+            with path.open("rb") as stream:
+                inspect_opened_regular_file(stream.fileno(), "material source")
+                before = _file_signature_from_stat(os.fstat(stream.fileno()))
+                if before != path_signature or before[0] != int(row[5]):
+                    raise ProjectOperationError("file_integrity_mismatch", "Managed archive изменён или подменён.")
+                if _hash_material_source(stream, deadline) != origin.outer_package_sha256 or _file_signature_from_stat(os.fstat(stream.fileno())) != before:
+                    raise ProjectOperationError("file_integrity_mismatch", "SHA-256 managed archive не соответствует выбранному импорту.")
+                stream.seek(0)
+                with ZipFile(stream) as archive:
+                    info = archive.getinfo("manifest.json")
+                    if info.file_size > MAX_MANIFEST_BYTES:
+                        raise ProjectOperationError("file_too_large", "Manifest превышает технический предел.")
+                    manifest = parse_material_manifest(archive.read(info), control)
+                    if (manifest.package_id, manifest.export_revision, manifest.run_id, manifest.source_snapshot_sha256, manifest.package_kind) != (
+                        origin.package_id,
+                        origin.export_revision,
+                        origin.run_id,
+                        str(row[7]),
+                        str(row[8]),
+                    ):
+                        raise ProjectOperationError("file_integrity_mismatch", "Manifest не относится к выбранной редакции импорта.")
+                    inventory_rows = self._connection.execute(
+                        "SELECT path, media_type, size_bytes, sha256, row_count FROM r130sh_source_inventory WHERE local_import_id=? LIMIT 129", (local_import_id,)
+                    ).fetchall()
+                    inventory = {(str(item[0]), str(item[1]), int(item[2]), str(item[3]), None if item[4] is None else int(item[4])) for item in inventory_rows}
+                    declared = {(item.path, item.media_type, item.size, item.sha256, item.row_count) for item in manifest.files}
+                    if len(inventory_rows) > 128 or len(inventory) != len(inventory_rows) or inventory != declared:
+                        raise ProjectOperationError("file_integrity_mismatch", "Inventory не соответствует неизменяемому manifest.")
+                    payloads: dict[str, JsonValue] = {}
+                    for member in manifest.files:
+                        if member.path not in {"inspections.json", "attachments/index.json", "protocol/release.json"}:
+                            continue
+                        deadline.check("material_metadata_read")
+                        if member.size > MAX_JSON_BYTES:
+                            raise ProjectOperationError("file_too_large", "JSON материалов превышает технический предел.")
+                        entry = archive.getinfo(member.path)
+                        if entry.file_size != member.size:
+                            raise ProjectOperationError("file_integrity_mismatch", "Размер member материалов не соответствует inventory.")
+                        content = bytearray()
+                        with archive.open(entry) as source:
+                            for chunk in iter(lambda: source.read(STREAM_CHUNK_BYTES), b""):
+                                deadline.check("material_metadata_read")
+                                content.extend(chunk)
+                                if len(content) > member.size:
+                                    raise ProjectOperationError("file_integrity_mismatch", "Размер member материалов изменён.")
+                        if len(content) != member.size or hashlib.sha256(content).hexdigest() != member.sha256:
+                            raise ProjectOperationError("file_integrity_mismatch", "Хеш member материалов не соответствует inventory.")
+                        payloads[member.path] = parse_material_json(bytes(content), member.path, control)
+                # Restored timestamps cannot prove that unselected archive bytes stayed unchanged.
+                if _hash_material_source(stream, deadline) != origin.outer_package_sha256:
+                    raise ProjectOperationError("file_integrity_mismatch", "Managed archive изменился во время чтения материалов.")
+                _inspect_material_source_path(self._project_path, relative_path, path)
+                inspect_opened_regular_file(stream.fileno(), "material source")
+                if _file_signature_from_stat(os.fstat(stream.fileno())) != before or _file_signature_from_stat(os.lstat(path)) != before:
+                    raise ProjectOperationError("file_integrity_mismatch", "Managed archive изменился во время чтения материалов.")
+            verification = validate_material_metadata(manifest, payloads, control)
+            if verification.semanticVerdict != "passed":
+                raise ProjectOperationError("validation_error", "Первичные материалы не прошли текущую семантическую проверку.", details={"materialValidation": verification.model_dump(mode="json")})
+            deadline.check("material_source_complete")
+            return MaterialSnapshot(origin, manifest, verification, payloads)
+        except MaterialMetadataError as error:
+            raise ProjectOperationError(
+                "validation_error", "JSON первичных материалов повреждён или превышает технический предел.", details={"finding": error.finding.model_dump(mode="json")}
+            ) from error
+        except ValidationTimeoutError as error:
+            raise ProjectOperationError("timeout", "Проверка материалов не завершена в установленный срок.", retryable=True) from error
+        except ProjectOperationError as error:
+            if error.code == "corrupt_project":
+                raise ProjectOperationError("file_integrity_mismatch", "Managed archive не является безопасным обычным файлом.") from error
+            raise
+        except BadZipFile, EOFError, KeyError, OSError, ValueError, struct.error, zlib.error:
+            raise ProjectOperationError("file_integrity_mismatch", "Managed archive недоступен или изменён.") from None
+
+    def list_inspection_page(self, local_import_id: str, cursor: str | None, limit: int, deadline: RequestDeadline | None = None) -> MaterialPage[InspectionMaterialData]:
+        effective = deadline or RequestDeadline.start(30_000)
+        return inspection_page(self._read_material_snapshot(local_import_id, effective), cursor, limit, effective)
+
+    def get_inspection(self, local_import_id: str, inspection_id: str, deadline: RequestDeadline | None = None) -> MaterialDetail[InspectionMaterialData]:
+        effective = deadline or RequestDeadline.start(30_000)
+        return inspection_detail(self._read_material_snapshot(local_import_id, effective), inspection_id, effective)
+
+    def list_photo_page(self, local_import_id: str, cursor: str | None, limit: int, deadline: RequestDeadline | None = None) -> MaterialPage[PhotoMaterialData]:
+        effective = deadline or RequestDeadline.start(30_000)
+        return photo_page(self._read_material_snapshot(local_import_id, effective), cursor, limit, effective)
+
+    def get_protocol(self, local_import_id: str, deadline: RequestDeadline | None = None) -> MaterialDetail[ProtocolMaterialData]:
+        effective = deadline or RequestDeadline.start(30_000)
+        return protocol_detail(self._read_material_snapshot(local_import_id, effective), effective)
 
     def verify_source(
         self,
@@ -2033,6 +2157,25 @@ def _managed_path(project_path: Path, relative: str) -> Path:
     if project_path.resolve() not in candidate.resolve(strict=False).parents:
         raise ValueError("managed_path_escape")
     return candidate
+
+
+def _inspect_material_source_path(project_path: Path, relative_path: str, path: Path) -> None:
+    parent = project_path
+    inspect_reserved_directory(parent, ".irproj")
+    for segment in PurePosixPath(relative_path).parts[:-1]:
+        parent = parent / segment
+        inspect_reserved_directory(parent, "material source directory")
+    inspect_reserved_file(path, "material source")
+
+
+def _hash_material_source(stream: BinaryIO, deadline: RequestDeadline) -> str:
+    stream.seek(0)
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: stream.read(STREAM_CHUNK_BYTES), b""):
+        deadline.check("material_source_hash")
+        digest.update(chunk)
+    deadline.check("material_source_hash_complete")
+    return digest.hexdigest()
 
 
 def _cheap_integrity_evidence(

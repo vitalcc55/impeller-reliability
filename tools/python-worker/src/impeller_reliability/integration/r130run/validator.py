@@ -39,6 +39,7 @@ from impeller_reliability.integration.r130run.models import (
     JobPhase,
     RunPackageFinding,
     RunPackageFindingCounts,
+    RunPackageMaterialValidationReport,
     RunPackageProducer,
     RunPackageSemanticCoverage,
     RunPackageValidationReport,
@@ -196,7 +197,7 @@ class SourceFingerprint:
 
 
 @dataclass(frozen=True, slots=True)
-class _ManifestFile:
+class RunPackageMember:
     path: str
     media_type: str
     size: int
@@ -205,7 +206,7 @@ class _ManifestFile:
 
 
 @dataclass(frozen=True, slots=True)
-class _Manifest:
+class RunPackageManifest:
     schema_version: str
     package_id: str
     export_revision: int
@@ -214,7 +215,7 @@ class _Manifest:
     created_at_utc: str
     source_snapshot_sha256: str
     producer: RunPackageProducer
-    files: tuple[_ManifestFile, ...]
+    files: tuple[RunPackageMember, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,7 +472,7 @@ class _PayloadRead:
 def _read_payload(
     source: io.RawIOBase,
     entry: _ValidatedEntry,
-    item: _ManifestFile,
+    item: RunPackageMember,
     control: ValidationControl,
     run_id: str,
     semantic_findings: _FindingAccumulator,
@@ -879,7 +880,7 @@ def _validate_package_path(value: str, flags: int) -> str:
     return value
 
 
-def _parse_manifest(content: bytes, control: ValidationControl) -> _Manifest:
+def _parse_manifest(content: bytes, control: ValidationControl) -> RunPackageManifest:
     value = _parse_json(content, "manifest.json", control)
     manifest = _require_object(value, "manifest.json")
     if manifest.get("schema_version") != CONTRACT_SCHEMA:
@@ -914,7 +915,7 @@ def _parse_manifest(content: bytes, control: ValidationControl) -> _Manifest:
     files_raw = manifest.get("files")
     if not isinstance(files_raw, list) or not files_raw:
         raise _invalid("manifest_files", "manifest.files", "Inventory manifest отсутствует или пуст.", "manifest-example")
-    files: list[_ManifestFile] = []
+    files: list[RunPackageMember] = []
     paths: set[str] = set()
     for index, raw in enumerate(files_raw):
         control.check("manifest")
@@ -931,7 +932,7 @@ def _parse_manifest(content: bytes, control: ValidationControl) -> _Manifest:
         row_count = entry.get("row_count")
         if row_count is not None and (not isinstance(row_count, int) or isinstance(row_count, bool) or row_count < 0 or row_count > MAX_SAFE_INTEGER):
             raise _invalid("manifest_row_count", f"manifest.files[{index}].row_count", "Declared row count некорректен.", "manifest-example")
-        files.append(_ManifestFile(path, media_type, size, sha256, row_count))
+        files.append(RunPackageMember(path, media_type, size, sha256, row_count))
     if sum(item.size for item in files) > MAX_DECOMPRESSED_BYTES:
         raise _invalid("expanded_size_limit", "manifest.files", "Declared payload объём превышает технический предел.", "m03a-safety-profile")
     expected_snapshot = hashlib.sha256(
@@ -961,7 +962,7 @@ def _parse_manifest(content: bytes, control: ValidationControl) -> _Manifest:
             "Source snapshot SHA-256 не совпадает с canonical inventory.",
             "r130sh-m9a-contract",
         )
-    return _Manifest(
+    return RunPackageManifest(
         CONTRACT_SCHEMA,
         package_id,
         export_revision,
@@ -1004,7 +1005,7 @@ def _canonical_json_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
-def _validate_checksum_index(content: bytes, manifest: _Manifest) -> None:
+def _validate_checksum_index(content: bytes, manifest: RunPackageManifest) -> None:
     try:
         text = content.decode("utf-8", errors="strict")
     except UnicodeDecodeError as error:
@@ -1060,24 +1061,13 @@ def _validate_json_shape(
 
 
 def _semantic_validate(
-    manifest: _Manifest,
+    manifest: RunPackageManifest,
     json_payloads: dict[str, JsonValue],
     measurement_summary: MeasurementStreamSummary | None,
     findings: _FindingAccumulator,
     control: ValidationControl,
 ) -> None:
-    for location, value in json_payloads.items():
-        control.check("semantic_validation")
-        if _contains_forbidden_eligibility(value):
-            findings.add(
-                _finding(
-                    "authoritative_eligibility_forbidden",
-                    "error",
-                    location,
-                    "R130SH package не должен содержать downstream eligibility claim.",
-                    "r130sh-m9a-contract",
-                ),
-            )
+    _validate_eligibility_claims(json_payloads, findings, control)
 
     plan = _semantic_envelope(
         json_payloads.get("plan/original.json"),
@@ -1159,14 +1149,6 @@ def _semantic_validate(
         },
         findings=findings,
     )
-    inspections = _semantic_envelope(
-        json_payloads.get("inspections.json"),
-        schema="r130sh.inspections.v1",
-        run_id=manifest.run_id,
-        location="inspections.json",
-        required={"inspections"},
-        findings=findings,
-    )
     descriptors = _semantic_envelope(
         json_payloads.get("measurement-descriptors.json"),
         schema="r130sh.measurement-descriptors.v1",
@@ -1175,15 +1157,6 @@ def _semantic_validate(
         required={"descriptors"},
         findings=findings,
     )
-    attachments = _semantic_envelope(
-        json_payloads.get("attachments/index.json"),
-        schema="r130sh.attachments.v1",
-        run_id=manifest.run_id,
-        location="attachments/index.json",
-        required={"attachments"},
-        findings=findings,
-    )
-
     if plan is not None:
         _validate_m9a_plan(plan, "plan/original.json", findings)
     if effective_envelope is not None:
@@ -1260,8 +1233,41 @@ def _semantic_validate(
                 )
             ):
                 _semantic_value_finding(findings, "provenance.json")
-    if inspections is not None:
-        values = inspections.get("inspections")
+    for payload, field, location in (
+        (environment, "decision", "environment.json"),
+        (provenance, "provenance", "provenance.json"),
+        (descriptors, "descriptors", "measurement-descriptors.json"),
+    ):
+        if payload is not None and not isinstance(payload.get(field), (dict, list)):
+            _semantic_shape_finding(findings, location)
+    _validate_source_materials(manifest, json_payloads, findings, control)
+
+
+def _validate_source_materials(
+    manifest: RunPackageManifest,
+    payloads: dict[str, JsonValue],
+    findings: _FindingAccumulator,
+    control: ValidationControl,
+) -> None:
+    inspection_envelope = _semantic_envelope(
+        payloads.get("inspections.json"),
+        schema="r130sh.inspections.v1",
+        run_id=manifest.run_id,
+        location="inspections.json",
+        required={"inspections"},
+        findings=findings,
+    )
+    attachments = _semantic_envelope(
+        payloads.get("attachments/index.json"),
+        schema="r130sh.attachments.v1",
+        run_id=manifest.run_id,
+        location="attachments/index.json",
+        required={"attachments"},
+        findings=findings,
+    )
+
+    if inspection_envelope is not None:
+        values = inspection_envelope.get("inspections")
         if not isinstance(values, list):
             _semantic_shape_finding(findings, "inspections.json")
         else:
@@ -1276,24 +1282,8 @@ def _semantic_validate(
                     findings,
                     control,
                 )
-    for payload, field, location in (
-        (environment, "decision", "environment.json"),
-        (provenance, "provenance", "provenance.json"),
-        (descriptors, "descriptors", "measurement-descriptors.json"),
-        (attachments, "attachments", "attachments/index.json"),
-    ):
-        allowed_types = (list,) if field == "attachments" else (dict, list)
-        if payload is not None and not isinstance(payload.get(field), allowed_types):
-            _semantic_shape_finding(findings, location)
-    _validate_source_materials(manifest, json_payloads, findings, control)
-
-
-def _validate_source_materials(
-    manifest: _Manifest,
-    payloads: dict[str, JsonValue],
-    findings: _FindingAccumulator,
-    control: ValidationControl,
-) -> None:
+    if attachments is not None and not isinstance(attachments.get("attachments"), list):
+        _semantic_shape_finding(findings, "attachments/index.json")
     declared = {item.path: item for item in manifest.files}
     inspections = _material_records(payloads.get("inspections.json"), "inspections")
     photos = _material_records(payloads.get("attachments/index.json"), "attachments")
@@ -1349,6 +1339,55 @@ def _validate_source_materials(
         if isinstance(record, dict) and record.get("inspection_id") is not None:
             _material_reference_finding(record.get("inspection_id"), inspection_ids, f"attachments/index.json.attachments[{index}].inspection_id", findings)
     _validate_protocol_material(manifest, payloads.get("protocol/release.json"), photo_ids, findings, control)
+
+
+class MaterialMetadataError(ValueError):
+    def __init__(self, finding: RunPackageFinding) -> None:
+        super().__init__(finding.code)
+        self.finding = finding
+
+
+def parse_material_json(content: bytes, location: str, control: ValidationControl) -> JsonValue:
+    if location not in {"inspections.json", "attachments/index.json", "protocol/release.json"}:
+        raise ValueError("unsupported_material_metadata")
+    if len(content) > MAX_JSON_BYTES:
+        raise MaterialMetadataError(_finding("json_limit", "error", location, "JSON материалов превышает технический предел.", "m03a-safety-profile"))
+    try:
+        return _parse_json(content, location, control)
+    except _PackageFindingError as error:
+        raise MaterialMetadataError(error.finding) from error
+
+
+def parse_material_manifest(content: bytes, control: ValidationControl) -> RunPackageManifest:
+    if len(content) > MAX_MANIFEST_BYTES:
+        raise MaterialMetadataError(_finding("manifest_too_large", "error", "manifest.json", "Manifest превышает технический предел.", "m03a-safety-profile"))
+    try:
+        return _parse_manifest(content, control)
+    except _PackageFindingError as error:
+        raise MaterialMetadataError(error.finding) from error
+
+
+def validate_material_metadata(manifest: RunPackageManifest, payloads: dict[str, JsonValue], control: ValidationControl) -> RunPackageMaterialValidationReport:
+    findings = _FindingAccumulator.empty()
+    _validate_eligibility_claims(payloads, findings, control)
+    _validate_source_materials(manifest, payloads, findings, control)
+    control.check("semantic_validation")
+    return RunPackageMaterialValidationReport(semanticVerdict="failed" if findings.error else "passed", findingCounts=findings.counts(), findings=findings.findings)
+
+
+def _validate_eligibility_claims(payloads: dict[str, JsonValue], findings: _FindingAccumulator, control: ValidationControl) -> None:
+    for location, value in payloads.items():
+        control.check("semantic_validation")
+        if _contains_forbidden_eligibility(value):
+            findings.add(
+                _finding(
+                    "authoritative_eligibility_forbidden",
+                    "error",
+                    location,
+                    "R130SH package не должен содержать downstream eligibility claim.",
+                    "r130sh-m9a-contract",
+                ),
+            )
 
 
 def _material_records(value: JsonValue, field: str) -> list[JsonValue]:
@@ -1467,7 +1506,7 @@ def _material_reference_finding(reference: JsonValue, counts: dict[str, int], lo
 
 
 def _validate_protocol_material(
-    manifest: _Manifest,
+    manifest: RunPackageManifest,
     release: JsonValue,
     photo_ids: dict[str, int],
     findings: _FindingAccumulator,
@@ -1888,7 +1927,7 @@ def _report(
     source_file_name: str,
     outer_sha256: str,
     outer_size: int,
-    manifest: _Manifest | None,
+    manifest: RunPackageManifest | None,
     entry_count: int,
     validated_bytes: int,
     structural_verdict: StructuralVerdict,
