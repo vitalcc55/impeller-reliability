@@ -16,6 +16,8 @@ $runPackagePath = Join-Path $repositoryRoot "fixtures\contracts\r130run\v1\m9a\p
 $rptRunPackagePath = Join-Path $repositoryRoot "fixtures\contracts\r130run\v1\m9a\packages\normal_final_rpt_full_stop.r130run"
 $pmnFixtureDirectory = Join-Path $repositoryRoot "fixtures\contracts\r130run\v1\pmn-reference"
 $pmnFixtureMetadataPath = Join-Path $pmnFixtureDirectory "UPSTREAM_SOURCE.json"
+$materialFixtureDirectory = Join-Path $repositoryRoot "fixtures\contracts\r130run\v1\source-materials"
+$materialFixtureMetadataPath = Join-Path $materialFixtureDirectory "UPSTREAM_SOURCE.json"
 $packageMetadata = Get-Content -LiteralPath (Join-Path $repositoryRoot "apps\desktop\package.json") -Raw | ConvertFrom-Json
 $applicationExecutable = Join-Path $desktopDist "win-unpacked\ImpellerReliabilityCalc.exe"
 
@@ -81,6 +83,14 @@ $pmnRunPackagePath = Join-Path $pmnFixtureDirectory ([string]$pmnFixtureMetadata
 if (-not (Test-Path -LiteralPath $pmnRunPackagePath)) { throw "Producer PMN package not found: $pmnRunPackagePath" }
 $pmnPackageSha256 = (Get-FileHash -LiteralPath $pmnRunPackagePath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($pmnPackageSha256 -ne [string]$pmnFixtureMetadata.package.sha256) { throw "Producer PMN package hash mismatch." }
+$materialFixtureMetadata = Get-Content -LiteralPath $materialFixtureMetadataPath -Raw | ConvertFrom-Json
+$materialRecords = @($materialFixtureMetadata.packages | Where-Object { $_.scenario -eq "protocol_revision_2" })
+if ($materialRecords.Count -ne 1) { throw "Producer material fixture record missing or ambiguous." }
+$materialRecord = $materialRecords[0]
+if ($materialRecord.file -ne "protocol_revision_2.r130run") { throw "Unexpected producer material filename." }
+$materialRunPackagePath = Join-Path $materialFixtureDirectory "protocol_revision_2.r130run"
+$materialPackageSha256 = (Get-FileHash -LiteralPath $materialRunPackagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($materialPackageSha256 -ne [string]$materialRecord.sha256) { throw "Producer material package hash mismatch." }
 
 $env:IMPELLER_SMOKE_OUTPUT = $summaryPath
 $env:IMPELLER_SMOKE_HOLD_MS = "1500"
@@ -90,6 +100,8 @@ $env:IMPELLER_AUTOMATED_RPT_RUN_PATH = $rptRunPackagePath
 $env:IMPELLER_AUTOMATED_PMN_RUN_PATH = $pmnRunPackagePath
 $env:IMPELLER_AUTOMATED_PMN_PACKAGE_SHA256 = $pmnPackageSha256
 $env:IMPELLER_AUTOMATED_PMN_PRODUCER_COMMIT = [string]$pmnFixtureMetadata.producer.commit
+$env:IMPELLER_AUTOMATED_MATERIAL_RUN_PATH = $materialRunPackagePath
+$env:IMPELLER_AUTOMATED_MATERIAL_PACKAGE_SHA256 = $materialPackageSha256
 $launchStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $ownedProcessIds = [System.Collections.Generic.HashSet[int]]::new()
 trap {
@@ -135,6 +147,8 @@ finally {
     Remove-Item Env:IMPELLER_AUTOMATED_PMN_RUN_PATH -ErrorAction SilentlyContinue
     Remove-Item Env:IMPELLER_AUTOMATED_PMN_PACKAGE_SHA256 -ErrorAction SilentlyContinue
     Remove-Item Env:IMPELLER_AUTOMATED_PMN_PRODUCER_COMMIT -ErrorAction SilentlyContinue
+    Remove-Item Env:IMPELLER_AUTOMATED_MATERIAL_RUN_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:IMPELLER_AUTOMATED_MATERIAL_PACKAGE_SHA256 -ErrorAction SilentlyContinue
 }
 
 $launchStopwatch.Stop()
@@ -148,6 +162,14 @@ if ($summary.runPackageImportPassed -ne $true) { throw "Desktop smoke R130SH pro
 if ($summary.rbdCalculationPassed -ne $true) { throw "Desktop smoke RBD calculation/reopen failed." }
 if ($summary.rptCalculationPassed -ne $true) { throw "Desktop smoke RPT calculation/reopen failed." }
 if ($summary.pmnCalculationPassed -ne $true) { throw "Desktop smoke PMN calculation/reopen failed." }
+if ($summary.sourceMaterialsPassed -ne $true -or $summary.sourceMaterials.sqliteUnchanged -ne $true) { throw "Desktop smoke source materials/copy/reopen changed project or failed." }
+if ($summary.sourceMaterials.origin.packageId -ne $materialRecord.packageId -or $summary.sourceMaterials.origin.runId -ne $materialRecord.runId -or $summary.sourceMaterials.origin.exportRevision -ne $materialRecord.exportRevision -or $summary.sourceMaterials.origin.outerPackageSha256 -ne $materialRecord.sha256 -or $summary.sourceMaterials.protocolReleaseId -ne $materialRecord.protocolReleaseId -or $summary.sourceMaterials.protocolRevision -ne $materialRecord.protocolRevision) { throw "Desktop smoke material origin or saved protocol revision mismatch." }
+$expectedMaterialMembers = @($materialRecord.members | Where-Object { $_.media_type -in @("image/jpeg", "image/png", "application/pdf") })
+if (@($summary.sourceMaterials.copiedMaterials).Count -ne $expectedMaterialMembers.Count -or $expectedMaterialMembers.Count -ne 3) { throw "Desktop smoke must copy JPEG, PNG and PDF." }
+foreach ($member in $expectedMaterialMembers) {
+    $copies = @($summary.sourceMaterials.copiedMaterials | Where-Object { $_.mediaType -eq $member.media_type })
+    if ($copies.Count -ne 1 -or $copies[0].sha256 -ne $member.sha256 -or $copies[0].sizeBytes -ne $member.size) { throw "Desktop smoke material bytes/hash do not match producer provenance." }
+}
 if ($networkObserved) { throw "Desktop smoke observed a TCP connection in its process tree." }
 
 $shutdownDeadline = [DateTime]::UtcNow.AddSeconds(5)

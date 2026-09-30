@@ -89,6 +89,7 @@ import {
 } from './case-document-source';
 import { JsonlLogger } from './logging';
 import { MaterialCopies, MaterialOpener } from './material-open';
+import { runSourceMaterialSmoke, type SourceMaterialSmokeEvidence } from './source-material-smoke';
 import { RecentProjectsStore } from './recent-projects';
 import {
   runPackageImportStart,
@@ -228,19 +229,20 @@ function restartWorker(): Promise<RuntimeStatus> {
   return currentRestart;
 }
 
-function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogger): void {
+function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogger): MaterialCopies {
   const recentProjects = new RecentProjectsStore(join(stateDirectory, 'recent-projects.json'));
+  const copies = new MaterialCopies(
+    join(stateDirectory, 'source-material-copies'),
+    async (command) => {
+      const client = workerClient;
+      if (client === null) throw new Error('worker_unavailable');
+      const response = await client.request('materialCopy.discard', command);
+      if (!response.ok) throw new Error(`material_copy_discard_failed:${response.error.code}`);
+    },
+    () => workerClient?.processId ?? null,
+  );
   materialOpener = new MaterialOpener({
-    copies: new MaterialCopies(
-      join(stateDirectory, 'source-material-copies'),
-      async (command) => {
-        const client = workerClient;
-        if (client === null) throw new Error('worker_unavailable');
-        const response = await client.request('materialCopy.discard', command);
-        if (!response.ok) throw new Error(`material_copy_discard_failed:${response.error.code}`);
-      },
-      () => workerClient?.processId ?? null,
-    ),
+    copies,
     session: materialSession,
     resolve: (identity, directory, copyId, byteLimit) =>
       runProjectOperation(workerClient, async (client) =>
@@ -889,6 +891,7 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       client.request('pmnCalculation.getDetail', parsed.data),
     );
   });
+  return copies;
 }
 
 function selectRunPackageSourceFromDialog(): Promise<DesktopResult<string>> {
@@ -1233,7 +1236,7 @@ async function createWindow(): Promise<void> {
   await mainWindow.loadURL(rendererUrl);
 }
 
-async function runSmokeIfRequested(): Promise<void> {
+async function runSmokeIfRequested(copies: MaterialCopies): Promise<void> {
   const smokeOutput = process.env['IMPELLER_SMOKE_OUTPUT'];
   if (smokeOutput === undefined) return;
   const startedAt = performance.now();
@@ -1246,6 +1249,8 @@ async function runSmokeIfRequested(): Promise<void> {
   let rbdCalculationPassed = false;
   let rptCalculationPassed = false;
   let pmnCalculationPassed = false;
+  let sourceMaterials: SourceMaterialSmokeEvidence | null = null;
+  let sourceMaterialsError: string | null = null;
   if (automatedProjectPath !== null && workerClient !== null) {
     const created = await workerClient.request('project.create', {
       path: automatedProjectPath,
@@ -1906,6 +1911,29 @@ async function runSmokeIfRequested(): Promise<void> {
       }
     }
   }
+  const materialRunPath = process.env['IMPELLER_AUTOMATED_MATERIAL_RUN_PATH'];
+  const materialArchiveSha256 = process.env['IMPELLER_AUTOMATED_MATERIAL_PACKAGE_SHA256'];
+  if (
+    automatedProjectPath !== null &&
+    workerClient !== null &&
+    runPackageImportPassed &&
+    materialRunPath !== undefined &&
+    materialArchiveSha256 !== undefined
+  ) {
+    try {
+      sourceMaterials = await runSourceMaterialSmoke(
+        workerClient,
+        copies,
+        automatedProjectPath,
+        resolve(materialRunPath),
+        materialArchiveSha256,
+        applicationInstanceId,
+      );
+    } catch (error: unknown) {
+      sourceMaterialsError =
+        error instanceof Error ? error.message : 'material_smoke_unknown_error';
+    }
+  }
   await mkdir(dirname(smokeOutput), { recursive: true });
   await writeFile(
     smokeOutput,
@@ -1921,7 +1949,8 @@ async function runSmokeIfRequested(): Promise<void> {
           runPackageImportPassed &&
           rbdCalculationPassed &&
           rptCalculationPassed &&
-          pmnCalculationPassed,
+          pmnCalculationPassed &&
+          sourceMaterials !== null,
         runtime,
         pingOk: ping?.ok === true,
         projectScenarioPassed,
@@ -1930,6 +1959,9 @@ async function runSmokeIfRequested(): Promise<void> {
         rbdCalculationPassed,
         rptCalculationPassed,
         pmnCalculationPassed,
+        sourceMaterialsPassed: sourceMaterials !== null,
+        sourceMaterials,
+        sourceMaterialsError,
         elapsedMs: Math.round(performance.now() - startedAt),
         pid: process.pid,
         workerPid: workerClient?.processId ?? null,
@@ -1963,13 +1995,13 @@ app
       logger,
       applyWorkerLifecycle,
     );
-    registerIpc(logPath, stateDirectory, logger);
+    const copies = registerIpc(logPath, stateDirectory, logger);
     registerRendererProtocol();
     await logger.write({ severity: 'info', component: 'main', event: 'application_start' });
     await workerClient.start();
     await refreshStatus();
     await createWindow();
-    await runSmokeIfRequested();
+    await runSmokeIfRequested(copies);
   })
   .catch((error: unknown) => {
     status.workerStatus = 'unavailable';

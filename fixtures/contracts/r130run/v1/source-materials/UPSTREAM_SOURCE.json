@@ -1,0 +1,433 @@
+{
+  "repository": "https://github.com/vitalcc55/R130SH",
+  "producer": {
+    "commit": "9d92abb8d3d4a8c9dea5acc165f00aa28e09fb6c",
+    "version": "0.9.48",
+    "exportService": "r130sh.application.test_runs.run_package_export.RunPackageExportService",
+    "protocolService": "r130sh.reporting.laboratory_protocol_export.LaboratoryProtocolExportService"
+  },
+  "acceptanceRulesCommit": "b7792758b407ffc52d2fff051243056f63dbf18f",
+  "seed": {
+    "source": "tests/helpers/m9a_run_packages.py persisted synthetic RBD run and existing production protocol workspace/release APIs; explicit distinct synthetic source Specimen IDs avoid pre-existing bindings in combined smoke cases",
+    "provenanceAdjustment": "Only in an isolated git archive, helper app_version/build_id/git_commit were changed from m9a placeholders to the recorded producer version, synthetic build label and exact commit before bundle creation. No producer application code was changed.",
+    "buildId": "source-materials-synthetic-9d92abb",
+    "media": "Qt QImage/QPainter create valid JPEG/PNG explicitly labelled SYNTHETIC SOFTWARE TEST; production protocol service renders PDF from saved synthetic facts and a prominently labelled synthetic laboratory/conclusion.",
+    "savedRevisions": "One saved run is exported before protocol release (export 1), after saved release revision 1 (export 2), and after changed saved release revision 2 (export 3). Another saved run is exported diagnostic_partial after deleting only its managed photo bytes inside the isolated seed.",
+    "hardwareAcceptance": false,
+    "limitations": "All facts, photographs and documents are synthetic software-test data, not a real laboratory test, validated laboratory conclusion or signature. Qt PDF successfully loaded both produced PDFs; byte/header checks do not prove laboratory content."
+  },
+  "packages": [
+    {
+      "scenario": "protocol_not_included",
+      "file": "protocol_not_included.r130run",
+      "sha256": "d178eba6abd1e15247c4f5583231d1f470564f41884ef4b3c73771e0c131fbbb",
+      "sizeBytes": 16290,
+      "packageId": "b97d77e6-4e73-4873-87bd-10bdd9387b1e",
+      "runId": "source_materials_reference",
+      "exportRevision": 1,
+      "protocolReleaseId": null,
+      "protocolRevision": null,
+      "members": [
+        {
+          "media_type": "application/json",
+          "path": "accepted-summary.json",
+          "sha256": "d6442ba579b91d0b2337f11632952ab65a3e2e78caeae700e2a681e4c242643e",
+          "size": 183
+        },
+        {
+          "media_type": "application/json",
+          "path": "attachments/index.json",
+          "sha256": "1e4553b98daa6a32d3426ec07426368f6c66a9baf00b91c5006fd942a055071c",
+          "size": 1234
+        },
+        {
+          "media_type": "image/png",
+          "path": "attachments/photos/532199df-795d-45bd-bd47-9e89792d3ed4.png",
+          "sha256": "d5f7230857b777c4bb9f3a86d5e6d70380ba6056db4e4e13d493057b9f621884",
+          "size": 2069
+        },
+        {
+          "media_type": "image/jpeg",
+          "path": "attachments/photos/d85e9229-bd42-4e95-b669-053ac6c4a924.jpg",
+          "sha256": "c0b1e3773ac1358814bd8131b8e544f0db56f1f4fc0e3a668d189280ec39b400",
+          "size": 4066
+        },
+        {
+          "media_type": "application/json",
+          "path": "environment.json",
+          "sha256": "9d33b68db494fc2352682fd0282d37290522510c0ffdbbf43f113c89de454424",
+          "size": 591
+        },
+        {
+          "media_type": "application/x-ndjson",
+          "path": "events.jsonl",
+          "row_count": 7,
+          "sha256": "04e18c5a532b244494bd8e05b3c4733a9043268c2351ee4420ebfc527dacff98",
+          "size": 6496
+        },
+        {
+          "media_type": "application/json",
+          "path": "inspections.json",
+          "sha256": "deb330346426649e5fbec306b57575bfb5ecc8e138e9270d77d537f4ca2b0ed2",
+          "size": 1457
+        },
+        {
+          "media_type": "application/json",
+          "path": "measurement-descriptors.json",
+          "sha256": "9f64b92dbc6b7820e6d7415185b6fa940131c2342f312550db092a8b562d0f30",
+          "size": 798
+        },
+        {
+          "media_type": "text/csv",
+          "path": "measurements.csv",
+          "row_count": 1,
+          "sha256": "a92ef8d8ee959b0d85cc201201d41ddb578492fbe8b7a46857e621da0229fb64",
+          "size": 2500
+        },
+        {
+          "media_type": "application/x-ndjson",
+          "path": "plan/amendments.jsonl",
+          "row_count": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size": 0
+        },
+        {
+          "media_type": "application/json",
+          "path": "plan/effective.json",
+          "sha256": "5da58295767327292c3ad21d2ecdbece7868e7d8d674d61e01495bbc909379d3",
+          "size": 1605
+        },
+        {
+          "media_type": "application/json",
+          "path": "plan/original.json",
+          "sha256": "88d649ce31ecb05e93d452ec0a0a63a6f494e9670d1fa78b1f1132ce1826a885",
+          "size": 1379
+        },
+        {
+          "media_type": "application/json",
+          "path": "provenance.json",
+          "sha256": "ba8d99dacc52d77ce5fc5f02d31adeacfb28ec7343947fccaa9873a1a0c0721f",
+          "size": 1105
+        },
+        {
+          "media_type": "application/json",
+          "path": "run-summary.json",
+          "sha256": "68085f0f698004e1ec8d988f1154d1a4dc1372a7237b256caeed27ea6e2b83f5",
+          "size": 1417
+        }
+      ]
+    },
+    {
+      "scenario": "protocol_revision_1",
+      "file": "protocol_revision_1.r130run",
+      "sha256": "44a311c68b009b4aea4c5ad580df02a07a5235ce0eeaa993982097c6e6c5bafd",
+      "sizeBytes": 75695,
+      "packageId": "b97d77e6-4e73-4873-87bd-10bdd9387b1e",
+      "runId": "source_materials_reference",
+      "exportRevision": 2,
+      "protocolReleaseId": "1",
+      "protocolRevision": "1",
+      "members": [
+        {
+          "media_type": "application/json",
+          "path": "accepted-summary.json",
+          "sha256": "d6442ba579b91d0b2337f11632952ab65a3e2e78caeae700e2a681e4c242643e",
+          "size": 183
+        },
+        {
+          "media_type": "application/json",
+          "path": "attachments/index.json",
+          "sha256": "1e4553b98daa6a32d3426ec07426368f6c66a9baf00b91c5006fd942a055071c",
+          "size": 1234
+        },
+        {
+          "media_type": "image/png",
+          "path": "attachments/photos/532199df-795d-45bd-bd47-9e89792d3ed4.png",
+          "sha256": "d5f7230857b777c4bb9f3a86d5e6d70380ba6056db4e4e13d493057b9f621884",
+          "size": 2069
+        },
+        {
+          "media_type": "image/jpeg",
+          "path": "attachments/photos/d85e9229-bd42-4e95-b669-053ac6c4a924.jpg",
+          "sha256": "c0b1e3773ac1358814bd8131b8e544f0db56f1f4fc0e3a668d189280ec39b400",
+          "size": 4066
+        },
+        {
+          "media_type": "application/json",
+          "path": "environment.json",
+          "sha256": "9d33b68db494fc2352682fd0282d37290522510c0ffdbbf43f113c89de454424",
+          "size": 591
+        },
+        {
+          "media_type": "application/x-ndjson",
+          "path": "events.jsonl",
+          "row_count": 9,
+          "sha256": "1eca7bfdb8073cee85563859fece74a1bc920afc22010bbccf6ca4b1782a54f2",
+          "size": 10058
+        },
+        {
+          "media_type": "application/json",
+          "path": "inspections.json",
+          "sha256": "deb330346426649e5fbec306b57575bfb5ecc8e138e9270d77d537f4ca2b0ed2",
+          "size": 1457
+        },
+        {
+          "media_type": "application/json",
+          "path": "measurement-descriptors.json",
+          "sha256": "9f64b92dbc6b7820e6d7415185b6fa940131c2342f312550db092a8b562d0f30",
+          "size": 798
+        },
+        {
+          "media_type": "text/csv",
+          "path": "measurements.csv",
+          "row_count": 1,
+          "sha256": "a92ef8d8ee959b0d85cc201201d41ddb578492fbe8b7a46857e621da0229fb64",
+          "size": 2500
+        },
+        {
+          "media_type": "application/x-ndjson",
+          "path": "plan/amendments.jsonl",
+          "row_count": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size": 0
+        },
+        {
+          "media_type": "application/json",
+          "path": "plan/effective.json",
+          "sha256": "5da58295767327292c3ad21d2ecdbece7868e7d8d674d61e01495bbc909379d3",
+          "size": 1605
+        },
+        {
+          "media_type": "application/json",
+          "path": "plan/original.json",
+          "sha256": "88d649ce31ecb05e93d452ec0a0a63a6f494e9670d1fa78b1f1132ce1826a885",
+          "size": 1379
+        },
+        {
+          "media_type": "application/pdf",
+          "path": "protocol/protocol.pdf",
+          "sha256": "88b3f19f4b4f80582205e7e34cfa27922dc60a793d7a7b6e42b96d76b3e6ac1e",
+          "size": 68028
+        },
+        {
+          "media_type": "application/json",
+          "path": "protocol/release.json",
+          "sha256": "9119a5a4e36bec52a3f6ca0829a2a1f87cdfbcb5d1d5421bdb15806d2d98db05",
+          "size": 627
+        },
+        {
+          "media_type": "application/json",
+          "path": "provenance.json",
+          "sha256": "ba8d99dacc52d77ce5fc5f02d31adeacfb28ec7343947fccaa9873a1a0c0721f",
+          "size": 1105
+        },
+        {
+          "media_type": "application/json",
+          "path": "run-summary.json",
+          "sha256": "7bb6e380933be445a1f881e1214db274c5b33090f4220a5472c053cc3d801fb5",
+          "size": 1564
+        }
+      ]
+    },
+    {
+      "scenario": "protocol_revision_2",
+      "file": "protocol_revision_2.r130run",
+      "sha256": "309c3f81d8ad627f294b680cca0a8f916ca78654f8ca4b346951e7871d16a210",
+      "sizeBytes": 75948,
+      "packageId": "b97d77e6-4e73-4873-87bd-10bdd9387b1e",
+      "runId": "source_materials_reference",
+      "exportRevision": 3,
+      "protocolReleaseId": "2",
+      "protocolRevision": "2",
+      "members": [
+        {
+          "media_type": "application/json",
+          "path": "accepted-summary.json",
+          "sha256": "d6442ba579b91d0b2337f11632952ab65a3e2e78caeae700e2a681e4c242643e",
+          "size": 183
+        },
+        {
+          "media_type": "application/json",
+          "path": "attachments/index.json",
+          "sha256": "1e4553b98daa6a32d3426ec07426368f6c66a9baf00b91c5006fd942a055071c",
+          "size": 1234
+        },
+        {
+          "media_type": "image/png",
+          "path": "attachments/photos/532199df-795d-45bd-bd47-9e89792d3ed4.png",
+          "sha256": "d5f7230857b777c4bb9f3a86d5e6d70380ba6056db4e4e13d493057b9f621884",
+          "size": 2069
+        },
+        {
+          "media_type": "image/jpeg",
+          "path": "attachments/photos/d85e9229-bd42-4e95-b669-053ac6c4a924.jpg",
+          "sha256": "c0b1e3773ac1358814bd8131b8e544f0db56f1f4fc0e3a668d189280ec39b400",
+          "size": 4066
+        },
+        {
+          "media_type": "application/json",
+          "path": "environment.json",
+          "sha256": "9d33b68db494fc2352682fd0282d37290522510c0ffdbbf43f113c89de454424",
+          "size": 591
+        },
+        {
+          "media_type": "application/x-ndjson",
+          "path": "events.jsonl",
+          "row_count": 11,
+          "sha256": "a073f9b7123d0d6690e11813f01a62fb30058bbf513f3db52a82a94e6b6206fc",
+          "size": 13631
+        },
+        {
+          "media_type": "application/json",
+          "path": "inspections.json",
+          "sha256": "deb330346426649e5fbec306b57575bfb5ecc8e138e9270d77d537f4ca2b0ed2",
+          "size": 1457
+        },
+        {
+          "media_type": "application/json",
+          "path": "measurement-descriptors.json",
+          "sha256": "9f64b92dbc6b7820e6d7415185b6fa940131c2342f312550db092a8b562d0f30",
+          "size": 798
+        },
+        {
+          "media_type": "text/csv",
+          "path": "measurements.csv",
+          "row_count": 1,
+          "sha256": "a92ef8d8ee959b0d85cc201201d41ddb578492fbe8b7a46857e621da0229fb64",
+          "size": 2500
+        },
+        {
+          "media_type": "application/x-ndjson",
+          "path": "plan/amendments.jsonl",
+          "row_count": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size": 0
+        },
+        {
+          "media_type": "application/json",
+          "path": "plan/effective.json",
+          "sha256": "5da58295767327292c3ad21d2ecdbece7868e7d8d674d61e01495bbc909379d3",
+          "size": 1605
+        },
+        {
+          "media_type": "application/json",
+          "path": "plan/original.json",
+          "sha256": "88d649ce31ecb05e93d452ec0a0a63a6f494e9670d1fa78b1f1132ce1826a885",
+          "size": 1379
+        },
+        {
+          "media_type": "application/pdf",
+          "path": "protocol/protocol.pdf",
+          "sha256": "9fc9af148988f7aec0ffd352fcec77a31c4d78bd437efb857079c591c2f70ede",
+          "size": 68030
+        },
+        {
+          "media_type": "application/json",
+          "path": "protocol/release.json",
+          "sha256": "d713e83957e545997d61a319d00845b84d8a6226997fd570c928118d886c8098",
+          "size": 627
+        },
+        {
+          "media_type": "application/json",
+          "path": "provenance.json",
+          "sha256": "ba8d99dacc52d77ce5fc5f02d31adeacfb28ec7343947fccaa9873a1a0c0721f",
+          "size": 1105
+        },
+        {
+          "media_type": "application/json",
+          "path": "run-summary.json",
+          "sha256": "a26f1ec9cc246350daee35a632dc06d53fc41aea6b573aa4e55dd0f14023f3b2",
+          "size": 1564
+        }
+      ]
+    },
+    {
+      "scenario": "photo_unavailable",
+      "file": "photo_unavailable.r130run",
+      "sha256": "f8419e89014e821ec25356a847ceb14f017bec8fc750582cd741feae62c1b0de",
+      "sizeBytes": 10219,
+      "packageId": "7336bd39-30fc-44d9-92d7-ed8afab841fd",
+      "runId": "source_materials_unavailable",
+      "exportRevision": 1,
+      "protocolReleaseId": null,
+      "protocolRevision": null,
+      "members": [
+        {
+          "media_type": "application/json",
+          "path": "accepted-summary.json",
+          "sha256": "9eb131ea86cf47624677f57ab83f46897c364c5f5d2fa87ea80d9cb7ea2261ee",
+          "size": 185
+        },
+        {
+          "media_type": "application/json",
+          "path": "attachments/index.json",
+          "sha256": "5a4bf715429acccf9865c75ee047712f465e24162cfa5ce5f5f7c5219a8f34dc",
+          "size": 886
+        },
+        {
+          "media_type": "application/json",
+          "path": "environment.json",
+          "sha256": "603d9560b0268c4cd50388fd7138a7525853d04fd76187f750ad6f4811fd18c4",
+          "size": 593
+        },
+        {
+          "media_type": "application/x-ndjson",
+          "path": "events.jsonl",
+          "row_count": 6,
+          "sha256": "7d677151509f87cfb7f857d4e2ca23292a8461ac636e529b33817c46b2ce13fa",
+          "size": 5281
+        },
+        {
+          "media_type": "application/json",
+          "path": "inspections.json",
+          "sha256": "6c835e67cddb9c93e8220822f25cfed061c3ac91560dd6038c331a66253c576b",
+          "size": 1465
+        },
+        {
+          "media_type": "application/json",
+          "path": "measurement-descriptors.json",
+          "sha256": "f6fa7eefb9af4daa5ddbf3274e53d6f2c0dd0a6f2854397e4a364d31f028ad21",
+          "size": 800
+        },
+        {
+          "media_type": "text/csv",
+          "path": "measurements.csv",
+          "row_count": 1,
+          "sha256": "dcf1ed7ca627e51c7df9f599457ca069e2516c2fc66b3a11053b759dde2e1631",
+          "size": 2508
+        },
+        {
+          "media_type": "application/x-ndjson",
+          "path": "plan/amendments.jsonl",
+          "row_count": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size": 0
+        },
+        {
+          "media_type": "application/json",
+          "path": "plan/effective.json",
+          "sha256": "55273fb6c79b29ff0cb7fae7ec73002093706ecd28ae508d0d9cf5408852093e",
+          "size": 1615
+        },
+        {
+          "media_type": "application/json",
+          "path": "plan/original.json",
+          "sha256": "6d0cb5ebcec2a0d9762a32c190b491b0a0bccdcfc3bf577cccba49e3ee4853ce",
+          "size": 1387
+        },
+        {
+          "media_type": "application/json",
+          "path": "provenance.json",
+          "sha256": "b1c2660e8cdbae3cc50b58e2e925158c0818ef69f99a1317245d1717a49cd604",
+          "size": 1107
+        },
+        {
+          "media_type": "application/json",
+          "path": "run-summary.json",
+          "sha256": "77314d30407cf216ec1ce553413e8668a376fb78476739bcf152383f2d922c4f",
+          "size": 1598
+        }
+      ]
+    }
+  ]
+}
