@@ -24,8 +24,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
-async function fixture() {
-  const api = createPreviewApi('ready');
+async function fixture(capacity = false) {
+  const api = createPreviewApi('ready', 'rbd', capacity);
   const project = await api.project.open();
   const imports = await api.importedRun.list();
   if (!project.ok || !imports.ok || imports.result.length !== 2)
@@ -53,7 +53,7 @@ async function mount(api: ImpellerApi, origin: MaterialOrigin) {
   async function render(nextOrigin = origin, disabled = false, refreshRevision = 0) {
     await act(async () => {
       root.render(
-        <MantineProvider>
+        <MantineProvider env="test">
           <ImportedRunMaterials
             ref={ref}
             api={api}
@@ -88,6 +88,86 @@ async function mount(api: ImpellerApi, origin: MaterialOrigin) {
 }
 
 describe('source-only material UI', () => {
+  it.each(['keep', 'release', 'invalidate', 'foreign'] as const)(
+    'uses the application confirmation and preserves correlation after %s',
+    async (decision) => {
+      const f = await fixture(true);
+      const ui = await mount(f.api, f.first);
+      await ui.click('Проверить и показать материалы');
+      await ui.click('Открыть исходный PDF', false);
+      const dialog = document.querySelector('[role="dialog"]');
+      expect(dialog?.textContent).toContain('Освободить временные копии материалов?');
+      expect(dialog?.textContent).toContain('Исходные материалы дела сохраняются');
+      expect(dialog?.textContent).toContain('осталось меньше 100 МиБ');
+      expect(dialog?.textContent).toContain('Можно сохранить копии');
+      if (decision === 'invalidate' || decision === 'foreign') {
+        if (decision === 'foreign') await ui.render(f.second);
+        else
+          await act(async () => {
+            ui.ref.current?.invalidate();
+            await Promise.resolve();
+          });
+      } else {
+        const text = decision === 'keep' ? 'Сохранить копии' : 'Освободить копии';
+        const button = [...(dialog?.querySelectorAll('button') ?? [])].find(
+          (item) => item.textContent === text,
+        );
+        if (button === undefined) throw new Error('decision_missing');
+        await act(async () => {
+          button.click();
+          await Promise.resolve();
+        });
+      }
+      await act(async () => {
+        await Promise.all(ui.work.splice(0));
+      });
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      if (decision === 'keep')
+        expect(ui.element.querySelector('[role="alert"]')?.textContent).toContain(
+          'копии сохранены',
+        );
+      if (decision === 'release')
+        expect(ui.element.querySelector('[role="alert"]')?.textContent).toContain(
+          'Файлы не удалялись',
+        );
+    },
+  );
+  it.each([false, true])(
+    'keeps an unconfirmed OS result only for the same origin (foreign=%s)',
+    async (foreign) => {
+      const f = await fixture();
+      const ui = await mount(f.api, f.first);
+      await ui.click('Проверить и показать материалы');
+      let release: () => void = () => {};
+      const barrier = new Promise<void>((done) => {
+        release = done;
+      });
+      vi.spyOn(f.api.importedRun, 'openMaterial').mockImplementation(async () => {
+        await barrier;
+        return {
+          ok: false,
+          error: {
+            code: 'material_open_unconfirmed',
+            message: 'Результат открытия ОС неизвестен.',
+            details: {},
+            retryable: false,
+          },
+        };
+      });
+      await ui.click('Открыть исходный PDF', false);
+      await ui.render(foreign ? f.second : f.first, true, 1);
+      release();
+      await act(async () => {
+        await Promise.all(ui.work.splice(0));
+      });
+      if (foreign) expect(ui.element.querySelector('[role="alert"]')).toBeNull();
+      else
+        expect(ui.element.querySelector('[role="alert"]')?.textContent).toContain(
+          'Результат открытия ОС неизвестен.',
+        );
+      expect(ui.element.textContent).not.toContain('Открытие передано системной программе.');
+    },
+  );
   it('shows exact zero/false/null, source text and decimal protocol identities', async () => {
     const f = await fixture();
     const ui = await mount(f.api, f.first);

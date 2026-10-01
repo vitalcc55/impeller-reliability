@@ -56,6 +56,11 @@ import {
 } from '@impeller-reliability/contracts';
 import { previewMaterials } from './preview-materials';
 import { sameMaterialOrigin } from './features/projects/material-origin';
+import {
+  materialCopyReleaseDecisionSchema,
+  type MaterialCopyReleaseRequest,
+  type MaterialOpenedResult,
+} from '@impeller-reliability/contracts';
 
 export type PreviewMode = 'ready' | 'unavailable';
 
@@ -85,7 +90,13 @@ const previewStatuses: Readonly<Record<PreviewMode, RuntimeStatus>> = {
 export function createPreviewApi(
   mode: PreviewMode,
   sample: 'rbd' | 'rpt' | 'pmn' = 'rbd',
+  materialCopyCapacity = false,
 ): ImpellerApi {
+  const copyReleaseListeners = new Set<(request: MaterialCopyReleaseRequest) => void>();
+  let materialCopyPending: {
+    readonly request: MaterialCopyReleaseRequest;
+    readonly finish: (result: DesktopResult<MaterialOpenedResult>) => void;
+  } | null = null;
   let status = previewStatuses[mode];
   let activeProject: ProjectOverview | null = null;
   let customer: CustomerProfile | null = null;
@@ -701,6 +712,19 @@ export function createPreviewApi(
           item.state !== 'verified'
         )
           return Promise.resolve(notFound());
+        if (materialCopyCapacity) {
+          if (materialCopyPending !== null)
+            return Promise.resolve(validationError('Открытие уже выполняется.'));
+          return new Promise<DesktopResult<MaterialOpenedResult>>((finish) => {
+            const request = {
+              requestId: crypto.randomUUID(),
+              operationId: parsed.data.operationId,
+              identity: parsed.data.identity,
+            };
+            materialCopyPending = { request, finish };
+            for (const listener of copyReleaseListeners) listener(request);
+          });
+        }
         return Promise.resolve({
           ok: false,
           error: {
@@ -711,7 +735,58 @@ export function createPreviewApi(
           },
         });
       },
-      cancelMaterialOpen: () => Promise.resolve({ ok: true, result: { cancelled: false } }),
+      subscribeCopyReleaseRequested: (listener) => {
+        copyReleaseListeners.add(listener);
+        return () => {
+          copyReleaseListeners.delete(listener);
+        };
+      },
+      respondCopyRelease: (raw) => {
+        const parsed = materialCopyReleaseDecisionSchema.safeParse(raw);
+        if (!parsed.success) return Promise.resolve(validationError('Недопустимое подтверждение.'));
+        const pending = materialCopyPending;
+        const command = parsed.data;
+        if (
+          pending === null ||
+          pending.request.requestId !== command.requestId ||
+          pending.request.operationId !== command.operationId ||
+          pending.request.identity.kind !== command.identity.kind ||
+          pending.request.identity.materialId !== command.identity.materialId ||
+          !sameMaterialOrigin(pending.request.identity.origin, command.identity.origin)
+        )
+          return Promise.resolve(success({ accepted: false }));
+        materialCopyPending = null;
+        pending.finish({
+          ok: false,
+          error: {
+            code: command.decision === 'keep' ? 'file_too_large' : 'material_open_failed',
+            message:
+              command.decision === 'keep'
+                ? 'Синтетический preview: копии сохранены, предел не освобождён.'
+                : 'Синтетическое подтверждение принято. Файлы не удалялись; системное открытие доступно в настольном приложении.',
+            details: {},
+            retryable: false,
+          },
+        });
+        return Promise.resolve(success({ accepted: true }));
+      },
+      cancelMaterialOpen: (operationId) => {
+        const pending = materialCopyPending;
+        const cancelled = pending !== null && pending.request.operationId === operationId;
+        if (cancelled) {
+          materialCopyPending = null;
+          pending.finish({
+            ok: false,
+            error: {
+              code: 'cancelled',
+              message: 'Синтетическое открытие отменено.',
+              details: {},
+              retryable: false,
+            },
+          });
+        }
+        return Promise.resolve({ ok: true, result: { cancelled } });
+      },
       verifySource: (localImportId) =>
         Promise.resolve(
           localImportId === importedRun.summary.localImportId ||

@@ -1,4 +1,4 @@
-import { Button, Text, Title } from '@mantine/core';
+import { Button, Group, Modal, Text, Title } from '@mantine/core';
 import {
   forwardRef,
   useCallback,
@@ -15,6 +15,7 @@ import type {
   InspectionMaterialPage,
   InspectionMaterialDetail,
   MaterialIdentity,
+  MaterialCopyReleaseRequest,
   MaterialOrigin,
   PhotoMaterialPage,
   ProtocolMaterialDetail,
@@ -66,10 +67,14 @@ export const ImportedRunMaterials = forwardRef<ImportedRunMaterialsHandle, Props
     const [openingPending, setOpeningPending] = useState(false);
     const [message, setMessage] = useState<string | null>(null);
     const [error, setError] = useState<DesktopError | null>(null);
+    const [copyRelease, setCopyRelease] = useState<MaterialCopyReleaseRequest | null>(null);
     const generation = useRef(0);
     const pending = useRef<Promise<void> | null>(null);
     const opening = useRef<string | null>(null);
+    const openingIdentity = useRef<MaterialIdentity | null>(null);
+    const openingCurrent = useRef<(() => boolean) | null>(null);
     const active = useRef(true);
+    const openTrigger = useRef<HTMLButtonElement | null>(null);
     const latest = useRef({ origin, disabled, refreshRevision });
     useLayoutEffect(() => {
       latest.current = { origin, disabled, refreshRevision };
@@ -81,7 +86,10 @@ export const ImportedRunMaterials = forwardRef<ImportedRunMaterialsHandle, Props
         void api.importedRun
           .cancelMaterialOpen(id)
           .then((response) => {
-            if (active.current && !response.ok) setError(response.error);
+            if (active.current) {
+              setCopyRelease(null);
+              if (!response.ok) setError(response.error);
+            }
           })
           .catch(() => {
             if (active.current) setError(readError());
@@ -98,6 +106,30 @@ export const ImportedRunMaterials = forwardRef<ImportedRunMaterialsHandle, Props
     useEffect(() => {
       if (disabled) invalidate();
     }, [disabled, invalidate]);
+    useEffect(
+      () =>
+        api.importedRun.subscribeCopyReleaseRequested((request) => {
+          if (
+            !active.current ||
+            latest.current.disabled ||
+            opening.current !== request.operationId ||
+            !openingCurrent.current?.() ||
+            openingIdentity.current?.kind !== request.identity.kind ||
+            openingIdentity.current.materialId !== request.identity.materialId ||
+            !sameMaterialOrigin(latest.current.origin, request.identity.origin)
+          ) {
+            void api.importedRun.respondCopyRelease({ ...request, decision: 'keep' }).catch(() => {
+              if (active.current && opening.current === request.operationId) setError(readError());
+            });
+            return;
+          }
+          setCopyRelease(request);
+        }),
+      [api],
+    );
+    useEffect(() => {
+      if (opening.current !== null && !openingCurrent.current?.()) invalidate();
+    }, [origin, refreshRevision, invalidate]);
     // Reattach invalidates the previous verification without touching dossier drafts.
     const [validRevision, setValidRevision] = useState(refreshRevision);
     const fresh = validRevision === refreshRevision;
@@ -126,9 +158,12 @@ export const ImportedRunMaterials = forwardRef<ImportedRunMaterialsHandle, Props
         } finally {
           pending.current = null;
           opening.current = null;
+          openingIdentity.current = null;
+          openingCurrent.current = null;
           if (active.current) {
             setBusy(false);
             setOpeningPending(false);
+            setCopyRelease(null);
           }
         }
       })();
@@ -229,11 +264,25 @@ export const ImportedRunMaterials = forwardRef<ImportedRunMaterialsHandle, Props
       });
     }
     function openMaterial(identity: MaterialIdentity): void {
+      const focused = document.activeElement;
+      openTrigger.current = focused instanceof HTMLButtonElement ? focused : null;
       run(async (current) => {
         const operationId = crypto.randomUUID();
         opening.current = operationId;
+        openingIdentity.current = identity;
+        openingCurrent.current = current;
         setMessage('Проверка файла перед системным открытием…');
         const response = await api.importedRun.openMaterial({ identity, operationId });
+        if (
+          !response.ok &&
+          response.error.code === 'material_open_unconfirmed' &&
+          active.current &&
+          sameMaterialOrigin(latest.current.origin, identity.origin)
+        ) {
+          setError(response.error);
+          setMessage(null);
+          return;
+        }
         if (!current()) return;
         if (!response.ok) {
           if (response.error.code === 'cancelled') {
@@ -274,6 +323,38 @@ export const ImportedRunMaterials = forwardRef<ImportedRunMaterialsHandle, Props
         if (active.current) setError(readError());
       }
     }
+    async function decideCopyRelease(decision: 'keep' | 'release'): Promise<void> {
+      const request = copyRelease;
+      if (request === null) return;
+      setCopyRelease(null);
+      try {
+        const response = await api.importedRun.respondCopyRelease({
+          ...request,
+          decision:
+            openingCurrent.current?.() && opening.current === request.operationId
+              ? decision
+              : 'keep',
+        });
+        if (!response.ok || !response.result.accepted) {
+          if (active.current && !response.ok) setError(response.error);
+          void cancelOpen();
+        }
+      } catch {
+        if (active.current) setError(readError());
+        void cancelOpen();
+      }
+    }
+    useEffect(() => {
+      if (
+        !busy &&
+        active.current &&
+        openTrigger.current?.isConnected &&
+        !openTrigger.current.disabled
+      ) {
+        openTrigger.current.focus();
+        openTrigger.current = null;
+      }
+    }, [busy]);
     const blocked = disabled || busy;
     return (
       <section
@@ -281,6 +362,42 @@ export const ImportedRunMaterials = forwardRef<ImportedRunMaterialsHandle, Props
         aria-labelledby={titleId}
         aria-busy={busy}
       >
+        <Modal
+          opened={
+            copyRelease !== null &&
+            !disabled &&
+            fresh &&
+            sameMaterialOrigin(copyRelease.identity.origin, origin)
+          }
+          onClose={() => void decideCopyRelease('keep')}
+          title="Освободить временные копии материалов?"
+          centered
+          size="lg"
+          returnFocus={false}
+          closeButtonProps={{ 'aria-label': 'Сохранить копии и закрыть подтверждение' }}
+        >
+          <Text>
+            Каталог достиг 64 копий или для новой копии осталось меньше 100 МиБ. Общий предел — 400
+            МиБ. Можно сохранить копии: материал откроется, если ему хватит оставшейся ёмкости.
+          </Text>
+          <Text mt="md">
+            Закройте все окна фотографий и протоколов, открытые Impeller Reliability. Сохраните
+            нужные правки в другом месте: временные копии и изменения в них будут удалены. Исходные
+            материалы дела сохраняются.
+          </Text>
+          <Text mt="md" size="sm">
+            Копии с незавершённым запросом ОС, неизвестные и подменённые файлы сохраняются и могут
+            препятствовать освобождению. Если просмотрщики ещё открыты, сохраните копии.
+          </Text>
+          <Group mt="lg" justify="flex-end">
+            <Button variant="default" data-autofocus onClick={() => void decideCopyRelease('keep')}>
+              Сохранить копии
+            </Button>
+            <Button color="red" onClick={() => void decideCopyRelease('release')}>
+              Освободить копии
+            </Button>
+          </Group>
+        </Modal>
         <Title order={4} id={titleId}>
           Первичные материалы
         </Title>

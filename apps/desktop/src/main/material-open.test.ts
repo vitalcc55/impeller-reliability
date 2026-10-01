@@ -7,12 +7,13 @@ import {
   readdir,
   rm,
   mkdir,
+  rmdir,
   unlink,
   open,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type {
   DesktopResult,
   MaterialCopyResult,
@@ -23,6 +24,7 @@ import { MaterialCopies, MaterialOpener, type MaterialSession } from './material
 
 const roots: string[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
@@ -54,7 +56,7 @@ async function copyDirectory(cache: string, id: string): Promise<string> {
   if (name === undefined) throw new Error('copy_directory_missing');
   return join(cache, name);
 }
-async function fixture(shellResult: string | Error = '') {
+async function fixture(shellResult: string | Error = '', releaseCopies = false) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'ir-material-open-')));
   roots.push(root);
   const cache = join(root, 'copies');
@@ -96,13 +98,18 @@ async function fixture(shellResult: string | Error = '') {
   );
   const copies = new MaterialCopies(cache, discard);
   const cleanupFailed = vi.fn();
-  const opener = new MaterialOpener({
+  const confirmRelease = vi.fn((signal: AbortSignal) =>
+    Promise.resolve(!signal.aborted && releaseCopies),
+  );
+  const dependencies = {
     copies,
     session: () => session,
     resolve,
     openPath: shell,
     cleanupFailed,
-  });
+    confirmRelease,
+  };
+  const opener = new MaterialOpener(dependencies);
   return {
     root,
     cache,
@@ -112,6 +119,8 @@ async function fixture(shellResult: string | Error = '') {
     resolve,
     discard,
     cleanupFailed,
+    confirmRelease,
+    dependencies,
     setSession: (value: MaterialSession | null) => {
       session = value;
     },
@@ -148,7 +157,310 @@ async function seedCopy(
   return directory;
 }
 
+// A persisted sequence of separately bounded user actions crosses the real
+// capacity boundary with real filesystem work and unchanged test deadlines.
+describe.sequential('repeated successful material openings', () => {
+  let shared: Awaited<ReturnType<typeof fixture>> | null = null;
+  beforeAll(async () => {
+    shared = await fixture('', true);
+    roots.splice(roots.indexOf(shared.root), 1);
+  });
+  afterAll(async () => {
+    if (shared !== null) await rm(shared.root, { recursive: true, force: true });
+  });
+  it.each(Array.from({ length: 70 }, (_, index) => index))(
+    'opens consecutive material %i with recoverable capacity',
+    async (index) => {
+      if (shared === null) throw new Error('sequence_fixture_missing');
+      expect(await shared.opener.open({ identity, operationId: randomUUID() })).toMatchObject({
+        ok: true,
+      });
+      expect(shared.shell).toHaveBeenCalledTimes(index + 1);
+      expect(shared.confirmRelease).toHaveBeenCalledTimes(index < 64 ? 0 : 1);
+      expect(shared.discard).toHaveBeenCalledTimes(index < 64 ? 0 : 64);
+      expect((await readdir(shared.cache)).filter((name) => name.startsWith('copy-'))).toHaveLength(
+        (index % 64) + 1,
+      );
+    },
+  );
+});
 describe('verified material OS handoff', () => {
+  it('does not adopt a replaced file identity after the release confirmation', async () => {
+    const f = await fixture('', true);
+    await initializeCache(f);
+    const id = randomUUID();
+    const directory = await seedCopy(f.cache, id, { handed: true, bytes: 400 * 1024 * 1024 });
+    const foreignIdentity = { ...fileIdentity, fileId: '2'.padStart(32, '0') };
+    const foreign = Buffer.from('%PDF-foreign\n');
+    f.confirmRelease.mockImplementation(async () => {
+      await rmdir(join(directory, identityName()));
+      await mkdir(
+        join(directory, `identity-${foreignIdentity.fileId}-${foreignIdentity.volumeId}-pdf`),
+      );
+      await unlink(join(directory, `${id}.pdf`));
+      await writeFile(join(directory, `${id}.pdf`), foreign);
+      return true;
+    });
+    f.discard.mockImplementation(async (command) => {
+      expect(command.fileIdentity).toEqual(foreignIdentity);
+      await unlink(join(command.approvedDirectory, `${command.copyId}.pdf`));
+    });
+    expect(await f.opener.open({ identity, operationId: randomUUID() })).toMatchObject({
+      ok: false,
+      error: { code: 'file_integrity_mismatch' },
+    });
+    expect(f.discard).not.toHaveBeenCalled();
+    expect(f.shell).not.toHaveBeenCalled();
+    expect(await readFile(join(directory, `${id}.pdf`))).toEqual(foreign);
+  });
+  it('preserves full capacity on declined viewer-close consent', async () => {
+    const f = await fixture();
+    await initializeCache(f);
+    for (let index = 0; index < 64; index += 1)
+      await seedCopy(f.cache, randomUUID(), { handed: true });
+    expect(await f.opener.open({ identity, operationId: randomUUID() })).toMatchObject({
+      ok: false,
+      error: { code: 'file_too_large' },
+    });
+    expect(f.confirmRelease).toHaveBeenCalledOnce();
+    expect(f.discard).not.toHaveBeenCalled();
+    expect(f.shell).not.toHaveBeenCalled();
+    expect((await readdir(f.cache)).filter((entry) => entry.startsWith('copy-'))).toHaveLength(64);
+  });
+  it('aborts the capacity confirmation on invalidation without reclaiming copies', async () => {
+    const f = await fixture();
+    await initializeCache(f);
+    for (let index = 0; index < 64; index += 1)
+      await seedCopy(f.cache, randomUUID(), { handed: true });
+    let entered: () => void = () => {};
+    const shown = new Promise<void>((done) => {
+      entered = done;
+    });
+    f.confirmRelease.mockImplementation(
+      (signal) =>
+        new Promise<boolean>((done) => {
+          signal.addEventListener('abort', () => done(false), { once: true });
+          entered();
+        }),
+    );
+    const pending = f.opener.open({ identity, operationId: randomUUID() });
+    await shown;
+    f.opener.invalidate();
+    expect(await pending).toMatchObject({ ok: false, error: { code: 'cancelled' } });
+    await f.opener.drain();
+    expect(f.discard).not.toHaveBeenCalled();
+    expect(f.shell).not.toHaveBeenCalled();
+  });
+  it('protects unresolved handoffs even after their owner dies and consent is enabled', async () => {
+    const f = await fixture('', true);
+    await initializeCache(f);
+    for (let index = 0; index < 64; index += 1) {
+      const directory = await seedCopy(f.cache, randomUUID(), { pid: 1073741823, handed: true });
+      await mkdir(join(directory, 'awaiting-os'));
+    }
+    expect(await f.opener.open({ identity, operationId: randomUUID() })).toMatchObject({
+      ok: false,
+      error: { code: 'file_too_large' },
+    });
+    expect(f.confirmRelease).not.toHaveBeenCalled();
+    expect(f.discard).not.toHaveBeenCalled();
+    expect(f.shell).not.toHaveBeenCalled();
+  });
+  it('retains a replaced native object when consented disposal is refused', async () => {
+    const f = await fixture('', true);
+    await initializeCache(f);
+    const protectedId = randomUUID();
+    const protectedDirectory = await seedCopy(f.cache, protectedId, {
+      handed: true,
+      bytes: 400 * 1024 * 1024,
+    });
+    f.discard.mockRejectedValueOnce(new Error('file_identity_mismatch'));
+    expect(await f.opener.open({ identity, operationId: randomUUID() })).toMatchObject({
+      ok: false,
+      error: { code: 'file_integrity_mismatch' },
+    });
+    const handle = await open(join(protectedDirectory, `${protectedId}.pdf`), 'r');
+    try {
+      const prefix = Buffer.alloc(content.length);
+      await handle.read(prefix, 0, prefix.length, 0);
+      expect(prefix).toEqual(content);
+    } finally {
+      await handle.close();
+    }
+    expect(f.shell).not.toHaveBeenCalled();
+  });
+  it('recovers a full legacy handoff store from a new owner only after consent', async () => {
+    const f = await fixture('', true);
+    await initializeCache(f);
+    for (let index = 0; index < 64; index += 1)
+      await seedCopy(f.cache, randomUUID(), { pid: 1073741823, handed: true });
+    const reopened = new MaterialOpener({
+      ...f.dependencies,
+      copies: new MaterialCopies(f.cache, f.discard),
+    });
+    expect(await reopened.open({ identity, operationId: randomUUID() })).toMatchObject({
+      ok: true,
+    });
+    expect(f.confirmRelease).toHaveBeenCalledOnce();
+    expect(f.discard).toHaveBeenCalledTimes(64);
+  });
+  it.each(['growth', 'foreign'] as const)(
+    'rechecks capacity after a declined confirmation and %s during the decision',
+    async (change) => {
+      const f = await fixture();
+      await initializeCache(f);
+      const id = randomUUID();
+      const directory = await seedCopy(f.cache, id, { handed: true, bytes: 350 * 1024 * 1024 });
+      f.confirmRelease.mockImplementation(async () => {
+        if (change === 'growth') {
+          const handle = await open(join(directory, `${id}.pdf`), 'r+');
+          try {
+            await handle.truncate(400 * 1024 * 1024);
+          } finally {
+            await handle.close();
+          }
+        } else await writeFile(join(f.cache, 'foreign.txt'), 'foreign');
+        return false;
+      });
+      expect(await f.opener.open({ identity, operationId: randomUUID() })).toMatchObject({
+        ok: false,
+        error: { code: change === 'growth' ? 'file_too_large' : 'file_integrity_mismatch' },
+      });
+      expect(f.resolve).not.toHaveBeenCalled();
+      expect(f.shell).not.toHaveBeenCalled();
+      expect(f.discard).not.toHaveBeenCalled();
+      if (change === 'foreign')
+        expect(await readFile(join(f.cache, 'foreign.txt'), 'utf8')).toBe('foreign');
+    },
+  );
+  it('opens a small material in the remaining byte reserve after recovery is declined', async () => {
+    const f = await fixture();
+    await initializeCache(f);
+    await seedCopy(f.cache, randomUUID(), { handed: true, bytes: 350 * 1024 * 1024 });
+    expect(await f.opener.open({ identity, operationId: randomUUID() })).toMatchObject({
+      ok: true,
+    });
+    expect(f.confirmRelease).toHaveBeenCalledOnce();
+    expect(f.resolve.mock.calls[0]?.[3]).toBe(50 * 1024 * 1024);
+    expect(f.discard).not.toHaveBeenCalled();
+  });
+  it('offers byte-pressure recovery before a smaller remaining reservation strands a material', async () => {
+    const f = await fixture('', true);
+    await initializeCache(f);
+    for (let index = 0; index < 4; index += 1)
+      await seedCopy(f.cache, randomUUID(), { handed: true, bytes: 100 * 1024 * 1024 });
+    expect(await f.opener.open({ identity, operationId: randomUUID() })).toMatchObject({
+      ok: true,
+    });
+    expect(f.confirmRelease).toHaveBeenCalledOnce();
+    expect(f.discard).toHaveBeenCalledTimes(4);
+  });
+  it.each(['success', 'error', 'rejection'] as const)(
+    'bounds an unresolved OS result and safely consumes late %s',
+    async (reply) => {
+      const f = await fixture();
+      let resolve: (value: string) => void = () => {};
+      let reject: (error: Error) => void = () => {};
+      let entered: () => void = () => {};
+      const raw = new Promise<string>((done, fail) => {
+        resolve = done;
+        reject = fail;
+      });
+      const invoked = new Promise<void>((done) => {
+        entered = done;
+      });
+      f.shell.mockImplementation(() => {
+        entered();
+        return raw;
+      });
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const id = randomUUID();
+      const pending = f.opener.open({ identity, operationId: id });
+      await invoked;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await pending).toMatchObject({
+        ok: false,
+        error: { code: 'material_open_unconfirmed', retryable: false },
+      });
+      await f.opener.drain();
+      const directory = await copyDirectory(f.cache, id);
+      expect(await readdir(directory)).toContain('awaiting-os');
+      expect(f.discard).not.toHaveBeenCalled();
+      f.setSession({ projectId: identity.origin.projectId, epoch: 2 });
+      if (reply === 'rejection') reject(new Error('late rejection'));
+      else resolve(reply === 'success' ? '' : 'late failure');
+      vi.useRealTimers();
+      await expect.poll(async () => (await readdir(directory)).includes('awaiting-os')).toBe(false);
+      expect(f.shell).toHaveBeenCalledOnce();
+      expect(f.discard).not.toHaveBeenCalled();
+      expect(f.cleanupFailed).not.toHaveBeenCalled();
+      expect(await readFile(join(directory, `${id}.pdf`))).toEqual(content);
+    },
+  );
+  it('a late OS reply clears only its original marker when an operation ID is reused', async () => {
+    const f = await fixture();
+    const replies: ((value: string) => void)[] = [];
+    const invocations: (() => void)[] = [];
+    f.shell.mockImplementation(
+      () =>
+        new Promise<string>((done) => {
+          replies.push(done);
+          invocations.shift()?.();
+        }),
+    );
+    const id = randomUUID();
+    let invoked = new Promise<void>((done) => invocations.push(done));
+    const first = f.opener.open({ identity, operationId: id });
+    await invoked;
+    const original = await copyDirectory(f.cache, id);
+    f.opener.invalidate();
+    expect(await first).toMatchObject({ ok: false, error: { code: 'material_open_unconfirmed' } });
+    await seedCopy(f.cache, randomUUID(), { handed: true, bytes: 350 * 1024 * 1024 });
+    invoked = new Promise<void>((done) => invocations.push(done));
+    const second = f.opener.open({ identity, operationId: id });
+    await invoked;
+    const other = (await readdir(f.cache)).find(
+      (entry) => entry.endsWith(id) && join(f.cache, entry) !== original,
+    );
+    if (other === undefined || replies[0] === undefined) throw new Error('second_copy_missing');
+    replies[0]('');
+    // Wait for the original handler to finish its filesystem continuation.
+    await expect
+      .poll(async () => {
+        const dirs = await Promise.all([readdir(original), readdir(join(f.cache, other))]);
+        return (
+          dirs[0]?.includes('awaiting-os') === false || dirs[1]?.includes('awaiting-os') === false
+        );
+      })
+      .toBe(true);
+    expect(await readdir(original)).not.toContain('awaiting-os');
+    expect(await readdir(join(f.cache, other))).toContain('awaiting-os');
+    f.opener.invalidate();
+    expect(await second).toMatchObject({ ok: false, error: { code: 'material_open_unconfirmed' } });
+    expect(f.discard).not.toHaveBeenCalled();
+  });
+  it('releases drain immediately on lifecycle invalidation after OS invocation without deleting its copy', async () => {
+    const f = await fixture();
+    let entered: () => void = () => {};
+    const invoked = new Promise<void>((done) => {
+      entered = done;
+    });
+    f.shell.mockImplementation(() => {
+      entered();
+      return new Promise<string>(() => {});
+    });
+    const id = randomUUID();
+    const pending = f.opener.open({ identity, operationId: id });
+    await invoked;
+    f.opener.invalidate();
+    expect(await pending).toMatchObject({
+      ok: false,
+      error: { code: 'material_open_unconfirmed' },
+    });
+    await f.opener.drain();
+    expect(f.discard).not.toHaveBeenCalled();
+    expect(await readdir(await copyDirectory(f.cache, id))).toContain('awaiting-os');
+  });
   it('calls the real injected shell branch and retains successful handoff', async () => {
     const f = await fixture();
     const operationId = randomUUID();

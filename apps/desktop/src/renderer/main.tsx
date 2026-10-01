@@ -29,7 +29,12 @@ async function resolveDesktopApi(): Promise<DesktopApiResolution> {
     const { createPreviewApi } = await import('./preview-api');
     const sampleParam = new URLSearchParams(window.location.search).get('sample');
     const sample = sampleParam === 'rpt' || sampleParam === 'pmn' ? sampleParam : 'rbd';
-    return { desktopApi: createPreviewApi(previewMode, sample), browserPreview: true };
+    const materialCopyCapacity =
+      new URLSearchParams(window.location.search).get('materials') === 'capacity';
+    return {
+      desktopApi: createPreviewApi(previewMode, sample, materialCopyCapacity),
+      browserPreview: true,
+    };
   }
 
   return { desktopApi: null, browserPreview: true };

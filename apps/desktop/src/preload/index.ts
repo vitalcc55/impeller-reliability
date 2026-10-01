@@ -24,6 +24,9 @@ import {
   materialReadPayloadSchema,
   materialOpenPayloadSchema,
   materialCancelOpenPayloadSchema,
+  materialCopyReleaseRequestSchema,
+  materialCopyReleaseDecisionSchema,
+  materialCopyReleaseReplySchema,
   inspectionMaterialPageSchema,
   inspectionMaterialDetailSchema,
   photoMaterialPageSchema,
@@ -475,6 +478,21 @@ const api: ImpellerApi = {
         materialOpenPayloadSchema,
         command,
         createDesktopResultSchema(materialOpenedResultSchema),
+      ),
+    subscribeCopyReleaseRequested: (listener) => {
+      const handleRequest = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(materialCopyReleaseRequestSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.importedRunCopyReleaseRequested, handleRequest);
+      return () =>
+        ipcRenderer.removeListener(IPC_CHANNELS.importedRunCopyReleaseRequested, handleRequest);
+    },
+    respondCopyRelease: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.importedRunCopyReleaseDecision,
+        materialCopyReleaseDecisionSchema,
+        command,
+        createDesktopResultSchema(materialCopyReleaseReplySchema),
       ),
     cancelMaterialOpen: async (operationId) =>
       invokeValidated(

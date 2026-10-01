@@ -56,6 +56,8 @@ export const IPC_CHANNELS = {
   importedRunListPhotoPage: 'impeller:imported-run:list-photo-page',
   importedRunGetProtocol: 'impeller:imported-run:get-protocol',
   importedRunOpenMaterial: 'impeller:imported-run:open-material',
+  importedRunCopyReleaseRequested: 'impeller:imported-run:copy-release-requested',
+  importedRunCopyReleaseDecision: 'impeller:imported-run:copy-release-decision',
   importedRunCancelMaterialOpen: 'impeller:imported-run:cancel-material-open',
   importedRunVerifySource: 'impeller:imported-run:verify-source',
   importedRunGetResolutionState: 'impeller:imported-run:get-resolution-state',

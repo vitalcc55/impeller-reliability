@@ -7,6 +7,8 @@ import {
   workerRequestSchema,
   parseWorkerResponse,
   materialCopyDiscardPayloadSchema,
+  materialCopyReleaseRequestSchema,
+  materialCopyReleaseDecisionSchema,
 } from './index';
 
 const origin = {
@@ -56,6 +58,26 @@ const item = {
   detail: null,
 };
 describe('source material typed boundary', () => {
+  it('bounds copy consent to a request and identity without granting a path', () => {
+    const request = { requestId: origin.projectId, operationId: origin.localImportId, identity };
+    expect(materialCopyReleaseRequestSchema.safeParse(request).success).toBe(true);
+    expect(
+      materialCopyReleaseDecisionSchema.safeParse({ ...request, decision: 'release' }).success,
+    ).toBe(true);
+    expect(
+      materialCopyReleaseDecisionSchema.safeParse({ ...request, decision: 'delete-all' }).success,
+    ).toBe(false);
+    expect(
+      materialCopyReleaseDecisionSchema.safeParse({
+        ...request,
+        decision: 'release',
+        directory: 'C:/foreign',
+      }).success,
+    ).toBe(false);
+    expect(
+      materialCopyReleaseRequestSchema.safeParse({ ...request, requestId: 'invalid' }).success,
+    ).toBe(false);
+  });
   it('preserves false, zero, null and complete item data', () => {
     const page = inspectionMaterialPageSchema.parse({
       origin,

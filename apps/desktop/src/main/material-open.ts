@@ -15,6 +15,7 @@ import type {
 const BYTE_LIMIT = 400 * 1024 * 1024;
 const COPY_LIMIT = 64;
 const FILE_LIMIT = 100 * 1024 * 1024;
+const OS_RESULT_WAIT_MS = 5_000;
 const COPY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const extensions = {
   'image/jpeg': '.jpg',
@@ -75,7 +76,7 @@ async function ordinaryFile(path: string): Promise<void> {
     );
   }
 }
-function sameIdentity(left: MaterialIdentity, right: MaterialIdentity): boolean {
+export function sameMaterialIdentity(left: MaterialIdentity, right: MaterialIdentity): boolean {
   return (
     left.kind === right.kind &&
     left.materialId === right.materialId &&
@@ -103,6 +104,7 @@ interface CopyState {
   readonly identityName: string | null;
   readonly handed: boolean;
   readonly abandoned: boolean;
+  readonly awaitingOs: boolean;
 }
 const RECORD_NAME =
   /^copy-([1-9][0-9]{0,9})-(0|[1-9][0-9]{0,9})-([1-9][0-9]{0,8})-([0-9a-f-]{36})$/;
@@ -215,10 +217,16 @@ export class MaterialCopies {
     let identityName: string | null = null;
     let handed = false;
     let abandoned = false;
+    let awaitingOs = false;
     for (const entry of await readdir(directory)) {
       const path = join(directory, entry);
       const identityParts = IDENTITY_NAME.exec(entry);
-      if (entry === 'handoff' || entry === 'abandoned' || identityParts !== null) {
+      if (
+        entry === 'handoff' ||
+        entry === 'abandoned' ||
+        entry === 'awaiting-os' ||
+        identityParts !== null
+      ) {
         await ordinaryDirectory(path);
         if ((await readdir(path)).length !== 0)
           throw new CopyError(
@@ -227,6 +235,7 @@ export class MaterialCopies {
           );
         if (entry === 'handoff') handed = true;
         else if (entry === 'abandoned') abandoned = true;
+        else if (entry === 'awaiting-os') awaitingOs = true;
         else {
           if (
             identity !== null ||
@@ -258,12 +267,17 @@ export class MaterialCopies {
         'file_integrity_mismatch',
         'Файл не соответствует сохранённой идентичности.',
       );
-    return { file, bytes, identity, mediaType, identityName, handed, abandoned };
+    return { file, bytes, identity, mediaType, identityName, handed, abandoned, awaitingOs };
   }
   private async removeRecord(record: CopyRecord, state: CopyState): Promise<void> {
+    if (state.awaitingOs)
+      throw new CopyError(
+        'operation_in_progress',
+        'Исход системного открытия ещё неизвестен; копия сохраняется.',
+      );
     const directory = this.directory(record);
-    // Only a cancelled/failed operation enters removal. Persist that terminal
-    // state before native disposal so a worker outage cannot retain a handoff.
+    // Cancellation, definite failure or explicit viewer-close consent authorizes
+    // removal. Persist intent before native disposal for safe crash recovery.
     if (!state.abandoned) await mkdir(join(directory, 'abandoned'));
     if (state.handed) {
       await ordinaryDirectory(join(directory, 'handoff'));
@@ -294,47 +308,104 @@ export class MaterialCopies {
     await rmdir(directory);
     this.operations.delete(record.id);
   }
+  private async scanCapacity(): Promise<{
+    readonly bytes: number;
+    readonly count: number;
+    readonly releasable: readonly { record: CopyRecord; state: CopyState }[];
+  }> {
+    let bytes = 0;
+    let count = 0;
+    const releasable: { record: CopyRecord; state: CopyState }[] = [];
+    for (const name of await readdir(this.root)) {
+      if (name === 'owner' || join(this.root, name) === this.lease) continue;
+      const owners = claimOwners(name);
+      if (owners !== null) {
+        if (!alive(owners.ownerPid) && !alive(owners.workerPid)) {
+          await ordinaryDirectory(join(this.root, name));
+          await rmdir(join(this.root, name));
+        }
+        continue;
+      }
+      const record = recordFromName(name);
+      const state = await this.state(record);
+      const live = alive(record.ownerPid) || alive(record.workerPid);
+      if (
+        !state.awaitingOs &&
+        (!state.handed || state.abandoned) &&
+        (!live || state.abandoned) &&
+        (state.file === null || state.identity !== null)
+      ) {
+        await this.removeRecord(record, state);
+        continue;
+      }
+      count += 1;
+      bytes +=
+        state.handed || state.abandoned ? state.bytes : Math.max(state.bytes, record.byteLimit);
+      if (state.handed && !state.awaitingOs && state.identity !== null && state.mediaType !== null)
+        releasable.push({ record, state });
+    }
+    return { bytes, count, releasable };
+  }
   async prepare(
     copyId: string,
+    recovery?: {
+      readonly signal: AbortSignal;
+      readonly confirmRelease: (signal: AbortSignal) => Promise<boolean>;
+    },
   ): Promise<{ readonly directory: string; readonly byteLimit: number }> {
     if (!COPY_ID.test(copyId))
       throw new CopyError('validation_error', 'Идентификатор операции недопустим.');
     await this.initialize();
     await this.acquire();
     try {
-      let bytes = 0;
-      let count = 0;
-      for (const name of await readdir(this.root)) {
-        if (name === 'owner' || join(this.root, name) === this.lease) continue;
-        const owners = claimOwners(name);
-        if (owners !== null) {
-          if (!alive(owners.ownerPid) && !alive(owners.workerPid)) {
-            await ordinaryDirectory(join(this.root, name));
-            await rmdir(join(this.root, name));
+      let capacity = await this.scanCapacity();
+      if (
+        recovery !== undefined &&
+        capacity.releasable.length > 0 &&
+        (capacity.count >= COPY_LIMIT || capacity.bytes > BYTE_LIMIT - FILE_LIMIT)
+      ) {
+        const consent = await recovery.confirmRelease(recovery.signal);
+        if (recovery.signal.aborted)
+          throw new CopyError('cancelled', 'Освобождение копий отменено.');
+        if (consent) {
+          for (const candidate of capacity.releasable) {
+            if (recovery.signal.aborted)
+              throw new CopyError('cancelled', 'Освобождение копий отменено.');
+            try {
+              const state = await this.state(candidate.record);
+              if (
+                state.awaitingOs ||
+                !state.handed ||
+                state.identity?.fileId !== candidate.state.identity?.fileId ||
+                state.identity?.volumeId !== candidate.state.identity?.volumeId ||
+                state.mediaType !== candidate.state.mediaType ||
+                state.file !== candidate.state.file
+              )
+                throw new CopyError(
+                  'file_integrity_mismatch',
+                  'Состояние копии изменилось во время подтверждения.',
+                );
+              // Keep the identity offered for consent; never adopt a replacement
+              // marker. Native discard pins and checks that exact file object.
+              await this.removeRecord(candidate.record, state);
+            } catch {
+              throw new CopyError(
+                'file_integrity_mismatch',
+                'Освобождение временных копий не завершено. Неудалённые или подменённые файлы сохранены; открытие не выполнялось.',
+              );
+            }
           }
-          continue;
         }
-        const record = recordFromName(name);
-        const state = await this.state(record);
-        const live = alive(record.ownerPid) || alive(record.workerPid);
-        if (
-          (!state.handed || state.abandoned) &&
-          (!live || state.abandoned) &&
-          (state.file === null || state.identity !== null)
-        ) {
-          await this.removeRecord(record, state);
-          continue;
-        }
-        count += 1;
-        bytes +=
-          state.handed || state.abandoned ? state.bytes : Math.max(state.bytes, record.byteLimit);
+        // A viewer or another filesystem actor can change retained copies while
+        // the user decides. Decline must also reserve against the current store.
+        capacity = await this.scanCapacity();
       }
-      if (count >= COPY_LIMIT || bytes >= BYTE_LIMIT)
+      if (capacity.count >= COPY_LIMIT || capacity.bytes >= BYTE_LIMIT)
         throw new CopyError(
           'file_too_large',
-          'Достигнут предел временных копий. Переданные или неоднозначные файлы не вытесняются автоматически.',
+          'Достигнут предел 64 копии или 400 МиБ. При следующем открытии можно подтвердить освобождение завершённых копий, закрыв просмотрщики и сохранив правки. Незавершённые запросы ОС и неизвестные файлы сохраняются и могут препятствовать освобождению.',
         );
-      const byteLimit = Math.min(FILE_LIMIT, BYTE_LIMIT - bytes);
+      const byteLimit = Math.min(FILE_LIMIT, BYTE_LIMIT - capacity.bytes);
       const workerPid = this.workerPid();
       const name = `copy-${process.pid}-${workerPid ?? 0}-${byteLimit}-${copyId}`;
       const record = { id: copyId, name, ownerPid: process.pid, workerPid, byteLimit };
@@ -425,6 +496,21 @@ export class MaterialCopies {
       throw new CopyError('file_integrity_mismatch', 'Передача непроверенной копии запрещена.');
     await mkdir(join(this.directory(record), 'handoff'));
   }
+  async awaitHandoff(copyId: string): Promise<() => Promise<void>> {
+    const record = this.current(copyId);
+    await mkdir(join(this.directory(record), 'awaiting-os'));
+    // A caller may reuse its UUID after an unconfirmed result. Capture the
+    // original record rather than looking up that UUID in a later invocation.
+    return () => this.settleRecord(record);
+  }
+  private async settleRecord(record: CopyRecord): Promise<void> {
+    const state = await this.state(record);
+    if (!state.awaitingOs) return;
+    await rmdir(join(this.directory(record), 'awaiting-os'));
+  }
+  async settleHandoff(copyId: string): Promise<void> {
+    await this.settleRecord(this.current(copyId));
+  }
   async remove(copyId: string): Promise<void> {
     const record = this.current(copyId);
     await this.removeRecord(record, await this.state(record));
@@ -446,6 +532,12 @@ export interface MaterialOpenDependencies {
   ) => Promise<DesktopResult<MaterialCopyResult>>;
   readonly openPath: (path: string) => Promise<string>;
   readonly cleanupFailed: (error: unknown) => void;
+  readonly confirmRelease: (
+    signal: AbortSignal,
+    command: MaterialOpenCommand,
+    session: MaterialSession,
+    requesterId: number | null,
+  ) => Promise<boolean>;
 }
 export class MaterialOpener {
   private readonly drainWaiters = new Set<() => void>();
@@ -454,23 +546,58 @@ export class MaterialOpener {
       ? Promise.resolve()
       : new Promise<void>((resolve) => this.drainWaiters.add(resolve));
   }
-  private pending: { readonly id: string; cancelled: boolean; shellInvoked: boolean } | null = null;
+  private pending: {
+    readonly id: string;
+    readonly controller: AbortController;
+    cancelled: boolean;
+    shellInvoked: boolean;
+  } | null = null;
   constructor(private readonly dependencies: MaterialOpenDependencies) {}
   cancel(operationId: string): boolean {
     if (this.pending?.id !== operationId || this.pending.shellInvoked) return false;
     this.pending.cancelled = true;
+    this.pending.controller.abort();
     return true;
   }
   invalidate(): void {
-    if (this.pending !== null && !this.pending.shellInvoked) this.pending.cancelled = true;
+    if (this.pending === null) return;
+    if (!this.pending.shellInvoked) this.pending.cancelled = true;
+    this.pending.controller.abort();
   }
-  async open(command: MaterialOpenCommand): Promise<DesktopResult<MaterialOpenedResult>> {
+  private waitForOs(reply: Promise<string>, signal: AbortSignal): Promise<string | null> {
+    return new Promise((resolve, reject) => {
+      const finish = (result: string | null, error?: Error) => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', interrupted);
+        if (error !== undefined) reject(error);
+        else resolve(result);
+      };
+      const interrupted = () => finish(null);
+      const timer = setTimeout(interrupted, OS_RESULT_WAIT_MS);
+      signal.addEventListener('abort', interrupted, { once: true });
+      void reply.then(
+        (value) => finish(value),
+        (error: unknown) =>
+          finish(null, error instanceof Error ? error : new Error('system_open_rejected')),
+      );
+      if (signal.aborted) interrupted();
+    });
+  }
+  async open(
+    command: MaterialOpenCommand,
+    requesterId: number | null = null,
+  ): Promise<DesktopResult<MaterialOpenedResult>> {
     if (this.pending !== null)
       return failure('operation_in_progress', 'Открытие другого материала ещё выполняется.');
     const session = this.dependencies.session();
     if (session === null || session.projectId !== command.identity.origin.projectId)
       return failure('cancelled', 'Материал не относится к активной сессии дела.');
-    const token = { id: command.operationId, cancelled: false, shellInvoked: false };
+    const token = {
+      id: command.operationId,
+      controller: new AbortController(),
+      cancelled: false,
+      shellInvoked: false,
+    };
     this.pending = token;
     let prepared = false;
     let knownShellFailure = false;
@@ -484,7 +611,11 @@ export class MaterialOpener {
       );
     };
     try {
-      const target = await this.dependencies.copies.prepare(command.operationId);
+      const target = await this.dependencies.copies.prepare(command.operationId, {
+        signal: token.controller.signal,
+        confirmRelease: (signal) =>
+          this.dependencies.confirmRelease(signal, command, session, requesterId),
+      });
       prepared = true;
       if (!current()) return failure('cancelled', 'Открытие материала отменено при смене сессии.');
       const resolved = await this.dependencies.resolve(
@@ -494,7 +625,7 @@ export class MaterialOpener {
         target.byteLimit,
       );
       if (!resolved.ok) return resolved;
-      if (!sameIdentity(resolved.result.identity, command.identity))
+      if (!sameMaterialIdentity(resolved.result.identity, command.identity))
         throw new CopyError('file_integrity_mismatch', 'Worker вернул материал другой редакции.');
       await this.dependencies.copies.verify(command.operationId, resolved.result);
       if (!current()) return failure('cancelled', 'Открытие материала отменено при смене сессии.');
@@ -502,8 +633,34 @@ export class MaterialOpener {
       await this.dependencies.copies.verify(command.operationId, resolved.result);
       if (!current())
         return failure('cancelled', 'Открытие материала отменено до передачи системной программе.');
+      const settleOriginal = await this.dependencies.copies.awaitHandoff(command.operationId);
+      if (!current())
+        return failure('cancelled', 'Открытие материала отменено до передачи системной программе.');
       token.shellInvoked = true;
-      const shellError = await this.dependencies.openPath(resolved.result.absolutePath);
+      const raw = (async () => this.dependencies.openPath(resolved.result.absolutePath))();
+      const settle = async () => {
+        try {
+          await settleOriginal();
+        } catch (error) {
+          this.dependencies.cleanupFailed(error);
+        }
+      };
+      const reply = raw.then(
+        async (value) => {
+          await settle();
+          return value;
+        },
+        async (error: unknown) => {
+          await settle();
+          throw error;
+        },
+      );
+      const shellError = await this.waitForOs(reply, token.controller.signal);
+      if (shellError === null)
+        return failure(
+          'material_open_unconfirmed',
+          'Результат запроса открытия ОС не подтверждён. Файл мог открыться; проверьте внешнюю программу перед новым запросом. Временная копия сохранена.',
+        );
       if (shellError !== '') {
         knownShellFailure = true;
         return failure(
@@ -531,6 +688,8 @@ export class MaterialOpener {
     } finally {
       if (prepared && (!token.shellInvoked || knownShellFailure)) {
         try {
+          if (!token.shellInvoked)
+            await this.dependencies.copies.settleHandoff(command.operationId);
           await this.dependencies.copies.remove(command.operationId);
         } catch (error) {
           this.dependencies.cleanupFailed(error);

@@ -30,6 +30,7 @@ import {
   materialReadPayloadSchema,
   materialOpenPayloadSchema,
   materialCancelOpenPayloadSchema,
+  materialCopyReleaseDecisionSchema,
   importedRunBindingCommandSchema,
   importedRunEnrichmentResolutionCommandSchema,
   importedRunIdPayloadSchema,
@@ -89,6 +90,7 @@ import {
 } from './case-document-source';
 import { JsonlLogger } from './logging';
 import { MaterialCopies, MaterialOpener } from './material-open';
+import { MaterialCopyConsent } from './material-copy-consent';
 import { runSourceMaterialSmoke, type SourceMaterialSmokeEvidence } from './source-material-smoke';
 import { RecentProjectsStore } from './recent-projects';
 import {
@@ -112,6 +114,7 @@ let closeDeliveryTimer: ReturnType<typeof setTimeout> | null = null;
 let activeProjectAuthorization: { readonly path: string; readonly projectId: string } | null = null;
 let materialSessionEpoch = 0;
 let materialOpener: MaterialOpener | null = null;
+const materialCopyConsent = new MaterialCopyConsent(materialSession);
 function invalidateMaterialOpenings(): void {
   materialSessionEpoch += 1;
   materialOpener?.invalidate();
@@ -254,6 +257,19 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
         }),
       ),
     openPath: (path) => shell.openPath(path),
+    confirmRelease: (signal, command, session, requesterId) => {
+      const window = mainWindow;
+      if (
+        signal.aborted ||
+        window === null ||
+        window.isDestroyed() ||
+        requesterId !== window.webContents.id
+      )
+        return Promise.resolve(false);
+      return materialCopyConsent.request(command, session, signal, requesterId, (request) => {
+        window.webContents.send(IPC_CHANNELS.importedRunCopyReleaseRequested, request);
+      });
+    },
     cleanupFailed: () => {
       void logger
         .write({ severity: 'warning', component: 'material-copies', event: 'cleanup_failed' })
@@ -701,12 +717,21 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       client.request('importedRun.getProtocol', parsed.data),
     );
   });
-  ipcMain.handle(IPC_CHANNELS.importedRunOpenMaterial, (_event, raw: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.importedRunOpenMaterial, (event, raw: unknown) => {
     const parsed = materialOpenPayloadSchema.safeParse(raw);
     if (!parsed.success) return validationFailure();
+    if (mainWindow === null || event.sender !== mainWindow.webContents) return validationFailure();
     if (materialOpener === null)
       return failureResult('worker_unavailable', 'Открытие материалов недоступно.');
-    return materialOpener.open(parsed.data);
+    return materialOpener.open(parsed.data, event.sender.id);
+  });
+  ipcMain.handle(IPC_CHANNELS.importedRunCopyReleaseDecision, (event, raw: unknown) => {
+    const parsed = materialCopyReleaseDecisionSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return {
+      ok: true,
+      result: { accepted: materialCopyConsent.answer(parsed.data, event.sender.id) },
+    };
   });
   ipcMain.handle(IPC_CHANNELS.importedRunCancelMaterialOpen, (_event, raw: unknown) => {
     const parsed = materialCancelOpenPayloadSchema.safeParse(raw);
@@ -1194,11 +1219,13 @@ async function createWindow(): Promise<void> {
   const rendererUrl = process.env['ELECTRON_RENDERER_URL'] ?? 'impeller://app/index.html';
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('did-start-loading', () => {
+    invalidateMaterialOpenings();
     rendererReady = false;
     rendererUnavailable = false;
     closeWithoutRendererIfPending();
   });
   mainWindow.webContents.on('render-process-gone', () => {
+    invalidateMaterialOpenings();
     rendererUnavailable = true;
     closeWithoutRendererIfPending();
   });

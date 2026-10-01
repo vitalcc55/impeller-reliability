@@ -1394,6 +1394,21 @@ export const materialOpenPayloadSchema = z
   .object({ identity: materialIdentitySchema, operationId: entityIdSchema })
   .strict();
 export const materialCancelOpenPayloadSchema = z.object({ operationId: entityIdSchema }).strict();
+export const materialCopyReleaseRequestSchema = z
+  .object({
+    requestId: entityIdSchema,
+    operationId: entityIdSchema,
+    identity: materialIdentitySchema,
+  })
+  .strict();
+export const materialCopyReleaseDecisionSchema = materialCopyReleaseRequestSchema
+  .extend({
+    decision: z.enum(['keep', 'release']),
+  })
+  .strict();
+export const materialCopyReleaseReplySchema = z.object({ accepted: z.boolean() }).strict();
+export type MaterialCopyReleaseRequest = z.infer<typeof materialCopyReleaseRequestSchema>;
+export type MaterialCopyReleaseDecision = z.infer<typeof materialCopyReleaseDecisionSchema>;
 export const materialOpenedResultSchema = z
   .object({
     identity: materialIdentitySchema,
@@ -4073,6 +4088,7 @@ export const desktopErrorSchema = z
   .object({
     code: z.enum([
       'material_open_failed',
+      'material_open_unconfirmed',
       'cancelled',
       'contract_error',
       'validation_error',
@@ -4224,6 +4240,12 @@ export interface ImpellerApi {
     listPhotoPage(query: MaterialPageQuery): Promise<DesktopResult<PhotoMaterialPage>>;
     getProtocol(query: MaterialReadQuery): Promise<DesktopResult<ProtocolMaterialDetail>>;
     openMaterial(command: MaterialOpenCommand): Promise<DesktopResult<MaterialOpenedResult>>;
+    subscribeCopyReleaseRequested(
+      listener: (request: MaterialCopyReleaseRequest) => void,
+    ): () => void;
+    respondCopyRelease(
+      command: MaterialCopyReleaseDecision,
+    ): Promise<DesktopResult<{ readonly accepted: boolean }>>;
     cancelMaterialOpen(
       operationId: string,
     ): Promise<DesktopResult<{ readonly cancelled: boolean }>>;
