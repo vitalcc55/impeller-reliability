@@ -19,6 +19,7 @@ from impeller_reliability.integration.r130run.import_models import (
     RunPackageImportJobSnapshot,
     SpecimenBindingModel,
 )
+from impeller_reliability.integration.r130run.material_models import InspectionMaterialData, MaterialDetail, MaterialIdentity, MaterialOrigin, MaterialPage, PhotoMaterialData, ProtocolMaterialData
 from impeller_reliability.integration.r130run.models import (
     RunPackageValidationDiscardResult,
     RunPackageValidationJobSnapshot,
@@ -75,6 +76,12 @@ Operation = Literal[
     "runPackageImport.discard",
     "importedRun.list",
     "importedRun.get",
+    "importedRun.listInspectionPage",
+    "importedRun.getInspection",
+    "importedRun.listPhotoPage",
+    "importedRun.getProtocol",
+    "importedRun.resolveMaterial",
+    "materialCopy.discard",
     "importedRun.verifySource",
     "importedRun.getResolutionState",
     "importedRun.bindSpecimen",
@@ -981,6 +988,64 @@ class RunPackageImportDiscardRequest(RequestBase):
     payload: RunPackageImportJobPayload
 
 
+class MaterialOriginInput(MaterialOrigin):
+    model_config = ConfigDict(validate_by_name=False, validate_by_alias=True, populate_by_name=False)
+    project_id: EntityId
+    local_import_id: EntityId
+    package_id: str = Field(min_length=1, max_length=200)
+    run_id: str = Field(min_length=1, max_length=200)
+    export_revision: int = Field(ge=1, le=9_007_199_254_740_991)
+    outer_package_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class MaterialIdentityInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    origin: MaterialOriginInput
+    kind: Literal["photo", "protocol"]
+    materialId: str = Field(min_length=1, max_length=16 * 1024)
+
+    @model_validator(mode="after")
+    def validate_material_id_utf8(self) -> MaterialIdentityInput:
+        _require_utf8_bytes(self.materialId, 16 * 1024)
+        return self
+
+
+class MaterialReadPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    origin: MaterialOriginInput
+
+
+class MaterialPagePayload(MaterialReadPayload):
+    cursor: str | None = Field(default=None, min_length=1, max_length=512, pattern=r"^[A-Za-z0-9_=-]+$")
+    limit: int = Field(default=25, ge=1, le=50)
+
+
+class MaterialInspectionPayload(MaterialReadPayload):
+    inspectionId: str = Field(min_length=1, max_length=200)
+
+
+class MaterialResolvePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    identity: MaterialIdentityInput
+    outputDirectory: str = Field(min_length=1, max_length=32_767)
+    copyId: EntityId
+    copyByteLimit: int = Field(default=100 * 1024 * 1024, ge=1, le=100 * 1024 * 1024)
+
+
+class MaterialCopyFileIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    fileId: str = Field(pattern=r"^[0-9a-f]{32}$")
+    volumeId: str = Field(pattern=r"^[0-9a-f]{16}$")
+
+
+class MaterialCopyDiscardPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    approvedDirectory: str = Field(min_length=1, max_length=32_767)
+    copyId: EntityId
+    mediaType: Literal["image/jpeg", "image/png", "application/pdf"]
+    fileIdentity: MaterialCopyFileIdentity
+
+
 class ImportedRunListRequest(RequestBase):
     operation: Literal["importedRun.list"]
     payload: EmptyPayload
@@ -989,6 +1054,36 @@ class ImportedRunListRequest(RequestBase):
 class ImportedRunGetRequest(RequestBase):
     operation: Literal["importedRun.get"]
     payload: ImportedRunIdPayload
+
+
+class ImportedRunInspectionPageRequest(RequestBase):
+    operation: Literal["importedRun.listInspectionPage"]
+    payload: MaterialPagePayload
+
+
+class ImportedRunInspectionRequest(RequestBase):
+    operation: Literal["importedRun.getInspection"]
+    payload: MaterialInspectionPayload
+
+
+class ImportedRunPhotoPageRequest(RequestBase):
+    operation: Literal["importedRun.listPhotoPage"]
+    payload: MaterialPagePayload
+
+
+class ImportedRunProtocolRequest(RequestBase):
+    operation: Literal["importedRun.getProtocol"]
+    payload: MaterialReadPayload
+
+
+class ImportedRunResolveMaterialRequest(RequestBase):
+    operation: Literal["importedRun.resolveMaterial"]
+    payload: MaterialResolvePayload
+
+
+class MaterialCopyDiscardRequest(RequestBase):
+    operation: Literal["materialCopy.discard"]
+    payload: MaterialCopyDiscardPayload
 
 
 class ImportedRunVerifySourceRequest(RequestBase):
@@ -1161,6 +1256,12 @@ type RequestEnvelope = Annotated[
     | RunPackageImportDiscardRequest
     | ImportedRunListRequest
     | ImportedRunGetRequest
+    | ImportedRunInspectionPageRequest
+    | ImportedRunInspectionRequest
+    | ImportedRunPhotoPageRequest
+    | ImportedRunProtocolRequest
+    | ImportedRunResolveMaterialRequest
+    | MaterialCopyDiscardRequest
     | ImportedRunVerifySourceRequest
     | ImportedRunGetResolutionStateRequest
     | ImportedRunBindSpecimenRequest
@@ -1417,6 +1518,21 @@ class CaseDocumentListResult(BaseModel):
 class CaseDocumentResolveFileResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     absolutePath: str = Field(min_length=1, max_length=32_767)
+
+
+class ImportedRunMaterialCopyResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    identity: MaterialIdentity
+    absolutePath: str = Field(min_length=1, max_length=32_767)
+    mediaType: Literal["image/jpeg", "image/png", "application/pdf"]
+    sizeBytes: int = Field(ge=1, le=100 * 1024 * 1024)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    fileIdentity: MaterialCopyFileIdentity
+
+
+class MaterialCopyDiscardResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    discarded: bool
 
 
 class ImportedRunListResult(BaseModel):
@@ -2011,6 +2127,12 @@ type SuccessResponseType = (
     | SuccessResponse[RunPackageValidationDiscardResult]
     | SuccessResponse[RunPackageImportJobSnapshot]
     | SuccessResponse[RunPackageImportDiscardResult]
+    | SuccessResponse[MaterialPage[InspectionMaterialData]]
+    | SuccessResponse[MaterialDetail[InspectionMaterialData]]
+    | SuccessResponse[MaterialPage[PhotoMaterialData]]
+    | SuccessResponse[MaterialDetail[ProtocolMaterialData]]
+    | SuccessResponse[ImportedRunMaterialCopyResult]
+    | SuccessResponse[MaterialCopyDiscardResult]
     | SuccessResponse[ImportedRunListResult]
     | SuccessResponse[ImportedRunDetailModel]
     | SuccessResponse[ImportedRunVerifyResult]

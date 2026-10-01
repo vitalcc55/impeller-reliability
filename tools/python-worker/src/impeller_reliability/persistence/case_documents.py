@@ -18,6 +18,7 @@ from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from impeller_reliability.persistence.analyst_dossier import canonical_date, canonical_uuid4
 from impeller_reliability.persistence.audit import audit_now, insert_audit
+from impeller_reliability.persistence.file_signatures import matches_media_signature
 from impeller_reliability.persistence.project_errors import ProjectOperationError
 from impeller_reliability.persistence.sqlite_deadline import sqlite_query_rows_with_deadline
 from impeller_reliability.persistence.timestamps import require_canonical_utc_timestamp
@@ -1656,12 +1657,8 @@ def _validate_staged_content(
 ) -> None:
     _check_deadline(deadline, "case_document_file_signature")
     valid = True
-    if extension == ".pdf":
-        valid = prefix.startswith(b"%PDF-")
-    elif extension == ".png":
-        valid = prefix.startswith(b"\x89PNG\r\n\x1a\n")
-    elif extension in {".jpg", ".jpeg"}:
-        valid = prefix.startswith(b"\xff\xd8\xff")
+    if extension in {".pdf", ".png", ".jpg", ".jpeg"}:
+        valid = matches_media_signature(prefix, FILE_MEDIA_TYPES[extension])
     elif extension in {".docx", ".xlsx"}:
         required = "word/document.xml" if extension == ".docx" else "xl/workbook.xml"
         try:

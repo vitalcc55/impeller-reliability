@@ -6,6 +6,7 @@ import shutil
 from uuid import uuid4
 
 from impeller_reliability.integration.r130run.m9a import M9aPackageFacts
+from impeller_reliability.integration.r130run.material_models import InspectionMaterialData, MaterialDetail, MaterialIdentity, MaterialPage, PhotoMaterialData, ProtocolMaterialData
 from impeller_reliability.integration.r130run.models import RunPackageValidationReport
 from impeller_reliability.persistence.analyst_dossier import CustomerProfile, Specimen, WheelModel
 from impeller_reliability.persistence.case_documents import CaseDocument
@@ -38,6 +39,7 @@ from impeller_reliability.persistence.r130sh_sources import (
     PlanSelection,
     PmnPlanSourceSnapshot,
     RbdPlanSourceSnapshot,
+    ResolvedRunMaterial,
     RptPlanSourceSnapshot,
     SourceIntegrityStatus,
     SpecimenBinding,
@@ -333,6 +335,23 @@ class ProjectService:
 
     def verify_imported_run_source(self, local_import_id: str, deadline: RequestDeadline | None = None) -> SourceIntegrityStatus:
         return self._require_session().verify_imported_run_source(local_import_id, deadline)
+
+    def list_imported_run_inspection_page(self, local_import_id: str, cursor: str | None, limit: int, deadline: RequestDeadline | None = None) -> MaterialPage[InspectionMaterialData]:
+        return self._require_session().list_imported_run_inspection_page(local_import_id, cursor, limit, deadline)
+
+    def get_imported_run_inspection(self, local_import_id: str, inspection_id: str, deadline: RequestDeadline | None = None) -> MaterialDetail[InspectionMaterialData]:
+        return self._require_session().get_imported_run_inspection(local_import_id, inspection_id, deadline)
+
+    def list_imported_run_photo_page(self, local_import_id: str, cursor: str | None, limit: int, deadline: RequestDeadline | None = None) -> MaterialPage[PhotoMaterialData]:
+        return self._require_session().list_imported_run_photo_page(local_import_id, cursor, limit, deadline)
+
+    def get_imported_run_protocol(self, local_import_id: str, deadline: RequestDeadline | None = None) -> MaterialDetail[ProtocolMaterialData]:
+        return self._require_session().get_imported_run_protocol(local_import_id, deadline)
+
+    def resolve_imported_run_material(
+        self, identity: MaterialIdentity, output_directory: Path, deadline: RequestDeadline | None = None, *, copy_id: str | None = None, copy_byte_limit: int = 100 * 1024 * 1024
+    ) -> ResolvedRunMaterial:
+        return self._require_session().resolve_imported_run_material(identity, output_directory, deadline, copy_id=copy_id, copy_byte_limit=copy_byte_limit)
 
     def read_rbd_plan_source(
         self,

@@ -417,6 +417,7 @@ def _inventory(manifest: dict[str, JsonValue]) -> tuple[M9aInventoryItem, ...]:
                         "accepted-summary.json",
                         "inspections.json",
                         "attachments/index.json",
+                        "protocol/release.json",
                     }
                     else "structural_only"
                 ),

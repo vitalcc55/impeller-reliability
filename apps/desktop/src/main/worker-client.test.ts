@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -135,15 +135,17 @@ describe('worker operation deadlines', () => {
     );
     try {
       await client.start();
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const backup = client.request('project.createBackup', {});
       const shutdown = client.shutdown(30);
 
       await expect(client.request('system.ping', {})).rejects.toThrow('worker_stopping');
+      vi.advanceTimersByTime(179);
       await expect(backup).resolves.toMatchObject({ ok: true });
       await expect(shutdown).resolves.toBeUndefined();
       expect(client.processId).toBeNull();
     } finally {
+      vi.useRealTimers();
       await client.shutdown();
       rmSync(stateDirectory, { recursive: true, force: true });
     }
@@ -172,13 +174,25 @@ describe('worker operation deadlines', () => {
     );
     try {
       await client.start();
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      // Control only Main's deadline clock; the child still exchanges real JSONL.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const first = client.request('project.createBackup', {});
       const second = client.request('project.createBackup', {});
-
-      await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+      const completed = expect(Promise.all([first, second])).resolves.toHaveLength(2);
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(1);
+      vi.advanceTimersByTime(130);
+      await first;
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(1);
+      // Cross the queued request's hypothetical enqueue deadline (140), while
+      // remaining below its actual dispatch deadline (130 + 140).
+      vi.advanceTimersByTime(20);
+      await completed;
       expect(client.processId).not.toBeNull();
     } finally {
+      vi.useRealTimers();
       await client.shutdown();
       rmSync(stateDirectory, { recursive: true, force: true });
     }
@@ -207,16 +221,19 @@ describe('worker operation deadlines', () => {
     );
     try {
       await client.start();
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const originalProcessId = client.processId;
       const backup = client.request('project.createBackup', {});
       const restart = client.restart();
 
+      await Promise.resolve();
+      vi.advanceTimersByTime(179);
       await expect(backup).resolves.toMatchObject({ ok: true });
       await expect(restart).resolves.toBeUndefined();
       expect(client.processId).not.toBeNull();
       expect(client.processId).not.toBe(originalProcessId);
     } finally {
+      vi.useRealTimers();
       await client.shutdown();
       rmSync(stateDirectory, { recursive: true, force: true });
     }
@@ -245,15 +262,18 @@ describe('worker operation deadlines', () => {
     );
     try {
       await client.start();
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const backup = client.request('project.createBackup', {});
       const restart = client.restart();
       const finalShutdown = client.shutdown();
 
+      await Promise.resolve();
+      vi.advanceTimersByTime(179);
       await expect(backup).resolves.toMatchObject({ ok: true });
       await expect(Promise.all([restart, finalShutdown])).resolves.toHaveLength(2);
       expect(client.processId).toBeNull();
     } finally {
+      vi.useRealTimers();
       await client.shutdown();
       rmSync(stateDirectory, { recursive: true, force: true });
     }
@@ -282,13 +302,15 @@ describe('worker operation deadlines', () => {
     );
     try {
       await client.start();
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const first = client.request('project.createBackup', {});
       const second = client.request('project.createBackup', {});
 
       await expect(client.request('project.createBackup', {})).rejects.toThrow('worker_queue_full');
+      vi.advanceTimersByTime(299);
       await expect(Promise.all([first, second])).resolves.toHaveLength(2);
     } finally {
+      vi.useRealTimers();
       await client.shutdown();
       rmSync(stateDirectory, { recursive: true, force: true });
     }

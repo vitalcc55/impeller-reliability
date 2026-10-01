@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
-from threading import Event
 from time import monotonic, sleep
 from typing import Literal
 from uuid import uuid4
@@ -29,7 +28,7 @@ from impeller_reliability.calculations.rbd_input_snapshot import RbdSavedFieldSe
 from impeller_reliability.calculations.rpt_input_snapshot import RptInputField
 from impeller_reliability.integration.r130run.import_jobs import RunPackageImportJobManager
 from impeller_reliability.integration.r130run.import_models import ImportedRunPlanModel, imported_run_detail_model
-from impeller_reliability.integration.r130run.m9a import M9aPackageFacts, read_m9a_package_facts
+from impeller_reliability.integration.r130run.m9a import M9aPackageFacts
 from impeller_reliability.integration.r130run.models import RunPackageValidationReport
 from impeller_reliability.integration.r130run.validator import (
     MAX_JSON_BYTES,
@@ -74,6 +73,7 @@ from impeller_reliability.protocol.envelopes import (
 from impeller_reliability.worker.deadline import RequestDeadline
 from impeller_reliability.worker.dispatcher import Dispatcher
 from support.r130run_builder import build_synthetic_r130run
+from support.r130sh_import import create_import_project, frozen_package, import_run_package, stage_package, validated_package
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 M9A_ROOT = REPOSITORY_ROOT / "fixtures" / "contracts" / "r130run" / "v1" / "m9a"
@@ -127,7 +127,7 @@ EXPECTED_SCENARIOS = {
 
 
 def test_imports_all_m9a_packages_and_reopens_persisted_sources(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
+    service, project_path = create_import_project(tmp_path)
     index = json.loads((M9A_ROOT / "package-index.json").read_text(encoding="utf-8"))
     assert {str(entry["case_name"]) for entry in index["packages"]} == EXPECTED_SCENARIOS
     imported_ids: list[str] = []
@@ -144,8 +144,8 @@ def test_imports_all_m9a_packages_and_reopens_persisted_sources(tmp_path: Path) 
         assert imported.outer_package_sha256 == entry["sha256"]
         assert imported.outer_size_bytes == entry["size"]
         assert imported.source_integrity == "verified"
-        assert imported.validator_version == "m03b.2"
-        assert imported.validation_contract_commit == "09097561a6a58b1663a6912357a3c8d1daf7f28c"
+        assert imported.validator_version == "m03b.3"
+        assert imported.validation_contract_commit == "b7792758b407ffc52d2fff051243056f63dbf18f"
         case_name = str(entry["case_name"])
         detail = service.get_imported_run(imported.local_import_id)
         _assert_m9b_case(case_name, detail)
@@ -184,7 +184,7 @@ def test_imports_all_m9a_packages_and_reopens_persisted_sources(tmp_path: Path) 
 def test_diagnostic_partial_resume_available_true_survives_production_import_and_reopen(
     tmp_path: Path,
 ) -> None:
-    service, project_path = _project(tmp_path)
+    service, project_path = create_import_project(tmp_path)
     base = build_synthetic_r130run(tmp_path / "partial-base.r130run")
     with ZipFile(base) as archive:
         summary = OBJECT_ADAPTER.validate_json(archive.read("run-summary.json"))
@@ -225,12 +225,12 @@ def test_diagnostic_partial_resume_available_true_survives_production_import_and
 
 
 def test_exact_repeat_is_noop_without_duplicate_audit(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    source = _package("duplicate_import_key.r130run")
-    first = _import(service, project_path, source)
+    service, project_path = create_import_project(tmp_path)
+    source = frozen_package("duplicate_import_key.r130run")
+    first = import_run_package(service, project_path, source)
     audit_before = _audit_count(project_path)
 
-    repeated = _import(service, project_path, source)
+    repeated = import_run_package(service, project_path, source)
 
     assert repeated.local_import_id == first.local_import_id
     assert repeated.imported_existing is True
@@ -240,7 +240,7 @@ def test_exact_repeat_is_noop_without_duplicate_audit(tmp_path: Path) -> None:
 
 
 def test_nullable_plan_references_survive_import_detail_retry_and_reopen(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
+    service, project_path = create_import_project(tmp_path)
     source = _package_with_nullable_plan_references(tmp_path)
 
     first = _import_via_job(
@@ -283,12 +283,12 @@ def test_nullable_plan_references_survive_import_detail_retry_and_reopen(tmp_pat
 
 
 def test_same_package_revision_with_different_outer_hash_is_conflict(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    source = _package("duplicate_import_key.r130run")
-    first = _import(service, project_path, source)
-    report, facts = _validated(source)
+    service, project_path = create_import_project(tmp_path)
+    source = frozen_package("duplicate_import_key.r130run")
+    first = import_run_package(service, project_path, source)
+    report, facts = validated_package(source)
     changed_facts = replace(facts, outer_package_sha256="0" * 64)
-    staged = _stage(project_path, source)
+    staged = stage_package(project_path, source)
 
     with pytest.raises(ProjectOperationError) as raised:
         service.register_imported_run(
@@ -306,9 +306,9 @@ def test_same_package_revision_with_different_outer_hash_is_conflict(tmp_path: P
 
 
 def test_new_export_revision_coexists_with_previous_revision(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    source = _package("normal_final_rbd.r130run")
-    first = _import(service, project_path, source)
+    service, project_path = create_import_project(tmp_path)
+    source = frozen_package("normal_final_rbd.r130run")
+    first = import_run_package(service, project_path, source)
     second_package = build_synthetic_r130run(
         tmp_path / "revision-2.r130run",
         manifest_mutator=lambda manifest: manifest.update(
@@ -317,7 +317,7 @@ def test_new_export_revision_coexists_with_previous_revision(tmp_path: Path) -> 
         ),
     )
 
-    second = _import(service, project_path, second_package)
+    second = import_run_package(service, project_path, second_package)
 
     assert second.package_id == first.package_id
     assert second.export_revision == 2
@@ -327,9 +327,9 @@ def test_new_export_revision_coexists_with_previous_revision(tmp_path: Path) -> 
 
 
 def test_shared_and_distinct_source_specimen_identities_do_not_use_marking(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    shared = [_import(service, project_path, _package(f"shared_specimen_pmn_rpt_rbd-{mode}.r130run")) for mode in ("pmn", "rpt", "rbd")]
-    distinct = [_import(service, project_path, _package(f"same_marking_distinct_specimens-{index}.r130run")) for index in (1, 2)]
+    service, project_path = create_import_project(tmp_path)
+    shared = [import_run_package(service, project_path, frozen_package(f"shared_specimen_pmn_rpt_rbd-{mode}.r130run")) for mode in ("pmn", "rpt", "rbd")]
+    distinct = [import_run_package(service, project_path, frozen_package(f"same_marking_distinct_specimens-{index}.r130run")) for index in (1, 2)]
 
     assert len({item.source_specimen_id for item in shared}) == 1
     assert len({item.binding_revision for item in shared}) == 1
@@ -341,8 +341,8 @@ def test_shared_and_distinct_source_specimen_identities_do_not_use_marking(tmp_p
 
 
 def test_binding_and_enrichment_resolution_are_optimistic_and_audited(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(service, project_path, frozen_package("normal_final_rbd.r130run"))
     project = service.get_overview()
     wheel = service.create_wheel(
         {
@@ -426,8 +426,8 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(service, project_path, frozen_package("normal_final_rbd.r130run"))
     wheel = service.create_wheel(
         {
             "wheelModelId": str(uuid4()),
@@ -471,7 +471,7 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(
     )
 
     execution = service.materialize_reliability_execution(imported.local_import_id, None)
-    rounding_import = _import(service, project_path, _package("exact_methodical_rounding.r130run"))
+    rounding_import = import_run_package(service, project_path, frozen_package("exact_methodical_rounding.r130run"))
     assert rounding_import.source_specimen_id == imported.source_specimen_id
     rounding_execution = service.materialize_reliability_execution(rounding_import.local_import_id, None)
     original_plan = service.read_rbd_plan_source(
@@ -847,7 +847,7 @@ def test_materialized_reliability_execution_preserves_source_and_reopens(
     }
     assert page.next_cursor is None
     assert service.get_reliability_execution(execution.execution_id, None) == execution
-    archived_source = _import(service, project_path, _package("normal_final_pmn.r130run"))
+    archived_source = import_run_package(service, project_path, frozen_package("normal_final_pmn.r130run"))
     service.bind_imported_run_specimen(
         source_specimen_id=archived_source.source_specimen_id,
         local_specimen_id=specimen.specimen_id,
@@ -892,8 +892,8 @@ def _project_with_rbd_execution(
     tmp_path: Path,
     package_path: Path | None = None,
 ) -> tuple[ProjectService, Path, ImportedRunSummary, ReliabilityTestExecution]:
-    service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, package_path or _package("normal_final_rbd.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(service, project_path, package_path or frozen_package("normal_final_rbd.r130run"))
     wheel = service.create_wheel(
         {
             "wheelModelId": str(uuid4()),
@@ -997,7 +997,7 @@ def test_current_r130sh_exporter_pmn_package_imports_calculates_and_reopens(tmp_
 
 @pytest.mark.parametrize("selection", ["original", "effective"])
 def test_pmn_source_inputs_keep_provenance_fields_requirements_targets_and_coordinates(tmp_path: Path, selection: Literal["original", "effective"]) -> None:
-    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_pmn.r130run"))
     source = service.get_pmn_source_inputs(execution.execution_id, selection, None)
     assert source.execution_id == execution.execution_id
     assert source.local_import_id == imported.local_import_id
@@ -1044,8 +1044,8 @@ def test_pmn_source_inputs_keep_provenance_fields_requirements_targets_and_coord
 
 
 def test_pmn_source_reader_rejects_wrong_import_pair_and_method(tmp_path: Path) -> None:
-    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
-    other = _import(service, project_path, _package("shared_specimen_pmn_rpt_rbd-pmn.r130run"))
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_pmn.r130run"))
+    other = import_run_package(service, project_path, frozen_package("shared_specimen_pmn_rpt_rbd-pmn.r130run"))
     with pytest.raises(ProjectOperationError) as wrong_import:
         service.read_pmn_plan_source(execution.execution_id, other.local_import_id, "original", None)
     assert wrong_import.value.code == "entity_not_found"
@@ -1062,7 +1062,7 @@ def test_pmn_source_reader_rejects_wrong_import_pair_and_method(tmp_path: Path) 
 
 @pytest.mark.parametrize("damage", ["missing", "modified"])
 def test_pmn_source_reader_rejects_unavailable_managed_archive(tmp_path: Path, damage: str) -> None:
-    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_pmn.r130run"))
     assert service.get_pmn_source_inputs(execution.execution_id, "original", None).execution_id == execution.execution_id
     managed_path = _managed_path(project_path, imported)
     if damage == "missing":
@@ -1110,7 +1110,7 @@ def _pmn_source_selections() -> tuple[PmnFieldSelection, ...]:
 
 
 def test_pmn_calculation_immutable_pair_history_retry_and_reopen_without_zip(tmp_path: Path) -> None:
-    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_pmn.r130run"))
     input_id, calculation_id = str(uuid4()), str(uuid4())
     selections = _pmn_source_selections()
     saved = service.create_pmn_calculation(
@@ -1176,7 +1176,7 @@ def test_pmn_calculation_immutable_pair_history_retry_and_reopen_without_zip(tmp
 
 @pytest.mark.parametrize(("failure_duration", "expected_cycles"), [("2", "1"), ("0", "0")])
 def test_pmn_manual_input_and_table_5_survive_document_change(tmp_path: Path, failure_duration: str, expected_cycles: str) -> None:
-    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_pmn.r130run"))
     document = service.create_case_document(
         str(uuid4()),
         {
@@ -1291,7 +1291,7 @@ def test_pmn_manual_input_and_table_5_survive_document_change(tmp_path: Path, fa
 
 
 def test_pmn_calculation_rollback_conflicting_retry_and_bounded_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_pmn.r130run"))
     selections = _pmn_source_selections()
     input_id, calculation_id = str(uuid4()), str(uuid4())
     with monkeypatch.context() as patch_context:
@@ -1374,7 +1374,7 @@ def test_pmn_calculation_rollback_conflicting_retry_and_bounded_page(tmp_path: P
 
 
 def test_pmn_calculation_four_typed_dispatch_operations_and_bounded_envelope(tmp_path: Path) -> None:
-    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_pmn.r130run"))
     service.close()
     dispatcher = Dispatcher(tmp_path)
 
@@ -1459,7 +1459,7 @@ def test_pmn_calculation_four_typed_dispatch_operations_and_bounded_envelope(tmp
     ],
 )
 def test_pmn_resealed_invalid_snapshot_is_rejected_by_detail_and_reopen(tmp_path: Path, damage: str) -> None:
-    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_pmn.r130run"))
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_pmn.r130run"))
     document = service.create_case_document(
         str(uuid4()),
         {
@@ -1623,7 +1623,7 @@ def test_pmn_source_reader_distinguishes_missing_null_and_zero(tmp_path: Path) -
 
 
 def test_pmn_source_reader_preserves_decimal_json_lexeme_without_float_rounding(tmp_path: Path) -> None:
-    base = _package("normal_final_pmn.r130run")
+    base = frozen_package("normal_final_pmn.r130run")
     with ZipFile(base) as archive:
         original_bytes = archive.read("plan/original.json")
         effective = OBJECT_ADAPTER.validate_json(archive.read("plan/effective.json"))
@@ -1696,7 +1696,7 @@ def test_rpt_source_inputs_keep_original_fields_requirements_targets_and_coordin
     policy: str,
     lower_rpm: str,
 ) -> None:
-    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package(package_name))
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, frozen_package(package_name))
     source = service.get_rpt_source_inputs(execution.execution_id, selection, None)
     assert source.execution_id == execution.execution_id
     assert source.local_import_id == imported.local_import_id
@@ -1738,8 +1738,8 @@ def test_rpt_source_inputs_keep_original_fields_requirements_targets_and_coordin
 
 
 def test_rpt_source_reader_rejects_rbd_method_and_wrong_import_pair(tmp_path: Path) -> None:
-    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
-    other = _import(service, project_path, _package("normal_final_rpt_full_stop.r130run"))
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_rpt_one_percent.r130run"))
+    other = import_run_package(service, project_path, frozen_package("normal_final_rpt_full_stop.r130run"))
     with pytest.raises(ProjectOperationError) as wrong_import:
         service.read_rpt_plan_source(execution.execution_id, other.local_import_id, "original", None)
     assert wrong_import.value.code == "entity_not_found"
@@ -1801,7 +1801,7 @@ def test_rpt_source_reader_preserves_importer_valid_numeric_json_scalars(tmp_pat
 
 
 def test_rpt_source_reader_preserves_numeric_json_lexeme_without_float_rounding(tmp_path: Path) -> None:
-    base = _package("normal_final_rpt_full_stop.r130run")
+    base = frozen_package("normal_final_rpt_full_stop.r130run")
     with ZipFile(base) as archive:
         original_bytes = archive.read("plan/original.json")
         effective = OBJECT_ADAPTER.validate_json(archive.read("plan/effective.json"))
@@ -1843,7 +1843,7 @@ def test_rpt_source_reader_keeps_bounded_access_to_importer_valid_large_plan(tmp
 
 @pytest.mark.parametrize("damage", ["missing_archive", "modified_archive", "plan_id", "plan_hash", "oversized_plan"])
 def test_rpt_source_reader_rejects_missing_modified_or_conflicting_evidence(tmp_path: Path, damage: str) -> None:
-    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_rpt_one_percent.r130run"))
     assert service.get_rpt_source_inputs(execution.execution_id, "original", None).execution_id == execution.execution_id
     managed_path = _managed_path(project_path, imported)
     if damage == "missing_archive":
@@ -1875,7 +1875,7 @@ def test_rpt_source_reader_rejects_missing_modified_or_conflicting_evidence(tmp_
 
 
 def test_rpt_calculation_source_pair_history_and_reopen(tmp_path: Path) -> None:
-    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_full_stop.r130run"))
+    service, project_path, imported, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_rpt_full_stop.r130run"))
     input_id = str(uuid4())
     calculation_id = str(uuid4())
     selections = tuple(
@@ -1944,7 +1944,7 @@ def test_rpt_calculation_source_pair_history_and_reopen(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(("failure_duration", "expected_cycles"), [("8", "2"), ("0", "0")])
 def test_rpt_manual_inputs_and_documented_table_4_survive_document_change(tmp_path: Path, failure_duration: str, expected_cycles: str) -> None:
-    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_full_stop.r130run"))
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_rpt_full_stop.r130run"))
     document = service.create_case_document(
         str(uuid4()),
         {
@@ -2065,7 +2065,7 @@ def test_rpt_calculation_rollback_conflicting_retry_and_method_scoped_detail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_rpt_one_percent.r130run"))
     selections = tuple(
         RptFieldSelection(field=field, origin="source")
         for field in (
@@ -2137,7 +2137,7 @@ def test_rpt_calculation_rollback_conflicting_retry_and_method_scoped_detail(
 
 
 def test_rpt_calculation_four_typed_dispatch_operations_and_bounded_envelope(tmp_path: Path) -> None:
-    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_rpt_one_percent.r130run"))
     service.close()
     dispatcher = Dispatcher(tmp_path)
 
@@ -2202,7 +2202,7 @@ def test_rpt_calculation_four_typed_dispatch_operations_and_bounded_envelope(tmp
 
 
 def test_reopen_rejects_resealed_rpt_result_with_invalid_nested_profile(tmp_path: Path) -> None:
-    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_one_percent.r130run"))
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_rpt_one_percent.r130run"))
     input_id, calculation_id = str(uuid4()), str(uuid4())
     saved = service.create_rpt_calculation(
         analysis_input_snapshot_id=input_id,
@@ -2367,7 +2367,7 @@ def _reseal_saved_calculation_snapshot(
     ],
 )
 def test_reopen_rejects_resealed_rpt_inputs_outside_algorithm_domain(tmp_path: Path, damage: str, value: str) -> None:
-    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, _package("normal_final_rpt_full_stop.r130run"))
+    service, project_path, _, execution = _project_with_rbd_execution(tmp_path, frozen_package("normal_final_rpt_full_stop.r130run"))
     document = service.create_case_document(
         str(uuid4()),
         {
@@ -2755,7 +2755,7 @@ def test_rbd_accepts_active_global_document_and_rejects_archived_new_evidence(
 def test_imported_numeric_lexeme_is_available_for_documented_manual_replacement(
     tmp_path: Path,
 ) -> None:
-    base_package = _package("normal_final_rbd.r130run")
+    base_package = frozen_package("normal_final_rbd.r130run")
     long_base_cycles = "0" * 62 + "100"
     with ZipFile(base_package) as archive:
         original = OBJECT_ADAPTER.validate_json(archive.read("plan/original.json"))
@@ -2907,7 +2907,7 @@ def test_rbd_plan_source_read_fails_typed_for_missing_modified_and_expired_deadl
         )
     assert expired.value.code == "timeout"
 
-    validated_report, _ = _validated(_package("normal_final_rbd.r130run"))
+    validated_report, _ = validated_package(frozen_package("normal_final_rbd.r130run"))
     mismatched_report = validated_report.model_copy(update={"outerPackageSha256": "0" * 64})
     with monkeypatch.context() as patch_context:
 
@@ -2946,7 +2946,7 @@ def test_rbd_plan_source_read_fails_typed_for_missing_modified_and_expired_deadl
         service.read_rbd_plan_source(execution.execution_id, imported.local_import_id, "original")
     assert missing.value.code == "file_integrity_mismatch"
 
-    shutil.copyfile(_package("normal_final_rbd.r130run"), managed_path)
+    shutil.copyfile(frozen_package("normal_final_rbd.r130run"), managed_path)
     assert (
         service.read_rbd_plan_source(
             execution.execution_id,
@@ -3388,11 +3388,11 @@ def test_reopen_rejects_resealed_observation_evidence_with_changed_classificatio
 
 
 def test_reliability_failure_observation_does_not_turn_technical_stop_into_specimen_failure(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    imported = _import(
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(
         service,
         project_path,
-        _package("device_failure.r130run"),
+        frozen_package("device_failure.r130run"),
     )
     wheel = service.create_wheel(
         {
@@ -3444,7 +3444,7 @@ def test_reliability_failure_observation_does_not_turn_technical_stop_into_speci
     assert observation.vibration_summary["available"] is False
     assert service.get_reliability_execution(execution.execution_id, None) == execution
 
-    partial = _import(service, project_path, _package("diagnostic_partial.r130run"))
+    partial = import_run_package(service, project_path, frozen_package("diagnostic_partial.r130run"))
     service.bind_imported_run_specimen(
         source_specimen_id=partial.source_specimen_id,
         local_specimen_id=specimen.specimen_id,
@@ -3472,8 +3472,8 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(service, project_path, frozen_package("normal_final_rbd.r130run"))
     wheel = service.create_wheel(
         {
             "wheelModelId": str(uuid4()),
@@ -4185,8 +4185,8 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
 def test_m04b_execution_keyset_pages_are_bounded_stable_and_do_not_repeat(
     tmp_path: Path,
 ) -> None:
-    service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(service, project_path, frozen_package("normal_final_rbd.r130run"))
     wheel = service.create_wheel(
         {
             "wheelModelId": str(uuid4()),
@@ -4284,8 +4284,8 @@ def test_m04b_execution_keyset_pages_are_bounded_stable_and_do_not_repeat(
 
 
 def test_enrichment_copy_is_whitelisted_empty_only_and_idempotent(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(service, project_path, frozen_package("normal_final_rbd.r130run"))
     wheel = service.create_wheel(
         {
             "wheelModelId": str(uuid4()),
@@ -4422,7 +4422,7 @@ def test_enrichment_copy_is_whitelisted_empty_only_and_idempotent(tmp_path: Path
     assert updated_customer is not None
     assert updated_customer.legal_address != ""
 
-    second_import = _import(service, project_path, _package("normal_final_pmn.r130run"))
+    second_import = import_run_package(service, project_path, frozen_package("normal_final_pmn.r130run"))
     with pytest.raises(ProjectOperationError, match="Непустое analyst value") as overwrite:
         service.record_imported_run_resolution(
             resolution_id=str(uuid4()),
@@ -4459,8 +4459,8 @@ def test_enrichment_copy_is_whitelisted_empty_only_and_idempotent(tmp_path: Path
 
 
 def test_reopen_removes_only_exact_import_orphans(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, _package("normal_final_pmn.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(service, project_path, frozen_package("normal_final_pmn.r130run"))
     service.close()
     staging = project_path / "imports" / "r130sh" / ".staging"
     staging.mkdir(parents=True, exist_ok=True)
@@ -4482,8 +4482,8 @@ def test_reopen_removes_only_exact_import_orphans(tmp_path: Path) -> None:
 
 
 def test_enrichment_copy_rejects_missing_archived_and_incomplete_targets(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, _package("normal_final_rbd.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(service, project_path, frozen_package("normal_final_rbd.r130run"))
     with pytest.raises(ProjectOperationError) as missing:
         service.record_imported_run_resolution(
             resolution_id=str(uuid4()),
@@ -4554,9 +4554,9 @@ def test_enrichment_copy_rejects_missing_archived_and_incomplete_targets(tmp_pat
 
 
 def test_missing_or_modified_archive_does_not_block_project_open(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    first = _import(service, project_path, _package("normal_final_pmn.r130run"))
-    second = _import(service, project_path, _package("normal_final_rbd.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    first = import_run_package(service, project_path, frozen_package("normal_final_pmn.r130run"))
+    second = import_run_package(service, project_path, frozen_package("normal_final_rbd.r130run"))
     service.close()
     first_path = _managed_path(project_path, first)
     second_path = _managed_path(project_path, second)
@@ -4574,8 +4574,8 @@ def test_missing_or_modified_archive_does_not_block_project_open(tmp_path: Path)
 def test_same_size_source_change_invalidates_cached_integrity_until_explicit_verify(
     tmp_path: Path,
 ) -> None:
-    service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, _package("normal_final_pmn.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(service, project_path, frozen_package("normal_final_pmn.r130run"))
     managed_path = _managed_path(project_path, imported)
     original = managed_path.read_bytes()
     assert service.verify_imported_run_source(imported.local_import_id) == "verified"
@@ -4595,7 +4595,7 @@ def test_same_size_source_change_invalidates_cached_integrity_until_explicit_ver
 
 
 def test_imported_run_reads_honor_request_deadline(tmp_path: Path) -> None:
-    service, _project_path = _project(tmp_path)
+    service, _project_path = create_import_project(tmp_path)
     with pytest.raises(ProjectOperationError) as expired:
         service.list_imported_runs(RequestDeadline.start(0))
     assert expired.value.code == "timeout"
@@ -4606,9 +4606,9 @@ def test_import_publication_hash_receives_operation_deadline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service, project_path = _project(tmp_path)
-    source = _package("normal_final_pmn.r130run")
-    report, facts = _validated(source)
+    service, project_path = create_import_project(tmp_path)
+    source = frozen_package("normal_final_pmn.r130run")
+    report, facts = validated_package(source)
     deadline = RequestDeadline.start(30_000)
     observed_deadlines: list[RequestDeadline | None] = []
 
@@ -4619,7 +4619,7 @@ def test_import_publication_hash_receives_operation_deadline(
     monkeypatch.setattr(r130sh_sources_module, "_sha256_file", observed_hash)
     service.register_imported_run(
         local_import_id=str(uuid4()),
-        staged_path=_stage(project_path, source),
+        staged_path=stage_package(project_path, source),
         facts=facts,
         report=report,
         deadline=deadline,
@@ -4633,9 +4633,9 @@ def test_committed_import_success_does_not_depend_on_post_commit_detail_read(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service, project_path = _project(tmp_path)
-    source = _package("normal_final_pmn.r130run")
-    report, facts = _validated(source)
+    service, project_path = create_import_project(tmp_path)
+    source = frozen_package("normal_final_pmn.r130run")
+    report, facts = validated_package(source)
 
     def forbidden_post_commit_get(*_args: object, **_kwargs: object) -> ImportedRunDetail:
         raise AssertionError("post_commit_detail_read")
@@ -4643,7 +4643,7 @@ def test_committed_import_success_does_not_depend_on_post_commit_detail_read(
     monkeypatch.setattr(r130sh_sources_module.R130shSourceRepository, "get", forbidden_post_commit_get)
     imported = service.register_imported_run(
         local_import_id=str(uuid4()),
-        staged_path=_stage(project_path, source),
+        staged_path=stage_package(project_path, source),
         facts=facts,
         report=report,
         deadline=None,
@@ -4654,8 +4654,8 @@ def test_committed_import_success_does_not_depend_on_post_commit_detail_read(
 
 
 def test_source_tables_and_resolution_rows_are_immutable(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, _package("normal_final_pmn.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(service, project_path, frozen_package("normal_final_pmn.r130run"))
     service.record_imported_run_resolution(
         resolution_id=str(uuid4()),
         local_import_id=imported.local_import_id,
@@ -4695,8 +4695,8 @@ def test_source_tables_and_resolution_rows_are_immutable(tmp_path: Path) -> None
 
 
 def test_enrichment_resolution_limit_rejects_before_commit(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, _package("normal_final_pmn.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(service, project_path, frozen_package("normal_final_pmn.r130run"))
     for index in range(32):
         service.record_imported_run_resolution(
             resolution_id=str(uuid4()),
@@ -4736,8 +4736,8 @@ def test_enrichment_resolution_limit_rejects_before_commit(tmp_path: Path) -> No
 
 
 def test_reopen_rejects_absolute_inventory_path_before_renderer_read(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, _package("normal_final_pmn.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(service, project_path, frozen_package("normal_final_pmn.r130run"))
     service.close()
     with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
         trigger_sql = str(
@@ -4759,8 +4759,8 @@ def test_reopen_rejects_absolute_inventory_path_before_renderer_read(tmp_path: P
 
 
 def test_renderer_models_contain_no_absolute_or_managed_path(tmp_path: Path) -> None:
-    service, project_path = _project(tmp_path)
-    imported = _import(service, project_path, _package("normal_final_pmn.r130run"))
+    service, project_path = create_import_project(tmp_path)
+    imported = import_run_package(service, project_path, frozen_package("normal_final_pmn.r130run"))
     payload = imported_run_detail_model(service.get_imported_run(imported.local_import_id)).model_dump_json()
 
     assert str(project_path) not in payload
@@ -4772,7 +4772,7 @@ def test_renderer_models_contain_no_absolute_or_managed_path(tmp_path: Path) -> 
 
 
 def test_import_boundary_rejects_invalid_ids_and_unknown_sources(tmp_path: Path) -> None:
-    service, _project_path = _project(tmp_path)
+    service, _project_path = create_import_project(tmp_path)
     for operation in (
         lambda: service.get_imported_run("not-a-uuid"),
         lambda: service.verify_imported_run_source("not-a-uuid"),
@@ -4801,21 +4801,6 @@ def test_import_boundary_rejects_invalid_ids_and_unknown_sources(tmp_path: Path)
         service.verify_imported_run_source(unknown_import_id)
     assert unknown_verify.value.code == "entity_not_found"
     service.close()
-
-
-def _project(tmp_path: Path) -> tuple[ProjectService, Path]:
-    service = ProjectService()
-    project_path = (tmp_path / "acceptance.irproj").resolve()
-    service.create(
-        path=str(project_path),
-        application_instance_id="tests",
-        application_version="0.0.0-test",
-        name="M9b acceptance",
-        project_number="",
-        description="",
-        status="draft",
-    )
-    return service, project_path
 
 
 def _assert_m9b_case(case_name: str, detail: ImportedRunDetail) -> None:
@@ -4879,12 +4864,8 @@ def _integer(value: object) -> int:
     return value
 
 
-def _package(name: str) -> Path:
-    return M9A_ROOT / "packages" / name
-
-
 def _package_with_nullable_plan_references(tmp_path: Path) -> Path:
-    source = _package("normal_final_rbd.r130run")
+    source = frozen_package("normal_final_rbd.r130run")
     with ZipFile(source) as archive:
         original = OBJECT_ADAPTER.validate_json(archive.read("plan/original.json"))
         effective = OBJECT_ADAPTER.validate_json(archive.read("plan/effective.json"))
@@ -4953,7 +4934,7 @@ def _package_with_plan_values(
     target_updates: dict[str, object],
     source_removals: tuple[str, ...] = (),
 ) -> Path:
-    base = _package(base_name)
+    base = frozen_package(base_name)
     with ZipFile(base) as archive:
         original = OBJECT_ADAPTER.validate_json(archive.read("plan/original.json"))
         effective = OBJECT_ADAPTER.validate_json(archive.read("plan/effective.json"))
@@ -4997,46 +4978,6 @@ def _package_with_plan_values(
 
 def _canonical_package_json(value: dict[str, object]) -> bytes:
     return (json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-
-
-def _validated(path: Path) -> tuple[RunPackageValidationReport, M9aPackageFacts]:
-    report = RunPackageValidator().validate(
-        path,
-        ValidationControl(Event(), monotonic() + 30, _ignore_validation_progress),
-    )
-    return report, read_m9a_package_facts(path, report)
-
-
-def _ignore_validation_progress(
-    _phase: str,
-    _completed_bytes: int,
-    _total_bytes: int,
-    _completed_entries: int,
-    _total_entries: int,
-) -> None:
-    return None
-
-
-def _stage(project_path: Path, source: Path) -> Path:
-    value = project_path / "imports" / "r130sh" / ".staging" / f"{uuid4()}.part"
-    value.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, value)
-    return value
-
-
-def _import(
-    service: ProjectService,
-    project_path: Path,
-    source: Path,
-) -> ImportedRunSummary:
-    report, facts = _validated(source)
-    return service.register_imported_run(
-        local_import_id=str(uuid4()),
-        staged_path=_stage(project_path, source),
-        facts=facts,
-        report=report,
-        deadline=None,
-    )
 
 
 def _import_via_job(

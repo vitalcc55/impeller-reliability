@@ -25,6 +25,12 @@ import {
   customerUpsertPayloadSchema,
   projectDraftSchema,
   projectUpdateMetadataPayloadSchema,
+  materialPagePayloadSchema,
+  materialInspectionPayloadSchema,
+  materialReadPayloadSchema,
+  materialOpenPayloadSchema,
+  materialCancelOpenPayloadSchema,
+  materialCopyReleaseDecisionSchema,
   importedRunBindingCommandSchema,
   importedRunEnrichmentResolutionCommandSchema,
   importedRunIdPayloadSchema,
@@ -68,6 +74,7 @@ import {
   type ProjectOverview,
   type RecentProject,
   type RunPackageValidationJob,
+  type MaterialOrigin,
   type ImportedRunDetail,
   type RunPackageImportJob,
   type SpecimenBinding,
@@ -82,6 +89,9 @@ import {
   selectCaseDocumentSource,
 } from './case-document-source';
 import { JsonlLogger } from './logging';
+import { MaterialCopies, MaterialOpener } from './material-open';
+import { MaterialCopyConsent } from './material-copy-consent';
+import { runSourceMaterialSmoke, type SourceMaterialSmokeEvidence } from './source-material-smoke';
 import { RecentProjectsStore } from './recent-projects';
 import {
   runPackageImportStart,
@@ -102,6 +112,21 @@ let rendererReady = false;
 let rendererUnavailable = false;
 let closeDeliveryTimer: ReturnType<typeof setTimeout> | null = null;
 let activeProjectAuthorization: { readonly path: string; readonly projectId: string } | null = null;
+let materialSessionEpoch = 0;
+let materialOpener: MaterialOpener | null = null;
+const materialCopyConsent = new MaterialCopyConsent(materialSession);
+function invalidateMaterialOpenings(): void {
+  materialSessionEpoch += 1;
+  materialOpener?.invalidate();
+}
+function materialSession(): { readonly projectId: string; readonly epoch: number } | null {
+  return activeProjectAuthorization === null ||
+    status.workerStatus !== 'ready' ||
+    quitting ||
+    restartPromise !== null
+    ? null
+    : { projectId: activeProjectAuthorization.projectId, epoch: materialSessionEpoch };
+}
 const applicationInstanceId = randomUUID();
 const RENDERER_CLOSE_ACK_TIMEOUT_MS = 2_000;
 
@@ -148,6 +173,7 @@ function emitStatus(): RuntimeStatus {
 }
 
 function applyWorkerLifecycle(event: WorkerLifecycleEvent): void {
+  if (event.state !== 'ready') invalidateMaterialOpenings();
   status.workerStatus = event.state;
   if (event.state === 'starting') {
     status.sqliteStatus = 'pending';
@@ -194,7 +220,9 @@ function restartWorker(): Promise<RuntimeStatus> {
   if (restartPromise !== null) return restartPromise;
   const client = workerClient;
   if (client === null) return Promise.reject(new Error('worker_unavailable'));
+  invalidateMaterialOpenings();
   const currentRestart = (async () => {
+    await materialOpener?.drain();
     await client.restart();
     return refreshStatus();
   })().finally(() => {
@@ -204,8 +232,54 @@ function restartWorker(): Promise<RuntimeStatus> {
   return currentRestart;
 }
 
-function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogger): void {
+function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogger): MaterialCopies {
   const recentProjects = new RecentProjectsStore(join(stateDirectory, 'recent-projects.json'));
+  const copies = new MaterialCopies(
+    join(stateDirectory, 'source-material-copies'),
+    async (command) => {
+      const client = workerClient;
+      if (client === null) throw new Error('worker_unavailable');
+      const response = await client.request('materialCopy.discard', command);
+      if (!response.ok) throw new Error(`material_copy_discard_failed:${response.error.code}`);
+    },
+    () => workerClient?.processId ?? null,
+  );
+  materialOpener = new MaterialOpener({
+    copies,
+    session: materialSession,
+    resolve: (identity, directory, copyId, byteLimit) =>
+      runProjectOperation(workerClient, async (client) =>
+        client.request('importedRun.resolveMaterial', {
+          identity,
+          outputDirectory: directory,
+          copyId,
+          copyByteLimit: byteLimit,
+        }),
+      ),
+    openPath: (path) => shell.openPath(path),
+    confirmRelease: (signal, command, session, requesterId) => {
+      const window = mainWindow;
+      if (
+        signal.aborted ||
+        window === null ||
+        window.isDestroyed() ||
+        requesterId !== window.webContents.id
+      )
+        return Promise.resolve(false);
+      return materialCopyConsent.request(command, session, signal, requesterId, (request) => {
+        window.webContents.send(IPC_CHANNELS.importedRunCopyReleaseRequested, request);
+      });
+    },
+    cleanupFailed: () => {
+      void logger
+        .write({ severity: 'warning', component: 'material-copies', event: 'cleanup_failed' })
+        .catch(() => {
+          status.message = 'Не удалось очистить временную копию просмотра. Откройте диагностику.';
+          emitStatus();
+        });
+    },
+  });
+
   ipcMain.handle(IPC_CHANNELS.getStatus, () => {
     rendererReady = true;
     rendererUnavailable = false;
@@ -236,6 +310,7 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
     if (result !== '') throw new Error(`open_log_failed:${result}`);
   });
   ipcMain.handle(IPC_CHANNELS.projectCreate, async (_event, rawDraft: unknown) => {
+    invalidateMaterialOpenings();
     const draft = projectDraftSchema.parse(rawDraft);
     const automatedPath = approvedAutomatedProjectPath();
     if (automatedPath !== null) {
@@ -262,6 +337,7 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
     return createProject(workerClient, recentProjects, logger, path, draft);
   });
   ipcMain.handle(IPC_CHANNELS.projectOpen, async () => {
+    invalidateMaterialOpenings();
     const automatedPath = approvedAutomatedProjectPath();
     if (automatedPath !== null) {
       return openProject(workerClient, recentProjects, logger, automatedPath);
@@ -284,6 +360,7 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
     return openProject(workerClient, recentProjects, logger, selection.filePaths[0]);
   });
   ipcMain.handle(IPC_CHANNELS.projectOpenRecent, async (_event, rawPath: unknown) => {
+    invalidateMaterialOpenings();
     if (typeof rawPath !== 'string') {
       return failureResult<ProjectOverview>(
         'validation_error',
@@ -315,6 +392,7 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
     );
   });
   ipcMain.handle(IPC_CHANNELS.projectClose, async () => {
+    invalidateMaterialOpenings();
     const result = await runProjectOperation(workerClient, async (client) =>
       client.request('project.close', {}),
     );
@@ -322,6 +400,7 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
     return result;
   });
   ipcMain.handle(IPC_CHANNELS.projectReleaseLocalWorkspace, () => {
+    invalidateMaterialOpenings();
     activeProjectAuthorization = null;
   });
   ipcMain.handle(IPC_CHANNELS.projectGetOverview, () =>
@@ -610,6 +689,58 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       client.request('importedRun.get', parsed.data),
     );
   });
+  ipcMain.handle(IPC_CHANNELS.importedRunListInspectionPage, (_event, raw: unknown) => {
+    const parsed = materialPagePayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runMaterialRead(parsed.data.origin, async (client) =>
+      client.request('importedRun.listInspectionPage', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.importedRunGetInspection, (_event, raw: unknown) => {
+    const parsed = materialInspectionPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runMaterialRead(parsed.data.origin, async (client) =>
+      client.request('importedRun.getInspection', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.importedRunListPhotoPage, (_event, raw: unknown) => {
+    const parsed = materialPagePayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runMaterialRead(parsed.data.origin, async (client) =>
+      client.request('importedRun.listPhotoPage', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.importedRunGetProtocol, (_event, raw: unknown) => {
+    const parsed = materialReadPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return runMaterialRead(parsed.data.origin, async (client) =>
+      client.request('importedRun.getProtocol', parsed.data),
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.importedRunOpenMaterial, (event, raw: unknown) => {
+    const parsed = materialOpenPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    if (mainWindow === null || event.sender !== mainWindow.webContents) return validationFailure();
+    if (materialOpener === null)
+      return failureResult('worker_unavailable', 'Открытие материалов недоступно.');
+    return materialOpener.open(parsed.data, event.sender.id);
+  });
+  ipcMain.handle(IPC_CHANNELS.importedRunCopyReleaseDecision, (event, raw: unknown) => {
+    const parsed = materialCopyReleaseDecisionSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return {
+      ok: true,
+      result: { accepted: materialCopyConsent.answer(parsed.data, event.sender.id) },
+    };
+  });
+  ipcMain.handle(IPC_CHANNELS.importedRunCancelMaterialOpen, (_event, raw: unknown) => {
+    const parsed = materialCancelOpenPayloadSchema.safeParse(raw);
+    if (!parsed.success) return validationFailure();
+    return {
+      ok: true,
+      result: { cancelled: materialOpener?.cancel(parsed.data.operationId) ?? false },
+    };
+  });
   ipcMain.handle(IPC_CHANNELS.importedRunVerifySource, (_event, raw: unknown) => {
     const parsed = importedRunIdPayloadSchema.safeParse(raw);
     if (!parsed.success) return validationFailure();
@@ -785,6 +916,7 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
       client.request('pmnCalculation.getDetail', parsed.data),
     );
   });
+  return copies;
 }
 
 function selectRunPackageSourceFromDialog(): Promise<DesktopResult<string>> {
@@ -946,6 +1078,24 @@ async function touchRecentSafely(
   }
 }
 
+async function runMaterialRead<TResult>(
+  origin: MaterialOrigin,
+  operation: (client: WorkerClient) => Promise<OperationResponse<TResult>>,
+): Promise<DesktopResult<TResult>> {
+  const session = materialSession();
+  if (session === null || session.projectId !== origin.projectId)
+    return failureResult('cancelled', 'Материалы не относятся к активной сессии дела.');
+  const result = await runProjectOperation(workerClient, operation);
+  const current = materialSession();
+  if (
+    current === null ||
+    current.epoch !== session.epoch ||
+    current.projectId !== session.projectId
+  )
+    return failureResult('cancelled', 'Чтение материалов отменено при смене сессии.');
+  return result;
+}
+
 async function runProjectOperation<TResult>(
   client: WorkerClient | null,
   operation: (readyClient: WorkerClient) => Promise<OperationResponse<TResult>>,
@@ -1069,11 +1219,13 @@ async function createWindow(): Promise<void> {
   const rendererUrl = process.env['ELECTRON_RENDERER_URL'] ?? 'impeller://app/index.html';
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('did-start-loading', () => {
+    invalidateMaterialOpenings();
     rendererReady = false;
     rendererUnavailable = false;
     closeWithoutRendererIfPending();
   });
   mainWindow.webContents.on('render-process-gone', () => {
+    invalidateMaterialOpenings();
     rendererUnavailable = true;
     closeWithoutRendererIfPending();
   });
@@ -1111,7 +1263,7 @@ async function createWindow(): Promise<void> {
   await mainWindow.loadURL(rendererUrl);
 }
 
-async function runSmokeIfRequested(): Promise<void> {
+async function runSmokeIfRequested(copies: MaterialCopies): Promise<void> {
   const smokeOutput = process.env['IMPELLER_SMOKE_OUTPUT'];
   if (smokeOutput === undefined) return;
   const startedAt = performance.now();
@@ -1124,6 +1276,8 @@ async function runSmokeIfRequested(): Promise<void> {
   let rbdCalculationPassed = false;
   let rptCalculationPassed = false;
   let pmnCalculationPassed = false;
+  let sourceMaterials: SourceMaterialSmokeEvidence | null = null;
+  let sourceMaterialsError: string | null = null;
   if (automatedProjectPath !== null && workerClient !== null) {
     const created = await workerClient.request('project.create', {
       path: automatedProjectPath,
@@ -1784,6 +1938,29 @@ async function runSmokeIfRequested(): Promise<void> {
       }
     }
   }
+  const materialRunPath = process.env['IMPELLER_AUTOMATED_MATERIAL_RUN_PATH'];
+  const materialArchiveSha256 = process.env['IMPELLER_AUTOMATED_MATERIAL_PACKAGE_SHA256'];
+  if (
+    automatedProjectPath !== null &&
+    workerClient !== null &&
+    runPackageImportPassed &&
+    materialRunPath !== undefined &&
+    materialArchiveSha256 !== undefined
+  ) {
+    try {
+      sourceMaterials = await runSourceMaterialSmoke(
+        workerClient,
+        copies,
+        automatedProjectPath,
+        resolve(materialRunPath),
+        materialArchiveSha256,
+        applicationInstanceId,
+      );
+    } catch (error: unknown) {
+      sourceMaterialsError =
+        error instanceof Error ? error.message : 'material_smoke_unknown_error';
+    }
+  }
   await mkdir(dirname(smokeOutput), { recursive: true });
   await writeFile(
     smokeOutput,
@@ -1799,7 +1976,8 @@ async function runSmokeIfRequested(): Promise<void> {
           runPackageImportPassed &&
           rbdCalculationPassed &&
           rptCalculationPassed &&
-          pmnCalculationPassed,
+          pmnCalculationPassed &&
+          sourceMaterials !== null,
         runtime,
         pingOk: ping?.ok === true,
         projectScenarioPassed,
@@ -1808,6 +1986,9 @@ async function runSmokeIfRequested(): Promise<void> {
         rbdCalculationPassed,
         rptCalculationPassed,
         pmnCalculationPassed,
+        sourceMaterialsPassed: sourceMaterials !== null,
+        sourceMaterials,
+        sourceMaterialsError,
         elapsedMs: Math.round(performance.now() - startedAt),
         pid: process.pid,
         workerPid: workerClient?.processId ?? null,
@@ -1841,13 +2022,13 @@ app
       logger,
       applyWorkerLifecycle,
     );
-    registerIpc(logPath, stateDirectory, logger);
+    const copies = registerIpc(logPath, stateDirectory, logger);
     registerRendererProtocol();
     await logger.write({ severity: 'info', component: 'main', event: 'application_start' });
     await workerClient.start();
     await refreshStatus();
     await createWindow();
-    await runSmokeIfRequested();
+    await runSmokeIfRequested(copies);
   })
   .catch((error: unknown) => {
     status.workerStatus = 'unavailable';
@@ -1860,6 +2041,10 @@ app.on('window-all-closed', () => app.quit());
 app.on('before-quit', (event) => {
   if (quitting || workerClient === null) return;
   event.preventDefault();
+  invalidateMaterialOpenings();
   quitting = true;
-  void workerClient.shutdown().finally(() => app.exit(0));
+  const client = workerClient;
+  void Promise.resolve(materialOpener?.drain())
+    .then(() => client.shutdown())
+    .finally(() => app.exit(0));
 });

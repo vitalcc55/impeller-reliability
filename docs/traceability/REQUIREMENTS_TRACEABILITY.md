@@ -62,6 +62,7 @@
 | Source specimen identity | shared identity binding; same marking never auto-merges distinct identities | M9a shared/distinct fixture acceptance + optimistic bind tests |
 | Source/enrichment separation | immutable source + finite whitelist + empty-only confirmed copy | schema triggers + provenance/no-overwrite tests + UI comparison |
 | Managed archive isolation | missing/modified status does not corrupt project; explicit verify revalidates | pytest damage/reopen + Electron source-status E2E |
+| Source-only primary materials | exact import/revision inspection/photo/protocol metadata; verified copies; historical receipt and SQLite unchanged | current-producer material acceptance pytest + material UI/lifecycle tests + source-material Electron E2E + both packaged smoke modes |
 | Import lifecycle | one in-memory job; cancel/drain/commit fence/lost-response reconciliation | pytest + Vitest + Electron crash/close tests |
 | No analysis claim in M03B | supported run-package schema only; plan schemas empty; no eligibility/readiness | contract/source review + negative DTO/UI assertions |
 | Explicit statistical interpretation | Python-owned versioned `ReliabilityObservation`; no import-time classification | semantic unit matrix + production Electron E2E |

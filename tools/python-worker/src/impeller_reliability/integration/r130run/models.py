@@ -6,10 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 UPSTREAM_REPOSITORY = "https://github.com/vitalcc55/R130SH"
 UPSTREAM_GOLDEN_COMMIT = "01d30f36c3ea7484ef2e519ed4d4bd6f2d56bb63"
-UPSTREAM_ACCEPTANCE_COMMIT = "09097561a6a58b1663a6912357a3c8d1daf7f28c"
+UPSTREAM_ACCEPTANCE_COMMIT = "b7792758b407ffc52d2fff051243056f63dbf18f"
 CONTRACT_SCHEMA = "r130sh.run-package.v1"
 VALIDATION_LEVEL = "producer_m9a_contract"
-VALIDATOR_VERSION = "m03b.2"
+VALIDATOR_VERSION = "m03b.3"
 
 StructuralVerdict = Literal["passed", "failed"]
 SemanticVerdict = Literal["passed", "partial", "failed", "not_available"]
@@ -57,10 +57,10 @@ class RunPackageFindingCounts(BaseModel):
 class RunPackageValidationReport(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    validatorVersion: Literal["m03b.2"] = "m03b.2"
+    validatorVersion: Literal["m03b.3"] = "m03b.3"
     validationLevel: Literal["producer_m9a_contract"] = "producer_m9a_contract"
     upstreamRepository: Literal["https://github.com/vitalcc55/R130SH"] = "https://github.com/vitalcc55/R130SH"
-    upstreamCommit: Literal["09097561a6a58b1663a6912357a3c8d1daf7f28c"] = "09097561a6a58b1663a6912357a3c8d1daf7f28c"
+    upstreamCommit: Literal["b7792758b407ffc52d2fff051243056f63dbf18f"] = "b7792758b407ffc52d2fff051243056f63dbf18f"
     contractSchema: Literal["r130sh.run-package.v1"] = "r130sh.run-package.v1"
     sourceFileName: str = Field(min_length=1, max_length=255)
     outerPackageSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -80,6 +80,17 @@ class RunPackageValidationReport(BaseModel):
     findings: list[RunPackageFinding] = Field(max_length=200)
     startedAtUtc: str
     finishedAtUtc: str
+
+
+class RunPackageMaterialValidationReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    validatorVersion: Literal["m03b.3"] = "m03b.3"
+    validationContractCommit: Literal["b7792758b407ffc52d2fff051243056f63dbf18f"] = "b7792758b407ffc52d2fff051243056f63dbf18f"
+    scope: Literal["source_material_metadata"] = "source_material_metadata"
+    semanticVerdict: Literal["passed", "failed"]
+    findingCounts: RunPackageFindingCounts
+    findings: list[RunPackageFinding] = Field(max_length=200)
 
 
 JobState = Literal["queued", "running", "cancelling", "completed", "failed", "cancelled"]

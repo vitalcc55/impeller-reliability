@@ -19,6 +19,20 @@ import {
   projectDraftSchema,
   projectOverviewSchema,
   projectUpdateMetadataPayloadSchema,
+  materialPagePayloadSchema,
+  materialInspectionPayloadSchema,
+  materialReadPayloadSchema,
+  materialOpenPayloadSchema,
+  materialCancelOpenPayloadSchema,
+  materialCopyReleaseRequestSchema,
+  materialCopyReleaseDecisionSchema,
+  materialCopyReleaseReplySchema,
+  inspectionMaterialPageSchema,
+  inspectionMaterialDetailSchema,
+  photoMaterialPageSchema,
+  protocolMaterialDetailSchema,
+  materialOpenedResultSchema,
+  materialCancelledResultSchema,
   importedRunBindingCommandSchema,
   importedRunDetailSchema,
   importedRunEnrichmentResolutionCommandSchema,
@@ -429,6 +443,63 @@ const api: ImpellerApi = {
         importedRunIdPayloadSchema,
         { localImportId },
         createDesktopResultSchema(importedRunDetailSchema),
+      ),
+    listInspectionPage: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.importedRunListInspectionPage,
+        materialPagePayloadSchema,
+        command,
+        createDesktopResultSchema(inspectionMaterialPageSchema),
+      ),
+    getInspection: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.importedRunGetInspection,
+        materialInspectionPayloadSchema,
+        command,
+        createDesktopResultSchema(inspectionMaterialDetailSchema),
+      ),
+    listPhotoPage: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.importedRunListPhotoPage,
+        materialPagePayloadSchema,
+        command,
+        createDesktopResultSchema(photoMaterialPageSchema),
+      ),
+    getProtocol: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.importedRunGetProtocol,
+        materialReadPayloadSchema,
+        command,
+        createDesktopResultSchema(protocolMaterialDetailSchema),
+      ),
+    openMaterial: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.importedRunOpenMaterial,
+        materialOpenPayloadSchema,
+        command,
+        createDesktopResultSchema(materialOpenedResultSchema),
+      ),
+    subscribeCopyReleaseRequested: (listener) => {
+      const handleRequest = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(materialCopyReleaseRequestSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.importedRunCopyReleaseRequested, handleRequest);
+      return () =>
+        ipcRenderer.removeListener(IPC_CHANNELS.importedRunCopyReleaseRequested, handleRequest);
+    },
+    respondCopyRelease: async (command) =>
+      invokeValidated(
+        IPC_CHANNELS.importedRunCopyReleaseDecision,
+        materialCopyReleaseDecisionSchema,
+        command,
+        createDesktopResultSchema(materialCopyReleaseReplySchema),
+      ),
+    cancelMaterialOpen: async (operationId) =>
+      invokeValidated(
+        IPC_CHANNELS.importedRunCancelMaterialOpen,
+        materialCancelOpenPayloadSchema,
+        { operationId },
+        createDesktopResultSchema(materialCancelledResultSchema),
       ),
     verifySource: async (localImportId) =>
       invokeValidated(

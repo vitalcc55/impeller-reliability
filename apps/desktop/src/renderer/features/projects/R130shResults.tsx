@@ -1,5 +1,6 @@
 import { Button, Select, Text, Textarea, Title } from '@mantine/core';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { ImportedRunMaterials, type ImportedRunMaterialsHandle } from './ImportedRunMaterials';
 
 import type {
   DesktopError,
@@ -73,6 +74,28 @@ export const R130shResults = forwardRef<R130shResultsHandle, R130shResultsProps>
     const [error, setError] = useState<DesktopError | null>(null);
     const [loading, setLoading] = useState(true);
     const [mutationPending, setMutationPending] = useState(false);
+    const [detailLoading, setDetailLoading] = useState(false);
+    const [materialPending, setMaterialPending] = useState(false);
+    const [materialOpening, setMaterialOpening] = useState(false);
+    const [materialRefreshRevision, setMaterialRefreshRevision] = useState(0);
+    const materialsRef = useRef<ImportedRunMaterialsHandle>(null);
+    const materialWorkRef = useRef(new Map<Promise<void>, boolean>());
+    const detailWorkRef = useRef<{
+      readonly localImportId: string;
+      readonly generation: number;
+      readonly work: Promise<boolean>;
+    } | null>(null);
+    const trackMaterialWork = useCallback((work: Promise<void>, opens: boolean): void => {
+      materialWorkRef.current.set(work, opens);
+      setMaterialPending(true);
+      if (opens) setMaterialOpening(true);
+      const completed = () => {
+        materialWorkRef.current.delete(work);
+        setMaterialPending(materialWorkRef.current.size !== 0);
+        setMaterialOpening([...materialWorkRef.current.values()].some(Boolean));
+      };
+      void work.then(completed, completed);
+    }, []);
     const pendingRef = useRef<Promise<void> | null>(null);
     const detailRequestRef = useRef(0);
     const unresolvedMutationRef = useRef<string | null>(null);
@@ -88,7 +111,12 @@ export const R130shResults = forwardRef<R130shResultsHandle, R130shResultsProps>
       resolutionReason.trim() !== '';
     useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
     const importPending = job !== null && !terminalStates.has(job.state);
-    const pending = importPending || mutationPending || startAttemptId !== null;
+    const pending =
+      importPending ||
+      mutationPending ||
+      startAttemptId !== null ||
+      materialPending ||
+      detailLoading;
     useEffect(() => onPendingChange(pending), [onPendingChange, pending]);
 
     const handleError = useCallback((nextError: DesktopError): void => {
@@ -98,6 +126,7 @@ export const R130shResults = forwardRef<R130shResultsHandle, R130shResultsProps>
     }, []);
 
     const selectRun = useCallback((localImportId: string): void => {
+      materialsRef.current?.invalidate();
       detailRequestRef.current += 1;
       setDetail(null);
       setBoundSpecimen(null);
@@ -144,61 +173,85 @@ export const R130shResults = forwardRef<R130shResultsHandle, R130shResultsProps>
     );
 
     const loadDetail = useCallback(
-      async (localImportId: string): Promise<boolean> => {
+      (localImportId: string): Promise<boolean> => {
+        const previous = detailWorkRef.current;
+        if (
+          previous?.localImportId === localImportId &&
+          previous.generation === detailRequestRef.current
+        )
+          return previous.work;
         const requestGeneration = detailRequestRef.current + 1;
         detailRequestRef.current = requestGeneration;
-        const result = await desktopApi.importedRun.get(localImportId);
-        if (detailRequestRef.current !== requestGeneration) return false;
-        if (!result.ok) {
-          handleError(result.error);
-          return false;
-        }
-        const nextDetail = result.result;
-        setDetail(nextDetail);
-        setBindingSpecimenId(nextDetail.summary.localSpecimenId);
-        setBindingReason('');
-        setResolutionTargetId(null);
-        setResolutionReason('');
-        const [customerResult, specimenResult] = await Promise.all([
-          desktopApi.caseCustomer.get(),
-          nextDetail.summary.localSpecimenId === null
-            ? Promise.resolve(null)
-            : desktopApi.specimen.get(nextDetail.summary.localSpecimenId),
-        ]);
-        if (detailRequestRef.current !== requestGeneration) return false;
-        if (!customerResult.ok) {
-          handleError(customerResult.error);
-          return false;
-        }
-        setCustomer(customerResult.result);
-        if (specimenResult === null) {
-          setBoundSpecimen(null);
-          setBoundWheel(null);
+        setDetailLoading(true);
+        const operation = (async (): Promise<boolean> => {
+          // Drain the previous selection before starting customer/specimen reads:
+          // those already occupy the two-request worker queue.
+          await Promise.allSettled(previous === null ? [] : [previous.work]);
+          await Promise.allSettled([...materialWorkRef.current.keys()]);
+          if (detailRequestRef.current !== requestGeneration) return false;
+          const result = await desktopApi.importedRun.get(localImportId);
+          if (detailRequestRef.current !== requestGeneration) return false;
+          if (!result.ok) {
+            handleError(result.error);
+            return false;
+          }
+          const nextDetail = result.result;
+          setDetail(nextDetail);
+          setBindingSpecimenId(nextDetail.summary.localSpecimenId);
+          setBindingReason('');
+          setResolutionTargetId(null);
+          setResolutionReason('');
+          const [customerResult, specimenResult] = await Promise.all([
+            desktopApi.caseCustomer.get(),
+            nextDetail.summary.localSpecimenId === null
+              ? Promise.resolve(null)
+              : desktopApi.specimen.get(nextDetail.summary.localSpecimenId),
+          ]);
+          if (detailRequestRef.current !== requestGeneration) return false;
+          if (!customerResult.ok) {
+            handleError(customerResult.error);
+            return false;
+          }
+          setCustomer(customerResult.result);
+          if (specimenResult === null) {
+            setBoundSpecimen(null);
+            setBoundWheel(null);
+            if (unresolvedMutationRef.current === localImportId) {
+              unresolvedMutationRef.current = null;
+              setError(null);
+              setMessage('Сохранённое изменение восстановлено после перезапуска worker.');
+            }
+            return true;
+          }
+          if (!specimenResult.ok) {
+            handleError(specimenResult.error);
+            return false;
+          }
+          setBoundSpecimen(specimenResult.result);
+          const wheelResult = await desktopApi.wheelModel.get(specimenResult.result.wheelModelId);
+          if (detailRequestRef.current !== requestGeneration) return false;
+          if (!wheelResult.ok) {
+            handleError(wheelResult.error);
+            return false;
+          }
+          setBoundWheel(wheelResult.result);
           if (unresolvedMutationRef.current === localImportId) {
             unresolvedMutationRef.current = null;
             setError(null);
             setMessage('Сохранённое изменение восстановлено после перезапуска worker.');
           }
           return true;
-        }
-        if (!specimenResult.ok) {
-          handleError(specimenResult.error);
-          return false;
-        }
-        setBoundSpecimen(specimenResult.result);
-        const wheelResult = await desktopApi.wheelModel.get(specimenResult.result.wheelModelId);
-        if (detailRequestRef.current !== requestGeneration) return false;
-        if (!wheelResult.ok) {
-          handleError(wheelResult.error);
-          return false;
-        }
-        setBoundWheel(wheelResult.result);
-        if (unresolvedMutationRef.current === localImportId) {
-          unresolvedMutationRef.current = null;
-          setError(null);
-          setMessage('Сохранённое изменение восстановлено после перезапуска worker.');
-        }
-        return true;
+        })()
+          .catch(() => {
+            if (detailRequestRef.current === requestGeneration) handleError(unavailableError());
+            return false;
+          })
+          .finally(() => {
+            if (detailWorkRef.current?.work === operation) detailWorkRef.current = null;
+            if (detailRequestRef.current === requestGeneration) setDetailLoading(false);
+          });
+        detailWorkRef.current = { localImportId, generation: requestGeneration, work: operation };
+        return operation;
       },
       [desktopApi, handleError],
     );
@@ -472,6 +525,9 @@ export const R130shResults = forwardRef<R130shResultsHandle, R130shResultsProps>
       () => ({
         discardDraft,
         waitForPendingSave: async () => {
+          materialsRef.current?.invalidate();
+          await Promise.allSettled([...materialWorkRef.current.keys()]);
+          if (detailWorkRef.current !== null) await detailWorkRef.current.work;
           if (pendingRef.current !== null) await pendingRef.current;
           const activeJobId =
             job !== null && !terminalStates.has(job.state) ? job.jobId : startAttemptId;
@@ -512,6 +568,8 @@ export const R130shResults = forwardRef<R130shResultsHandle, R130shResultsProps>
           }
         },
         verifyAfterReattach: async () => {
+          materialsRef.current?.invalidate();
+          setMaterialRefreshRevision((revision) => revision + 1);
           const activeJobId =
             job !== null && !terminalStates.has(job.state) ? job.jobId : startAttemptId;
           if (activeJobId !== null) {
@@ -622,7 +680,7 @@ export const R130shResults = forwardRef<R130shResultsHandle, R130shResultsProps>
                       type="button"
                       className={item.localImportId === selectedId ? 'is-selected' : undefined}
                       aria-current={item.localImportId === selectedId ? 'true' : undefined}
-                      disabled={disabled || mutationPending}
+                      disabled={disabled || mutationPending || materialOpening}
                       onClick={() =>
                         requestTransition(dirty, () => selectRun(item.localImportId), discardDraft)
                       }
@@ -661,6 +719,30 @@ export const R130shResults = forwardRef<R130shResultsHandle, R130shResultsProps>
             ) : (
               <RunDetail
                 detail={detail}
+                materials={
+                  <ImportedRunMaterials
+                    key={`${project.projectId}:${detail.summary.localImportId}:${detail.summary.exportRevision}:${detail.summary.outerPackageSha256}`}
+                    ref={materialsRef}
+                    api={desktopApi}
+                    origin={{
+                      projectId: project.projectId,
+                      localImportId: detail.summary.localImportId,
+                      packageId: detail.summary.packageId,
+                      runId: detail.summary.runId,
+                      exportRevision: detail.summary.exportRevision,
+                      outerPackageSha256: detail.summary.outerPackageSha256,
+                    }}
+                    disabled={
+                      disabled ||
+                      mutationPending ||
+                      importPending ||
+                      startAttemptId !== null ||
+                      detailLoading
+                    }
+                    refreshRevision={materialRefreshRevision}
+                    onWork={trackMaterialWork}
+                  />
+                }
                 specimens={specimens}
                 bindingSpecimenId={bindingSpecimenId}
                 bindingReason={bindingReason}
@@ -690,7 +772,14 @@ export const R130shResults = forwardRef<R130shResultsHandle, R130shResultsProps>
                 boundSpecimenArchived={
                   boundSpecimen !== null && boundSpecimen.archivedAtUtc !== null
                 }
-                disabled={disabled || mutationPending || importPending || startAttemptId !== null}
+                disabled={
+                  disabled ||
+                  mutationPending ||
+                  importPending ||
+                  startAttemptId !== null ||
+                  materialPending ||
+                  detailLoading
+                }
               />
             )}
           </section>
@@ -737,6 +826,7 @@ function reliabilityMethodLabel(method: 'rbd' | 'rpt' | 'pmn'): string {
 }
 
 interface RunDetailProps {
+  readonly materials: React.ReactNode;
   readonly detail: ImportedRunDetail;
   readonly specimens: readonly SpecimenSummary[];
   readonly bindingSpecimenId: string | null;
@@ -825,6 +915,7 @@ function RunDetail(props: RunDetailProps): React.JSX.Element {
           ]}
         />
       </DetailSection>
+      {props.materials}
       <DetailSection title="Исходный и фактический план">
         <div className="source-analyst-columns">
           <PlanBlock label="Исходный план" plan={detail.projection.originalPlan} />
