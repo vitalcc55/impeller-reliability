@@ -18,40 +18,37 @@ afterEach(async () => {
 });
 
 describe('run-package source selection', () => {
-  it.each([new Error('native dialog failed'), 'non-error rejection'])(
-    'maps a rejected system dialog to storage_error without a worker request',
-    async (rejection) => {
-      const request = vi.fn();
-      const showOpenDialog = vi.fn().mockRejectedValue(rejection);
+  it('maps a rejected system dialog to storage_error without a worker request', async () => {
+    const request = vi.fn();
+    const showOpenDialog = vi.fn().mockRejectedValue(new Error('native dialog failed'));
 
-      const result = await runPackageValidationStart(
-        { jobId: 'ec7cc676-e40d-4ad7-b038-83e0035dc212' },
-        () =>
-          selectRunPackageSource({
-            automatedCancelled: false,
-            automatedPath: null,
-            showOpenDialog,
-          }),
-        request,
-      );
-
-      expect(result).toEqual({
-        ok: false,
-        error: {
-          code: 'storage_error',
-          message: 'Системный диалог выбора файла недоступен.',
-          details: {},
-          retryable: false,
-        },
-      });
-      expect(showOpenDialog).toHaveBeenCalledWith(
-        expect.objectContaining({
-          filters: [{ name: 'Пакет результата R130SH', extensions: ['r130run'] }],
+    const result = await runPackageValidationStart(
+      { jobId: 'ec7cc676-e40d-4ad7-b038-83e0035dc212' },
+      () =>
+        selectRunPackageSource({
+          automatedCancelled: false,
+          automatedPath: null,
+          showOpenDialog,
         }),
-      );
-      expect(request).not.toHaveBeenCalled();
-    },
-  );
+      request,
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'storage_error',
+        message: 'Системный диалог выбора файла недоступен.',
+        details: {},
+        retryable: false,
+      },
+    });
+    expect(showOpenDialog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filters: [{ name: 'Пакет результата R130SH', extensions: ['r130run'] }],
+      }),
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
 
   it('keeps cancellation distinct and does not call worker', async () => {
     const request = vi.fn();

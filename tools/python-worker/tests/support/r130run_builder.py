@@ -26,9 +26,9 @@ def build_synthetic_r130run(
     payload_removals: Iterable[str] = (),
     compression: int = ZIP_STORED,
 ) -> Path:
-    payloads = _payloads(base_package)
     with ZipFile(base_package, mode="r") as archive:
         base_manifest = json.loads(archive.read("manifest.json"))
+        payloads = {str(item["path"]): archive.read(str(item["path"])) for item in base_manifest["files"]}
     if payload_overrides is not None:
         payloads.update(payload_overrides)
     for path in payload_removals:
@@ -101,12 +101,6 @@ def write_r130run(destination: Path, entries: Iterable[tuple[str, bytes]], *, co
             info.create_system = 3
             info.external_attr = (stat.S_IFREG | 0o600) << 16
             archive.writestr(info, content)
-
-
-def _payloads(base_package: Path) -> dict[str, bytes]:
-    with ZipFile(base_package, mode="r") as archive:
-        manifest = json.loads(archive.read("manifest.json"))
-        return {str(item["path"]): archive.read(str(item["path"])) for item in manifest["files"]}
 
 
 def _source_snapshot_hash(run_id: JsonValue, files: list[JsonValue]) -> str:

@@ -102,8 +102,11 @@ describe('worker operation deadlines', () => {
       await expect.poll(() => client.processId).toBeNull();
       expect(events).toContain('unavailable');
     } finally {
-      await client.shutdown();
-      rmSync(stateDirectory, { recursive: true, force: true });
+      try {
+        await client.shutdown();
+      } finally {
+        rmSync(stateDirectory, { recursive: true, force: true });
+      }
     }
   });
 
@@ -146,12 +149,15 @@ describe('worker operation deadlines', () => {
       expect(client.processId).toBeNull();
     } finally {
       vi.useRealTimers();
-      await client.shutdown();
-      rmSync(stateDirectory, { recursive: true, force: true });
+      try {
+        await client.shutdown();
+      } finally {
+        rmSync(stateDirectory, { recursive: true, force: true });
+      }
     }
   });
 
-  it('starts each transport deadline only when the serial worker can dispatch it', async () => {
+  it('bounds serial work and starts each transport deadline only on dispatch', async () => {
     const stateDirectory = mkdtempSync(join(tmpdir(), 'impeller-worker-queue-'));
     const client = new WorkerClient(
       {
@@ -178,6 +184,7 @@ describe('worker operation deadlines', () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const first = client.request('project.createBackup', {});
       const second = client.request('project.createBackup', {});
+      await expect(client.request('project.createBackup', {})).rejects.toThrow('worker_queue_full');
       const completed = expect(Promise.all([first, second])).resolves.toHaveLength(2);
       await Promise.resolve();
       expect(vi.getTimerCount()).toBe(1);
@@ -193,8 +200,11 @@ describe('worker operation deadlines', () => {
       expect(client.processId).not.toBeNull();
     } finally {
       vi.useRealTimers();
-      await client.shutdown();
-      rmSync(stateDirectory, { recursive: true, force: true });
+      try {
+        await client.shutdown();
+      } finally {
+        rmSync(stateDirectory, { recursive: true, force: true });
+      }
     }
   });
 
@@ -234,8 +244,11 @@ describe('worker operation deadlines', () => {
       expect(client.processId).not.toBe(originalProcessId);
     } finally {
       vi.useRealTimers();
-      await client.shutdown();
-      rmSync(stateDirectory, { recursive: true, force: true });
+      try {
+        await client.shutdown();
+      } finally {
+        rmSync(stateDirectory, { recursive: true, force: true });
+      }
     }
   });
 
@@ -274,45 +287,11 @@ describe('worker operation deadlines', () => {
       expect(client.processId).toBeNull();
     } finally {
       vi.useRealTimers();
-      await client.shutdown();
-      rmSync(stateDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it('bounds accepted work to one active and one queued request', async () => {
-    const stateDirectory = mkdtempSync(join(tmpdir(), 'impeller-worker-backpressure-'));
-    const client = new WorkerClient(
-      {
-        command: process.execPath,
-        arguments: ['-e', serialWorkerScript(70)],
-        cwd: stateDirectory,
-        executablePath: null,
-      },
-      stateDirectory,
-      new JsonlLogger(join(stateDirectory, 'backpressure-test.jsonl')),
-      () => undefined,
-      {
-        ...WORKER_OPERATION_POLICIES,
-        'project.createBackup': {
-          domainDeadlineMs: 250,
-          transportTimeoutMs: 300,
-          terminateWorkerOnTimeout: true,
-        },
-      },
-    );
-    try {
-      await client.start();
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-      const first = client.request('project.createBackup', {});
-      const second = client.request('project.createBackup', {});
-
-      await expect(client.request('project.createBackup', {})).rejects.toThrow('worker_queue_full');
-      vi.advanceTimersByTime(299);
-      await expect(Promise.all([first, second])).resolves.toHaveLength(2);
-    } finally {
-      vi.useRealTimers();
-      await client.shutdown();
-      rmSync(stateDirectory, { recursive: true, force: true });
+      try {
+        await client.shutdown();
+      } finally {
+        rmSync(stateDirectory, { recursive: true, force: true });
+      }
     }
   });
 
@@ -356,8 +335,11 @@ describe('worker operation deadlines', () => {
       ).rejects.toThrow('worker_request_too_large:reliabilityDataset.createVersion');
       expect(client.processId).not.toBeNull();
     } finally {
-      await client.shutdown();
-      rmSync(stateDirectory, { recursive: true, force: true });
+      try {
+        await client.shutdown();
+      } finally {
+        rmSync(stateDirectory, { recursive: true, force: true });
+      }
     }
   });
 });

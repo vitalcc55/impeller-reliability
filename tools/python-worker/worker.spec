@@ -19,7 +19,17 @@ analysis = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # Optional Pydantic/static-analysis and scientific testing plugins are build
+    # dependencies, not part of the application's worker runtime.
+    excludes=[
+        "pydantic.mypy",
+        "pydantic.v1.mypy",
+        "pydantic.v1._hypothesis_plugin",
+        "mypy",
+        "hypothesis",
+        "pytest",
+        "_pytest",
+    ],
     noarchive=False,
     optimize=0,
 )

@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 import { MantineProvider } from '@mantine/core';
 import { act, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';

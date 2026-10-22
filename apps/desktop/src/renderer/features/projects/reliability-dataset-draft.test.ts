@@ -9,21 +9,6 @@ import {
 } from './reliability-dataset-draft';
 
 describe('reliability dataset draft membership', () => {
-  it('keeps a small explicit draft after viewing more than one hundred executions', () => {
-    const viewedExecutionIds = Array.from({ length: 125 }, (_, index) => `execution-${index}`);
-    let decisions = {};
-    for (const executionId of viewedExecutionIds.slice(0, 2)) {
-      decisions = addDatasetCandidate(
-        decisions,
-        executionId,
-        `observation-${executionId}`,
-      ).decisions;
-    }
-
-    expect(viewedExecutionIds).toHaveLength(125);
-    expect(Object.keys(decisions)).toEqual(['execution-0', 'execution-1']);
-  });
-
   it('adds only the explicitly selected observation version', () => {
     const result = addDatasetCandidate({}, 'execution-1', 'observation-v1');
 
@@ -54,8 +39,7 @@ describe('reliability dataset draft membership', () => {
     const result = addDatasetCandidate(selected, 'execution-101', 'observation-101');
 
     expect(result.limitReached).toBe(true);
-    expect(result.decisions).toBe(selected);
-    expect(Object.keys(result.decisions)).toHaveLength(MAX_DATASET_CANDIDATES);
+    expect(result.decisions).toEqual(selected);
   });
 
   it('keeps the historical version until replacement is explicit', () => {

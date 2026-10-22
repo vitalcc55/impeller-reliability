@@ -13,11 +13,15 @@ try {
     & pnpm test:e2e
     if ($LASTEXITCODE -ne 0) { throw "Electron E2E failed." }
     if ($IncludePackaging) {
-        & pwsh.exe -NoProfile -File scripts/build/package.ps1 -Target WinUnpacked -SkipWorkerCheck
+        # All prerequisites are fresh in this invocation; both distributions use
+        # the same verified worker and application instead of rebuilding them.
+        & pwsh.exe -NoProfile -File tools/python-worker/scripts/build.ps1 -SkipCheck
+        if ($LASTEXITCODE -ne 0) { throw "Worker build failed." }
+        & pnpm --filter @impeller-reliability/desktop package:win-unpacked
         if ($LASTEXITCODE -ne 0) { throw "win-unpacked packaging failed." }
         & pnpm smoke:win-unpacked
         if ($LASTEXITCODE -ne 0) { throw "win-unpacked smoke failed." }
-        & pwsh.exe -NoProfile -File scripts/build/package.ps1 -Target Portable -SkipWorkerCheck
+        & pnpm --filter @impeller-reliability/desktop package:portable --prepackaged dist/win-unpacked
         if ($LASTEXITCODE -ne 0) { throw "Portable packaging failed." }
         & pnpm smoke:portable
         if ($LASTEXITCODE -ne 0) { throw "Portable smoke failed." }

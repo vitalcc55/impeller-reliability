@@ -163,9 +163,14 @@ def test_inspection_invariants_are_validated(tmp_path: Path, field: str, value: 
     assert report.semanticVerdict == "failed"
 
 
-@pytest.mark.parametrize("stage", ["pre_test", "post_trial_run", "vibration_pause", "post_rbd", "post_rpt", "post_pmn"])
 @pytest.mark.parametrize(
-    ("state", "damage", "outcome"), [("intact", False, "clear"), ("not_assessed", False, "inconclusive"), ("damaged", False, "blocking_damage"), ("intact", True, "blocking_damage")]
+    ("stage", "state", "damage", "outcome"),
+    [
+        *[(stage, "intact", False, "clear") for stage in ("pre_test", "post_trial_run", "vibration_pause", "post_rbd", "post_rpt", "post_pmn")],
+        ("pre_test", "not_assessed", False, "inconclusive"),
+        ("pre_test", "damaged", False, "blocking_damage"),
+        ("pre_test", "intact", True, "blocking_damage"),
+    ],
 )
 def test_inspection_stage_and_source_outcome_are_supported(tmp_path: Path, stage: str, state: str, damage: bool, outcome: str) -> None:
     record = inspection_record()

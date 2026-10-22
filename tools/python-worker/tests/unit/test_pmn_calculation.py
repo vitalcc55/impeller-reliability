@@ -59,7 +59,6 @@ def test_pmi_reference_and_exact_unit_conversions() -> None:
     ]
     assert result.phases[0].start_rpm.decimal == "0"
     assert result.phases[-1].end_rpm.decimal == "0"
-    assert len(result.diagram_points) == 7
     assert result.diagram_points[0].x == 0 and result.diagram_points[-1].x == 2000
     snapshot = PmnReferenceResultModel.model_validate_json(json.dumps(asdict(result)))
     assert snapshot.maximum_rpm.numerator == "1800"

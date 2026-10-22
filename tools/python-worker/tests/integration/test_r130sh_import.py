@@ -166,6 +166,10 @@ def test_imports_all_m9a_packages_and_reopens_persisted_sources(tmp_path: Path) 
     assert len({item.summary.source_specimen_id for item in distinct}) == 2
     assert len({item.projection["sample_label"] for item in distinct}) == 1
     assert all(item.summary.local_specimen_id is None for item in (*shared, *distinct))
+    assert len({item.summary.source_specimen_id for item in (*shared, *distinct)}) == 3
+    expected_source_ids = {item.summary.source_specimen_id for details in details_by_scenario.values() for item in details}
+    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
+        assert {row[0] for row in connection.execute("SELECT source_specimen_id FROM r130sh_specimen_bindings")} == expected_source_ids
 
     items = service.list_imported_runs()
     assert len(items) == 21
@@ -323,20 +327,6 @@ def test_new_export_revision_coexists_with_previous_revision(tmp_path: Path) -> 
     assert second.export_revision == 2
     assert second.local_import_id != first.local_import_id
     assert len(service.list_imported_runs()) == 2
-    service.close()
-
-
-def test_shared_and_distinct_source_specimen_identities_do_not_use_marking(tmp_path: Path) -> None:
-    service, project_path = create_import_project(tmp_path)
-    shared = [import_run_package(service, project_path, frozen_package(f"shared_specimen_pmn_rpt_rbd-{mode}.r130run")) for mode in ("pmn", "rpt", "rbd")]
-    distinct = [import_run_package(service, project_path, frozen_package(f"same_marking_distinct_specimens-{index}.r130run")) for index in (1, 2)]
-
-    assert len({item.source_specimen_id for item in shared}) == 1
-    assert len({item.binding_revision for item in shared}) == 1
-    assert len({item.source_specimen_id for item in distinct}) == 2
-    assert all(item.local_specimen_id is None for item in (*shared, *distinct))
-    with closing(sqlite3.connect(project_path / "project.sqlite")) as connection:
-        assert connection.execute("SELECT count(*) FROM r130sh_specimen_bindings").fetchone()[0] == 3
     service.close()
 
 
@@ -3468,7 +3458,7 @@ def test_reliability_failure_observation_does_not_turn_technical_stop_into_speci
     service.close()
 
 
-def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen(
+def test_observation_and_dataset_versions_are_explicit_immutable_and_reopen(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4182,7 +4172,7 @@ def test_m04b_observation_and_dataset_versions_are_explicit_immutable_and_reopen
     assert mismatched_document.value.code == "corrupt_project"
 
 
-def test_m04b_execution_keyset_pages_are_bounded_stable_and_do_not_repeat(
+def test_execution_keyset_pages_are_bounded_stable_and_do_not_repeat(
     tmp_path: Path,
 ) -> None:
     service, project_path = create_import_project(tmp_path)

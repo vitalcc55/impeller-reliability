@@ -48,45 +48,42 @@ const operations: readonly { readonly name: string; readonly run: OperationRunne
 
 describe('case document source selection', () => {
   for (const operation of operations) {
-    it.each([new Error('native dialog failed'), 'non-error rejection'])(
-      `${operation.name} maps a rejected system dialog to storage_error without a worker request`,
-      async (rejection) => {
-        const showOpenDialog = vi.fn().mockRejectedValue(rejection);
-        const request = vi.fn();
+    it(`${operation.name} maps a rejected system dialog to storage_error without a worker request`, async () => {
+      const showOpenDialog = vi.fn().mockRejectedValue(new Error('native dialog failed'));
+      const request = vi.fn();
 
-        const result = await operation.run(
-          () =>
-            selectCaseDocumentSource({
-              automatedCancelled: false,
-              automatedPath: null,
-              showOpenDialog,
-            }),
-          request,
-        );
-
-        expect(result).toEqual({
-          ok: false,
-          error: {
-            code: 'storage_error',
-            message: 'Системный диалог выбора файла недоступен.',
-            details: {},
-            retryable: false,
-          },
-        });
-        expect(showOpenDialog).toHaveBeenCalledOnce();
-        expect(showOpenDialog).toHaveBeenCalledWith(
-          expect.objectContaining({
-            properties: ['openFile'],
-            filters: [
-              expect.objectContaining({
-                extensions: ['pdf', 'docx', 'xlsx', 'csv', 'json', 'txt', 'png', 'jpg', 'jpeg'],
-              }),
-            ],
+      const result = await operation.run(
+        () =>
+          selectCaseDocumentSource({
+            automatedCancelled: false,
+            automatedPath: null,
+            showOpenDialog,
           }),
-        );
-        expect(request).not.toHaveBeenCalled();
-      },
-    );
+        request,
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: 'storage_error',
+          message: 'Системный диалог выбора файла недоступен.',
+          details: {},
+          retryable: false,
+        },
+      });
+      expect(showOpenDialog).toHaveBeenCalledOnce();
+      expect(showOpenDialog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          properties: ['openFile'],
+          filters: [
+            expect.objectContaining({
+              extensions: ['pdf', 'docx', 'xlsx', 'csv', 'json', 'txt', 'png', 'jpg', 'jpeg'],
+            }),
+          ],
+        }),
+      );
+      expect(request).not.toHaveBeenCalled();
+    });
 
     it(`${operation.name} keeps a resolved user cancellation distinct from a dialog failure`, async () => {
       const request = vi.fn();

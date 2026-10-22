@@ -42,7 +42,8 @@ def test_start_returns_immediately_and_job_completes_in_background(tmp_path: Pat
 
 def test_same_job_retry_is_idempotent_and_conflicting_input_is_rejected(tmp_path: Path) -> None:
     first = build_synthetic_r130run(tmp_path / "first.r130run")
-    second = build_synthetic_r130run(tmp_path / "second.r130run")
+    second = tmp_path / "second.r130run"
+    second.write_bytes(b"conflicting source")
     gate = _GateValidator()
     manager = RunPackageValidationJobManager(lambda: gate)
     job_id = str(uuid4())
@@ -68,7 +69,7 @@ def test_same_job_retry_is_idempotent_and_conflicting_input_is_rejected(tmp_path
 
 @pytest.mark.parametrize("budget_ms", [0, 999, 1_800_001])
 def test_validation_budget_is_bounded(tmp_path: Path, budget_ms: int) -> None:
-    package = build_synthetic_r130run(tmp_path / "valid.r130run")
+    package = tmp_path / "unread.r130run"
     manager = RunPackageValidationJobManager()
 
     with pytest.raises(ProjectOperationError) as failure:
@@ -78,7 +79,8 @@ def test_validation_budget_is_bounded(tmp_path: Path, budget_ms: int) -> None:
 
 
 def test_cancel_is_cooperative_terminal_and_discard_releases_slot(tmp_path: Path) -> None:
-    package = build_synthetic_r130run(tmp_path / "valid.r130run")
+    package = tmp_path / "source.r130run"
+    package.write_bytes(b"fingerprint only")
     gate = _GateValidator()
     manager = RunPackageValidationJobManager(lambda: gate)
     job_id = str(uuid4())
@@ -159,8 +161,10 @@ def test_shutdown_requests_cancel_and_joins_within_bound(tmp_path: Path) -> None
 
 
 def test_source_replaced_after_start_is_reported_as_changed(tmp_path: Path) -> None:
-    package = build_synthetic_r130run(tmp_path / "source.r130run")
-    replacement = build_synthetic_r130run(tmp_path / "replacement.r130run")
+    package = tmp_path / "source.r130run"
+    replacement = tmp_path / "replacement.r130run"
+    package.write_bytes(b"same source bytes")
+    replacement.write_bytes(b"same source bytes")
     validator = _ReplaceBeforeValidationValidator(package, replacement)
     manager = RunPackageValidationJobManager(lambda: validator)
     job_id = str(uuid4())
@@ -180,7 +184,8 @@ def test_start_rejects_unavailable_source_and_stopping_manager(tmp_path: Path) -
     assert missing.value.code == "storage_error"
 
     assert manager.shutdown(join_seconds=0) is True
-    package = build_synthetic_r130run(tmp_path / "valid.r130run")
+    package = tmp_path / "source.r130run"
+    package.write_bytes(b"fingerprint only")
     with pytest.raises(ProjectOperationError) as stopping:
         manager.start(str(uuid4()), package, 30_000)
     assert stopping.value.code == "worker_unavailable"
@@ -207,7 +212,8 @@ def test_background_failures_are_sanitized_and_typed(
     else:
         error = ValueError("unexpected")
     validator = _FailingValidator(error)
-    package = build_synthetic_r130run(tmp_path / "valid.r130run")
+    package = tmp_path / "source.r130run"
+    package.write_bytes(b"fingerprint only")
     manager = RunPackageValidationJobManager(lambda: validator)
     job_id = str(uuid4())
 

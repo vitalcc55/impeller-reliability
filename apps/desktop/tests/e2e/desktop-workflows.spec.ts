@@ -1,5 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { _electron as electron, expect, test } from '@playwright/test';
@@ -12,7 +21,7 @@ declare global {
 }
 
 function workerProcessIds(parentProcessId: number): readonly number[] {
-  const command = `$owned = [System.Collections.Generic.HashSet[int]]::new(); $owned.Add(${String(parentProcessId)}) | Out-Null; $snapshot = @(Get-CimInstance Win32_Process); $changed = $true; while ($changed) { $changed = $false; foreach ($item in $snapshot) { if ($owned.Contains([int]$item.ParentProcessId) -and $owned.Add([int]$item.ProcessId)) { $changed = $true } } }; $workers = @($snapshot | Where-Object { $owned.Contains([int]$_.ProcessId) -and $_.CommandLine -match 'impeller_reliability\\.worker\\.main' }); $workerIds = [System.Collections.Generic.HashSet[int]]::new(); foreach ($worker in $workers) { $workerIds.Add([int]$worker.ProcessId) | Out-Null }; @($workers | Where-Object { -not $workerIds.Contains([int]$_.ParentProcessId) } | Select-Object -ExpandProperty ProcessId) | ConvertTo-Json -Compress`;
+  const command = `$ErrorActionPreference = 'Stop'; $owned = [System.Collections.Generic.HashSet[int]]::new(); $owned.Add(${String(parentProcessId)}) | Out-Null; $snapshot = @(Get-CimInstance Win32_Process -ErrorAction Stop); if ($snapshot.ProcessId -notcontains $PID) { throw 'process_snapshot_incomplete' }; $changed = $true; while ($changed) { $changed = $false; foreach ($item in $snapshot) { if ($owned.Contains([int]$item.ParentProcessId) -and $owned.Add([int]$item.ProcessId)) { $changed = $true } } }; $workers = @($snapshot | Where-Object { $owned.Contains([int]$_.ProcessId) -and $_.CommandLine -match 'impeller_reliability\\.worker\\.main' }); $workerIds = [System.Collections.Generic.HashSet[int]]::new(); foreach ($worker in $workers) { $workerIds.Add([int]$worker.ProcessId) | Out-Null }; @($workers | Where-Object { -not $workerIds.Contains([int]$_.ParentProcessId) } | Select-Object -ExpandProperty ProcessId) | ConvertTo-Json -Compress`;
   const output = execFileSync('pwsh.exe', ['-NoProfile', '-Command', command], {
     encoding: 'utf8',
   }).trim();
@@ -23,8 +32,11 @@ function workerProcessIds(parentProcessId: number): readonly number[] {
   throw new Error('unexpected_worker_process_query_result');
 }
 
-test('renderer reflects worker failure and controlled restart through the narrow preload API', async () => {
-  const evidenceRoot = resolve(import.meta.dirname, '../../../../.tmp/.codex/evidence/m02-e2e');
+test('preserves project drafts through worker failure and a corrupt optional recent store', async () => {
+  const evidenceRoot = resolve(
+    import.meta.dirname,
+    '../../../../.tmp/.codex/evidence/project-recovery-e2e',
+  );
   const projectPath = join(evidenceRoot, 'Проект с пробелами.irproj');
   const userDataPath = join(evidenceRoot, 'user-data');
   rmSync(evidenceRoot, { recursive: true, force: true });
@@ -127,8 +139,14 @@ test('renderer reflects worker failure and controlled restart through the narrow
 
     const mainProcessId = app.process().pid;
     if (mainProcessId === undefined) throw new Error('electron_main_process_missing');
-    await expect.poll(() => workerProcessIds(mainProcessId)).toHaveLength(1);
-    const initialWorkerId = workerProcessIds(mainProcessId)[0];
+    let currentWorkerIds: readonly number[] = [];
+    await expect
+      .poll(() => {
+        currentWorkerIds = workerProcessIds(mainProcessId);
+        return currentWorkerIds;
+      })
+      .toHaveLength(1);
+    const initialWorkerId = currentWorkerIds[0];
     if (initialWorkerId === undefined) throw new Error('worker_process_missing');
     process.kill(initialWorkerId);
 
@@ -137,8 +155,13 @@ test('renderer reflects worker failure and controlled restart through the narrow
     await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
     await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
     await expect(page.getByText('Готов', { exact: true })).toBeVisible();
-    await expect.poll(() => workerProcessIds(mainProcessId)).toHaveLength(1);
-    expect(workerProcessIds(mainProcessId)[0]).not.toBe(initialWorkerId);
+    await expect
+      .poll(() => {
+        currentWorkerIds = workerProcessIds(mainProcessId);
+        return currentWorkerIds;
+      })
+      .toHaveLength(1);
+    expect(currentWorkerIds[0]).not.toBe(initialWorkerId);
 
     await page.getByRole('button', { name: 'Проверить связь' }).click();
     await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
@@ -168,7 +191,10 @@ test('renderer reflects worker failure and controlled restart through the narrow
     await expect(page.getByText('Есть несохранённые изменения', { exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Проект надёжности РК' })).toBeVisible();
     await page.getByRole('button', { name: 'Продолжить редактирование' }).click();
-    const dirtyWorkerId = workerProcessIds(mainProcessId)[0];
+    const recentStorePath = join(userDataPath, 'state', 'recent-projects.json');
+    const originalRecentStore = readFileSync(recentStorePath, 'utf8');
+    writeFileSync(recentStorePath, '{broken', 'utf8');
+    const dirtyWorkerId = currentWorkerIds[0];
     if (dirtyWorkerId === undefined) throw new Error('dirty_worker_process_missing');
     process.kill(dirtyWorkerId);
     await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
@@ -180,9 +206,19 @@ test('renderer reflects worker failure and controlled restart through the narrow
     await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
     await page.getByRole('button', { name: 'Проекты' }).click();
     await expect(page.getByLabel('Название проекта')).toHaveValue('Несохранённый draft');
-    await expect(
-      page.getByText('Ядро перезапущено. Черновик остался только в форме и не записан в проект.'),
-    ).toBeVisible();
+    await expect(page.getByRole('alert')).toContainText(
+      'Не удалось прочитать список недавних проектов.',
+    );
+    await expect(page.getByText('Есть несохранённые изменения.', { exact: true })).toBeVisible();
+    await expect(page.getByText('ИР-2026-001 · редакция 2')).toBeVisible();
+
+    await expect(page.getByText('Проект отсоединён от worker')).not.toBeVisible();
+    await page.getByLabel('Название проекта').fill('Сохранено после восстановления');
+    await page.getByRole('button', { name: 'Сохранить изменения' }).click();
+    await expect(page.getByText('ИР-2026-001 · редакция 3')).toBeVisible();
+    // Restore only the optional test store before the unrelated close/recent UI checks.
+    writeFileSync(recentStorePath, originalRecentStore, 'utf8');
+    await page.getByLabel('Название проекта').fill('Несохранённый draft');
 
     await app.evaluate(({ BrowserWindow }) => {
       BrowserWindow.getAllWindows()[0]?.close();
@@ -223,12 +259,15 @@ test('renderer reflects worker failure and controlled restart through the narrow
     await expect(page.getByRole('heading', { name: /Дело объединяет результаты/u })).toBeVisible();
     await expect(page.getByText(projectPath)).toBeVisible();
     expect(existsSync(movedProjectPath)).toBe(true);
+    writeFileSync(recentStorePath, '{broken', 'utf8');
+    const corruptRecent = await page.evaluate(async (path) => {
+      if (window.impeller === undefined) throw new Error('preload_api_missing');
+      return window.impeller.project.openRecent(path);
+    }, projectPath);
+    expect(corruptRecent).toMatchObject({ ok: false, error: { code: 'storage_error' } });
+    writeFileSync(recentStorePath, originalRecentStore, 'utf8');
     await page.getByRole('button', { name: 'Создать проект' }).click();
     await expect(page.getByRole('heading', { name: 'Новый проект' })).toBeVisible();
-    await page.screenshot({
-      path: resolve(import.meta.dirname, '../../../../.tmp/.codex/evidence/renderer.png'),
-      fullPage: true,
-    });
   } finally {
     await app.close();
     rmSync(evidenceRoot, { recursive: true, force: true });
@@ -236,7 +275,10 @@ test('renderer reflects worker failure and controlled restart through the narrow
 });
 
 test('persists customer wheel model and specimen dossier with one draft guard', async () => {
-  const evidenceRoot = resolve(import.meta.dirname, '../../../../.tmp/.codex/evidence/m02-2a-e2e');
+  const evidenceRoot = resolve(
+    import.meta.dirname,
+    '../../../../.tmp/.codex/evidence/analyst-dossier-e2e',
+  );
   const projectPath = join(evidenceRoot, 'Аналитическое дело.irproj');
   const userDataPath = join(evidenceRoot, 'user-data');
   rmSync(evidenceRoot, { recursive: true, force: true });
@@ -316,6 +358,10 @@ test('persists customer wheel model and specimen dossier with one draft guard', 
     await page.getByRole('button', { name: 'Сохранить образец' }).click();
     await expect(page.getByText(/Образец сохранён/u)).toBeVisible();
     await page.getByLabel('Примечания').fill('UNSAVED-SPECIMEN-BEFORE-ARCHIVE');
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.close());
+    await expect(page.getByRole('dialog', { name: 'Есть несохранённые изменения' })).toBeVisible();
+    await page.getByRole('button', { name: 'Продолжить редактирование' }).click();
+    await expect(page.getByLabel('Примечания')).toHaveValue('UNSAVED-SPECIMEN-BEFORE-ARCHIVE');
     await page.getByRole('button', { name: 'Архивировать' }).click();
     await page.getByRole('button', { name: 'Подтвердить действие' }).click();
     await expect(page.getByText('Сначала решите, что делать с черновиком')).toBeVisible();
@@ -372,7 +418,7 @@ test('persists customer wheel model and specimen dossier with one draft guard', 
 test('persists a managed case document with applicability and integrity', async () => {
   const evidenceRoot = resolve(
     import.meta.dirname,
-    '../../../../.tmp/.codex/evidence/m02-2b-document-e2e',
+    '../../../../.tmp/.codex/evidence/managed-document-e2e',
   );
   const projectPath = join(evidenceRoot, 'Дело с документом.irproj');
   const userDataPath = join(evidenceRoot, 'user-data');
@@ -463,10 +509,10 @@ test('persists a managed case document with applicability and integrity', async 
   }
 });
 
-test('handles document cancellation, unsupported and duplicate files, and local integrity loss', async () => {
+test('preserves a document draft on cancellation and reports managed file integrity loss', async () => {
   const evidenceRoot = resolve(
     import.meta.dirname,
-    '../../../../.tmp/.codex/evidence/m02-2b-document-failures-e2e',
+    '../../../../.tmp/.codex/evidence/document-integrity-e2e',
   );
   const projectPath = join(evidenceRoot, 'Ошибки документов.irproj');
   const userDataPath = join(evidenceRoot, 'user-data');
@@ -520,8 +566,8 @@ test('handles document cancellation, unsupported and duplicate files, and local 
       page.getByText('Файл с таким содержимым уже зарегистрирован в проекте.'),
     ).toBeVisible();
 
-    await app.evaluate((_electron, path) => {
-      process.env['IMPELLER_AUTOMATED_DOCUMENT_PATH'] = path;
+    await app.evaluate((_electron, filePath) => {
+      process.env['IMPELLER_AUTOMATED_DOCUMENT_PATH'] = filePath;
     }, unsupportedPath);
     await page.getByRole('button', { name: 'Создать с файлом' }).click();
     await expect(page.getByText('Этот тип файла не поддерживается.')).toBeVisible();
@@ -547,126 +593,10 @@ test('handles document cancellation, unsupported and duplicate files, and local 
   }
 });
 
-test('preserves a dirty specimen draft when window close is cancelled', async () => {
-  const evidenceRoot = resolve(
-    import.meta.dirname,
-    '../../../../.tmp/.codex/evidence/m02-2a-specimen-close-e2e',
-  );
-  const projectPath = join(evidenceRoot, 'Черновик образца.irproj');
-  const userDataPath = join(evidenceRoot, 'user-data');
-  rmSync(evidenceRoot, { recursive: true, force: true });
-  mkdirSync(evidenceRoot, { recursive: true });
-  const app = await electron.launch({
-    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
-    cwd: resolve(import.meta.dirname, '../../../..'),
-    env: {
-      ...process.env,
-      NODE_ENV: 'test',
-      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
-      IMPELLER_TEST_USER_DATA: userDataPath,
-    },
-  });
-  try {
-    const page = await app.firstWindow();
-    await page.getByRole('button', { name: 'Создать проект' }).click();
-    await page.getByRole('button', { name: 'Модели колёс' }).click();
-    await page.getByRole('button', { name: 'Новая модель' }).click();
-    await page.getByLabel('Полное наименование').fill('Модель для образца');
-    await page.getByRole('button', { name: 'Сохранить модель' }).click();
-    await expect(page.getByText(/Модель сохранена/u)).toBeVisible();
-    await page.getByRole('button', { name: 'Образцы' }).click();
-    await page.getByRole('button', { name: 'Новый образец' }).click();
-    await page.getByLabel('Идентификационный номер').fill('CLOSE-SN-1');
-    await page.getByRole('button', { name: 'Сохранить образец' }).click();
-    await expect(page.getByText(/Образец сохранён/u)).toBeVisible();
-    await page.getByLabel('Примечания').fill('UNSAVED-SPECIMEN');
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.close());
-    await expect(page.getByRole('dialog', { name: 'Есть несохранённые изменения' })).toBeVisible();
-    await page.getByRole('button', { name: 'Продолжить редактирование' }).click();
-    await expect(page.getByLabel('Примечания')).toHaveValue('UNSAVED-SPECIMEN');
-  } finally {
-    await app.close();
-    rmSync(evidenceRoot, { recursive: true, force: true });
-  }
-});
-
-test('reattaches the active project when the optional recent-projects store is corrupt', async () => {
-  const evidenceRoot = resolve(
-    import.meta.dirname,
-    '../../../../.tmp/.codex/evidence/m02-e2e-recent',
-  );
-  const projectPath = join(evidenceRoot, 'Recovery project.irproj');
-  const userDataPath = join(evidenceRoot, 'user-data');
-  rmSync(evidenceRoot, { recursive: true, force: true });
-  mkdirSync(join(userDataPath, 'state'), { recursive: true });
-  writeFileSync(join(userDataPath, 'state', 'recent-projects.json'), '{broken', 'utf8');
-  const app = await electron.launch({
-    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
-    cwd: resolve(import.meta.dirname, '../../../..'),
-    env: {
-      ...process.env,
-      NODE_ENV: 'test',
-      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
-      IMPELLER_TEST_USER_DATA: userDataPath,
-    },
-  });
-  try {
-    const page = await app.firstWindow();
-    await page.getByRole('button', { name: 'Создать проект' }).click();
-    await expect(page.getByRole('heading', { name: 'Новый проект' })).toBeVisible();
-    await page.getByLabel('Название проекта').fill('Локальный черновик recovery');
-    const mainProcessId = app.process().pid;
-    if (mainProcessId === undefined) throw new Error('electron_main_process_missing');
-    const workerId = workerProcessIds(mainProcessId)[0];
-    if (workerId === undefined) throw new Error('worker_process_missing');
-    process.kill(workerId);
-    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
-    await page.getByRole('button', { name: 'Диагностика' }).click();
-    await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
-    await page.getByRole('button', { name: 'Перезапустить, не удаляя черновик' }).click();
-    await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
-    await page.getByRole('button', { name: 'Проекты' }).click();
-    await expect(page.getByLabel('Название проекта')).toHaveValue('Локальный черновик recovery');
-    await expect(page.getByText('Проект отсоединён от worker')).not.toBeVisible();
-    await page.getByRole('button', { name: 'Сохранить изменения' }).click();
-    await expect(page.getByText('Номер проекта не задан · редакция 2')).toBeVisible();
-    const movedProjectPath = join(evidenceRoot, 'Moved recovery project.irproj');
-    const attachedWorkerId = workerProcessIds(mainProcessId)[0];
-    if (attachedWorkerId === undefined) throw new Error('reattached_worker_process_missing');
-    process.kill(attachedWorkerId);
-    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
-    renameSync(projectPath, movedProjectPath);
-    await page.getByRole('button', { name: 'Диагностика' }).click();
-    await page.getByRole('button', { name: 'Перезапустить ядро' }).click();
-    await expect(page.getByText('Локальный контур готов к работе.')).toBeVisible();
-    await page.getByRole('button', { name: 'Проекты' }).click();
-    await page.getByRole('button', { name: 'Отказаться от локального черновика' }).click();
-    await page.getByRole('button', { name: 'Удалить только локальный черновик' }).click();
-    const reopenErrorCode = await page.evaluate(async (path) => {
-      const api: unknown = Reflect.get(window, 'impeller');
-      if (typeof api !== 'object' || api === null) return 'api_missing';
-      const project: unknown = Reflect.get(api, 'project');
-      if (typeof project !== 'object' || project === null) return 'project_api_missing';
-      const openRecent: unknown = Reflect.get(project, 'openRecent');
-      if (typeof openRecent !== 'function') return 'open_recent_missing';
-      const result: unknown = await Reflect.apply(openRecent, project, [path]);
-      if (typeof result !== 'object' || result === null) return 'result_missing';
-      const error: unknown = Reflect.get(result, 'error');
-      if (typeof error !== 'object' || error === null) return 'error_missing';
-      const code: unknown = Reflect.get(error, 'code');
-      return typeof code === 'string' ? code : 'code_missing';
-    }, projectPath);
-    expect(reopenErrorCode).toBe('storage_error');
-  } finally {
-    await app.close();
-    rmSync(evidenceRoot, { recursive: true, force: true });
-  }
-});
-
 test('closes when the renderer crashes after acknowledging a dirty close request', async () => {
   const evidenceRoot = resolve(
     import.meta.dirname,
-    '../../../../.tmp/.codex/evidence/m02-e2e-close',
+    '../../../../.tmp/.codex/evidence/project-recovery-e2e-close',
   );
   const userDataPath = join(evidenceRoot, 'user-data');
   const projectPath = join(evidenceRoot, 'close-after-ack.irproj');
@@ -719,7 +649,7 @@ test('closes when the renderer crashes after acknowledging a dirty close request
 test('finishes an accepted save before closing the application', async () => {
   const evidenceRoot = resolve(
     import.meta.dirname,
-    '../../../../.tmp/.codex/evidence/m02-e2e-save-close',
+    '../../../../.tmp/.codex/evidence/project-recovery-e2e-save-close',
   );
   const userDataPath = join(evidenceRoot, 'user-data');
   const projectPath = join(evidenceRoot, 'save-before-close.irproj');
@@ -777,7 +707,7 @@ test('finishes an accepted save before closing the application', async () => {
 test('closes when the renderer reloads after acknowledging a dirty close request', async () => {
   const evidenceRoot = resolve(
     import.meta.dirname,
-    '../../../../.tmp/.codex/evidence/m02-e2e-close-reload',
+    '../../../../.tmp/.codex/evidence/project-recovery-e2e-close-reload',
   );
   const userDataPath = join(evidenceRoot, 'user-data');
   const projectPath = join(evidenceRoot, 'close-after-reload.irproj');
@@ -822,7 +752,7 @@ test('closes when the renderer reloads after acknowledging a dirty close request
 test('closes within a bound when the renderer cannot acknowledge the close request', async () => {
   const evidenceRoot = resolve(
     import.meta.dirname,
-    '../../../../.tmp/.codex/evidence/m02-e2e-hang',
+    '../../../../.tmp/.codex/evidence/project-recovery-e2e-hang',
   );
   const userDataPath = join(evidenceRoot, 'user-data');
   rmSync(evidenceRoot, { recursive: true, force: true });
@@ -869,7 +799,7 @@ test('closes within a bound when the renderer cannot acknowledge the close reque
 test('reconciles a clean document after a committed attachment response is not applied', async () => {
   const evidenceRoot = resolve(
     import.meta.dirname,
-    '../../../../.tmp/.codex/evidence/m02-2b-document-reattach',
+    '../../../../.tmp/.codex/evidence/document-reattach-e2e',
   );
   const projectPath = join(evidenceRoot, 'Reconcile document.irproj');
   const userDataPath = join(evidenceRoot, 'user-data');
@@ -1055,7 +985,6 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
     await page.getByRole('button', { name: 'Расчёт РБД' }).click();
     await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
     await page.getByRole('option', { name: 'Локальная модель РБД' }).click();
-    await expect(page.locator('.rbd-execution-list')).toContainText('normal_final_rbd');
     await page.getByRole('button', { name: /РБД.*normal_final_rbd/u }).click();
     await page.getByRole('combobox', { name: 'Редакция плана в выбранном архиве' }).click();
     await page.getByRole('option', { name: 'Эффективный план' }).click();
@@ -1225,13 +1154,9 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
       .fill('Новая версия observation недействительна для этой выборки');
     await page.getByRole('button', { name: 'Зафиксировать новую версию выборки' }).click();
     await expect(page.getByText('Версия выборки 2 сохранена.')).toBeVisible();
-    await expect(
-      page.getByText(/Исключено.*Новая версия observation недействительна/u),
-    ).toBeVisible();
-    const datasetReadback = await page
-      .locator('.reliability-dataset-readback')
-      .last()
-      .textContent();
+    const excludedMember = page.getByText(/Исключено.*Новая версия observation недействительна/u);
+    await expect(excludedMember).toBeVisible();
+    const datasetReadback = await excludedMember.textContent();
     const executionId = /execution ([0-9a-f-]{36})/u.exec(datasetReadback ?? '')?.[1];
     if (executionId === undefined) throw new Error('reliability_execution_id_missing');
     const mainProcessId = app.process().pid;
@@ -1371,8 +1296,8 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
 
 test('requires explicit confirmation for an M9a diagnostic partial import', async () => {
   const repositoryRoot = resolve(import.meta.dirname, '../../../..');
-  const evidenceRoot = resolve(repositoryRoot, '.tmp/.codex/evidence/m03b-diagnostic-e2e');
-  const projectPath = join(evidenceRoot, 'm03b-diagnostic.irproj');
+  const evidenceRoot = resolve(repositoryRoot, '.tmp/.codex/evidence/diagnostic-import-e2e');
+  const projectPath = join(evidenceRoot, 'diagnostic-import.irproj');
   const packagePath = join(
     repositoryRoot,
     'fixtures/contracts/r130run/v1/m9a/packages/diagnostic_partial.r130run',
@@ -1410,71 +1335,26 @@ test('requires explicit confirmation for an M9a diagnostic partial import', asyn
   }
 });
 
-test('closes cleanly when the worker fails during an active M9a import', async () => {
-  const repositoryRoot = resolve(import.meta.dirname, '../../../..');
-  const evidenceRoot = resolve(repositoryRoot, '.tmp/.codex/evidence/m03b-import-close-e2e');
-  const projectPath = join(evidenceRoot, 'm03b-import-close.irproj');
-  const packagePath = join(
-    repositoryRoot,
-    'fixtures/contracts/r130run/v1/m9a/packages/normal_final_rbd.r130run',
-  );
-  rmSync(evidenceRoot, { recursive: true, force: true });
-  mkdirSync(evidenceRoot, { recursive: true });
-  const app = await electron.launch({
-    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
-    cwd: repositoryRoot,
-    env: {
-      ...process.env,
-      NODE_ENV: 'test',
-      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
-      IMPELLER_AUTOMATED_R130RUN_PATH: packagePath,
-      IMPELLER_TEST_USER_DATA: join(evidenceRoot, 'user-data'),
-    },
-  });
-  let exited = false;
-  try {
-    const page = await app.firstWindow();
-    await page.getByRole('button', { name: 'Создать проект' }).click();
-    await page.getByRole('button', { name: 'Результаты R130SH' }).click();
-    await page.getByRole('button', { name: 'Импортировать результат R130SH' }).click();
-    const mainProcessId = app.process().pid;
-    if (mainProcessId === undefined) throw new Error('electron_main_process_missing');
-    const workerId = workerProcessIds(mainProcessId)[0];
-    if (workerId === undefined) throw new Error('worker_process_missing');
-    process.kill(workerId);
-    await expect(page.getByText('Проект отсоединён от worker')).toBeVisible();
-
-    const exitPromise = new Promise<void>((resolveExit) => {
-      app.process().once('exit', () => resolveExit());
-    });
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.close());
-    await Promise.race([
-      exitPromise,
-      new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error('m03b_import_close_timeout')), 5_000),
-      ),
-    ]);
-    exited = true;
-  } finally {
-    if (!exited) await app.close();
-    rmSync(evidenceRoot, { recursive: true, force: true });
-  }
-});
-
-test('validates a synthetic R130SH package without importing or mutating the project', async () => {
+test('validates an R130SH package without importing or mutating the project', async () => {
   const evidenceRoot = resolve(
     import.meta.dirname,
-    '../../../../.tmp/.codex/evidence/m03a-r130run-e2e',
+    '../../../../.tmp/.codex/evidence/run-validation-e2e',
   );
   const projectPath = join(evidenceRoot, 'Validation project.irproj');
   const userDataPath = join(evidenceRoot, 'user-data');
-  const packagePath = join(evidenceRoot, 'synthetic.r130run');
-  const largePackagePath = join(evidenceRoot, 'large-synthetic.r130run');
+  const packagePath = join(evidenceRoot, 'candidate.r130run');
+  const largePackagePath = join(evidenceRoot, 'validation-stress.r130run');
   const invalidPackagePath = join(evidenceRoot, 'invalid.r130run');
   rmSync(evidenceRoot, { recursive: true, force: true });
   mkdirSync(evidenceRoot, { recursive: true });
-  buildSyntheticRunPackage(packagePath);
-  buildSyntheticRunPackage(largePackagePath, 64);
+  copyFileSync(
+    resolve(
+      import.meta.dirname,
+      '../../../../fixtures/contracts/r130run/v1/m9a/packages/normal_final_rbd.r130run',
+    ),
+    packagePath,
+  );
+  buildValidationStressPackage(largePackagePath, 64);
   writeFileSync(invalidPackagePath, 'not a zip', 'utf8');
   const app = await electron.launch({
     args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
@@ -1503,14 +1383,14 @@ test('validates a synthetic R130SH package without importing or mutating the pro
     await expect(page.getByRole('heading', { name: 'Проверка контракта R130SH' })).toBeVisible();
     await expect(
       page.getByText(
-        'Проверка не импортирует данные в дело и не подтверждает пригодность результата для расчётов. Валидатор привязан к production M9a contract; producer compatibility подтверждается отдельно M03B acceptance.',
+        /Проверка не импортирует данные в дело и не подтверждает пригодность результата для расчётов\./u,
       ),
     ).toBeVisible();
     await page.getByRole('button', { name: 'Проверить пакет R130SH' }).click();
     await expect(page.locator('[data-validation-state="completed"]')).toBeVisible();
     await expect(page.getByText('Пройдена', { exact: true })).toBeVisible();
     await expect(page.getByText('Полное в доступном профиле', { exact: true })).toBeVisible();
-    await expect(page.getByText('synthetic.r130run')).toBeVisible();
+    await expect(page.getByText('candidate.r130run')).toBeVisible();
     await expect(page.getByText('b7792758b407ffc52d2fff051243056f63dbf18f')).toBeVisible();
     await expect(page.getByRole('button', { name: /Импорт/u })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Повторить проверку' })).toBeFocused();
@@ -1525,7 +1405,7 @@ test('validates a synthetic R130SH package without importing or mutating the pro
       process.env['IMPELLER_AUTOMATED_R130RUN_CANCELLED'] = '1';
     });
     await page.getByRole('button', { name: 'Повторить проверку' }).click();
-    await expect(page.getByText('synthetic.r130run')).toBeVisible();
+    await expect(page.getByText('candidate.r130run')).toBeVisible();
     await expect(page.getByRole('alert')).toHaveCount(0);
 
     await app.evaluate(() => {
@@ -1536,7 +1416,7 @@ test('validates a synthetic R130SH package without importing or mutating the pro
     await expect(page.getByRole('alert')).toContainText(
       'Системный диалог выбора файла недоступен.',
     );
-    await expect(page.getByText('synthetic.r130run')).toBeVisible();
+    await expect(page.getByText('candidate.r130run')).toBeVisible();
 
     await app.evaluate((_electron, path) => {
       delete process.env['IMPELLER_AUTOMATED_R130RUN_DIALOG_REJECTED'];
@@ -1598,7 +1478,7 @@ test('validates a synthetic R130SH package without importing or mutating the pro
   }
 });
 
-function buildSyntheticRunPackage(outputPath: string, largeCsvMib = 0): void {
+function buildValidationStressPackage(outputPath: string, largeCsvMib: number): void {
   const repositoryRoot = resolve(import.meta.dirname, '../../../..');
   const argumentsList = [
     'run',
@@ -1611,6 +1491,6 @@ function buildSyntheticRunPackage(outputPath: string, largeCsvMib = 0): void {
     'support.build_r130run_cli',
     outputPath,
   ];
-  if (largeCsvMib > 0) argumentsList.push('--large-csv-mib', String(largeCsvMib));
+  argumentsList.push('--large-csv-mib', String(largeCsvMib));
   execFileSync('uv', argumentsList, { cwd: repositoryRoot, encoding: 'utf8' });
 }

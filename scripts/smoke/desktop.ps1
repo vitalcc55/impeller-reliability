@@ -26,7 +26,8 @@ function Update-OwnedProcessIds {
         [Parameter(Mandatory = $true)]
         [System.Collections.Generic.HashSet[int]]$OwnedProcessIds
     )
-    $snapshot = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $snapshot = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    if ($snapshot.ProcessId -notcontains $PID) { throw "Process observation returned an incomplete snapshot." }
     $changed = $true
     while ($changed) {
         $changed = $false
@@ -115,9 +116,8 @@ try {
     $deadline = [DateTime]::UtcNow.AddSeconds(90)
     while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path -LiteralPath $summaryPath)) {
         $snapshot = @(Update-OwnedProcessIds -OwnedProcessIds $ownedProcessIds)
-        foreach ($process in $snapshot) {
-            $processId = [int]$process.ProcessId
-            if ($ownedProcessIds.Contains($processId) -and (Get-NetTCPConnection -OwningProcess $processId -ErrorAction SilentlyContinue)) {
+        foreach ($connection in @(Get-NetTCPConnection -ErrorAction Stop)) {
+            if ($ownedProcessIds.Contains([int]$connection.OwningProcess)) {
                 $networkObserved = $true
             }
         }
@@ -131,9 +131,8 @@ try {
     $ownedProcessIds.Add([int]$summary.pid) | Out-Null
     if ($null -ne $summary.workerPid) { $ownedProcessIds.Add([int]$summary.workerPid) | Out-Null }
     $snapshot = @(Update-OwnedProcessIds -OwnedProcessIds $ownedProcessIds)
-    foreach ($process in $snapshot) {
-        $processId = [int]$process.ProcessId
-        if ($ownedProcessIds.Contains($processId) -and (Get-NetTCPConnection -OwningProcess $processId -ErrorAction SilentlyContinue)) {
+    foreach ($connection in @(Get-NetTCPConnection -ErrorAction Stop)) {
+        if ($ownedProcessIds.Contains([int]$connection.OwningProcess)) {
             $networkObserved = $true
         }
     }
@@ -170,20 +169,29 @@ foreach ($member in $expectedMaterialMembers) {
     $copies = @($summary.sourceMaterials.copiedMaterials | Where-Object { $_.mediaType -eq $member.media_type })
     if ($copies.Count -ne 1 -or $copies[0].sha256 -ne $member.sha256 -or $copies[0].sizeBytes -ne $member.size) { throw "Desktop smoke material bytes/hash do not match producer provenance." }
 }
-if ($networkObserved) { throw "Desktop smoke observed a TCP connection in its process tree." }
-
 $shutdownDeadline = [DateTime]::UtcNow.AddSeconds(5)
 while ([DateTime]::UtcNow -lt $shutdownDeadline -and (Get-Process -Id ([int]$summary.pid) -ErrorAction SilentlyContinue)) {
     $null = Update-OwnedProcessIds -OwnedProcessIds $ownedProcessIds
+    foreach ($connection in @(Get-NetTCPConnection -ErrorAction Stop)) {
+        if ($ownedProcessIds.Contains([int]$connection.OwningProcess)) {
+            $networkObserved = $true
+        }
+    }
     Start-Sleep -Milliseconds 250
 }
 Start-Sleep -Milliseconds 500
-$remainingOwnedProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+$remainingOwnedProcesses = @(Update-OwnedProcessIds -OwnedProcessIds $ownedProcessIds | Where-Object {
     $ownedProcessIds.Contains([int]$_.ProcessId)
 })
+foreach ($connection in @(Get-NetTCPConnection -ErrorAction Stop)) {
+    if ($ownedProcessIds.Contains([int]$connection.OwningProcess)) {
+        $networkObserved = $true
+    }
+}
 $orphanWorkers = @($remainingOwnedProcesses | Where-Object { $_.Name -eq "impeller-reliability-worker.exe" })
 if ($orphanWorkers.Count -gt 0) {
     Stop-OwnedProcesses -OwnedProcessIds $ownedProcessIds
     throw "Desktop smoke left an orphan worker in its process tree."
 }
+if ($networkObserved) { throw "Desktop smoke observed a TCP connection in its process tree." }
 Write-Output ($summary | ConvertTo-Json -Depth 8)

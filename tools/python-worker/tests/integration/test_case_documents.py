@@ -538,17 +538,18 @@ def test_verify_and_resolve_report_missing_and_modified_without_changing_registr
 
 
 @pytest.mark.parametrize("attachment", ["create_with_file", "attach_file"])
-@pytest.mark.parametrize("operation", ["list", "update", "archive", "restore"])
-def test_cached_verified_is_invalidated_immediately_when_managed_file_is_deleted(
+@pytest.mark.parametrize("damage", ["missing", "modified"])
+def test_metadata_operations_invalidate_changed_managed_file(
     tmp_path: Path,
     attachment: str,
-    operation: str,
+    damage: str,
 ) -> None:
-    project_path = tmp_path / f"cached-delete-{attachment}-{operation}.irproj"
+    project_path = tmp_path / f"cached-{attachment}-{damage}.irproj"
     service = _create_project(project_path)
     service.close()
-    source = tmp_path / f"cached-delete-{attachment}-{operation}.pdf"
-    source.write_bytes(b"%PDF-1.7\ncached delete\n")
+    original_content = b"%PDF-1.7\nAAAA\n"
+    source = tmp_path / "source.pdf"
+    source.write_bytes(original_content)
     connection, repository = _open_repository(project_path)
     document_id = str(uuid4())
     try:
@@ -577,132 +578,46 @@ def test_cached_verified_is_invalidated_immediately_when_managed_file_is_deleted
             )
         assert created.file is not None
         managed = project_path.joinpath(*created.file.stored_relative_path.split("/"))
+        initial_stat = managed.stat()
         expected_revision = created.record_revision
-        if operation == "restore":
-            archived = repository.set_archived(
-                document_id=document_id,
-                expected_revision=expected_revision,
-                archived=True,
-                deadline=None,
-            )
-            assert archived.integrity_status == "verified"
-            expected_revision = archived.record_revision
-        managed.unlink()
+        for operation in ("list", "update", "archive", "restore"):
+            # Every operation starts from its own verified cache, not a status
+            # populated by the preceding damaged-file operation.
+            managed.write_bytes(original_content)
+            os.utime(managed, ns=(initial_stat.st_atime_ns, initial_stat.st_mtime_ns))
+            assert repository.verify_file(document_id, deadline=None).integrity_status == "verified"
+            if damage == "missing":
+                managed.unlink()
+            else:
+                managed.write_bytes(b"%PDF-1.7\nBBBB\n")
+                os.utime(managed, ns=(initial_stat.st_atime_ns, initial_stat.st_mtime_ns + 2_000_000_000))
 
-        if operation == "list":
-            result = repository.list(include_archived=False, document_kind=None)[0]
-        elif operation == "update":
-            result = repository.update(
-                document_id=document_id,
-                expected_revision=expected_revision,
-                values={**_document_values(), "notes": "Changed after deletion"},
-                wheel_model_ids=(),
-                specimen_ids=(),
-                deadline=None,
-            )
-        elif operation == "archive":
-            result = repository.set_archived(
-                document_id=document_id,
-                expected_revision=expected_revision,
-                archived=True,
-                deadline=None,
-            )
-        else:
-            result = repository.set_archived(
-                document_id=document_id,
-                expected_revision=expected_revision,
-                archived=False,
-                deadline=None,
-            )
-
-        assert result.integrity_status == "missing"
-        assert "case_document_file_missing" in result.warnings
-        assert repository.get(document_id).integrity_status == "missing"
-    finally:
-        connection.close()
-
-
-@pytest.mark.parametrize("attachment", ["create_with_file", "attach_file"])
-@pytest.mark.parametrize("operation", ["list", "update", "archive", "restore"])
-def test_same_size_rewrite_invalidates_verified_presence_before_full_hash(
-    tmp_path: Path,
-    attachment: str,
-    operation: str,
-) -> None:
-    project_path = tmp_path / f"cached-same-size-{attachment}-{operation}.irproj"
-    service = _create_project(project_path)
-    service.close()
-    source = tmp_path / f"cached-same-size-{attachment}-{operation}.pdf"
-    source.write_bytes(b"%PDF-1.7\nAAAA\n")
-    connection, repository = _open_repository(project_path)
-    document_id = str(uuid4())
-    try:
-        if attachment == "create_with_file":
-            created = repository.create_with_file(
-                document_id=document_id,
-                values=_document_values(),
-                wheel_model_ids=(),
-                specimen_ids=(),
-                source_path=source,
-                deadline=None,
-            )
-        else:
-            repository.create(
-                document_id=document_id,
-                values=_document_values(),
-                wheel_model_ids=(),
-                specimen_ids=(),
-                deadline=None,
-            )
-            created = repository.attach_file(
-                document_id=document_id,
-                expected_revision=1,
-                source_path=source,
-                deadline=None,
-            )
-        assert created.file is not None
-        managed = project_path.joinpath(*created.file.stored_relative_path.split("/"))
-        expected_revision = created.record_revision
-        if operation == "restore":
-            archived = repository.set_archived(
-                document_id=document_id,
-                expected_revision=expected_revision,
-                archived=True,
-                deadline=None,
-            )
-            expected_revision = archived.record_revision
-        initial = managed.stat()
-        managed.write_bytes(b"%PDF-1.7\nBBBB\n")
-        os.utime(managed, ns=(initial.st_atime_ns, initial.st_mtime_ns + 2_000_000_000))
-
-        if operation == "list":
-            result = repository.list(include_archived=False, document_kind=None)[0]
-        elif operation == "update":
-            result = repository.update(
-                document_id=document_id,
-                expected_revision=expected_revision,
-                values={**_document_values(), "notes": "Changed after rewrite"},
-                wheel_model_ids=(),
-                specimen_ids=(),
-                deadline=None,
-            )
-        elif operation == "archive":
-            result = repository.set_archived(
-                document_id=document_id,
-                expected_revision=expected_revision,
-                archived=True,
-                deadline=None,
-            )
-        else:
-            result = repository.set_archived(
-                document_id=document_id,
-                expected_revision=expected_revision,
-                archived=False,
-                deadline=None,
-            )
-
-        assert result.integrity_status != "verified"
-        assert repository.verify_file(document_id, deadline=None).integrity_status == "modified"
+            if operation == "list":
+                result = repository.list(include_archived=False, document_kind=None)[0]
+            elif operation == "update":
+                result = repository.update(
+                    document_id=document_id,
+                    expected_revision=expected_revision,
+                    values={**_document_values(), "notes": "Changed metadata"},
+                    wheel_model_ids=(),
+                    specimen_ids=(),
+                    deadline=None,
+                )
+            else:
+                result = repository.set_archived(
+                    document_id=document_id,
+                    expected_revision=expected_revision,
+                    archived=operation == "archive",
+                    deadline=None,
+                )
+            expected_revision = result.record_revision
+            if damage == "missing":
+                assert result.integrity_status == "missing", operation
+                assert "case_document_file_missing" in result.warnings, operation
+                assert repository.get(document_id).integrity_status == "missing", operation
+            else:
+                assert result.integrity_status != "verified", operation
+                assert repository.verify_file(document_id, deadline=None).integrity_status == "modified", operation
     finally:
         connection.close()
 
@@ -1011,18 +926,11 @@ def test_attached_file_noop_mutations_return_fresh_integrity_status(tmp_path: Pa
         connection.close()
 
 
-@pytest.mark.parametrize(
-    "operation",
-    ["update", "noop_update", "conflict", "archive", "restore", "entity_archived"],
-)
-def test_metadata_mutations_after_reopen_do_not_hash_attached_file(
-    tmp_path: Path,
-    operation: str,
-) -> None:
-    project_path = tmp_path / f"metadata-no-hash-{operation}.irproj"
+def test_metadata_mutations_after_reopen_do_not_hash_attached_file(tmp_path: Path) -> None:
+    project_path = tmp_path / "metadata-no-hash.irproj"
     service = _create_project(project_path)
     service.close()
-    source = tmp_path / f"metadata-no-hash-{operation}.pdf"
+    source = tmp_path / "metadata-no-hash.pdf"
     source.write_bytes(b"%PDF-1.7\nmetadata only\n" + b"x" * COPY_CHUNK_BYTES)
     connection, repository = _open_repository(project_path)
     document_id = str(uuid4())
@@ -1036,38 +944,43 @@ def test_metadata_mutations_after_reopen_do_not_hash_attached_file(
             deadline=None,
         )
         current_revision = created.record_revision
-        if operation in {"restore", "entity_archived"}:
-            archived = repository.set_archived(
-                document_id=document_id,
-                expected_revision=current_revision,
-                archived=True,
-                deadline=None,
-            )
-            current_revision = archived.record_revision
     finally:
         connection.close()
-
-    connection, repository = _open_repository(project_path)
-    event_count_before = int(
-        connection.execute(
-            "SELECT COUNT(*) FROM project_audit_events WHERE event_type LIKE 'case_document.%'",
-        ).fetchone()[0]
-    )
 
     def unexpected_sha256(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("metadata mutations must not hash managed files")
 
-    try:
-        with patch(
-            "impeller_reliability.persistence.case_documents.hashlib.sha256",
-            side_effect=unexpected_sha256,
-        ):
-            if operation in {"update", "noop_update", "conflict", "entity_archived"}:
-                expected_revision = 0 if operation == "conflict" else current_revision
-                values = {**_document_values(), "notes": "Metadata changed"} if operation == "update" else _document_values()
-                if operation in {"conflict", "entity_archived"}:
-                    with pytest.raises(ProjectOperationError) as raised:
-                        repository.update(
+    # Share the large file, but keep a fresh repository/cache for every operation.
+    # The no-op precedes the update so its values still match persisted metadata.
+    for operation in ("noop_update", "update", "conflict", "archive", "entity_archived", "restore"):
+        connection, repository = _open_repository(project_path)
+        try:
+            event_count_before = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM project_audit_events WHERE event_type LIKE 'case_document.%'",
+                ).fetchone()[0]
+            )
+            with patch(
+                "impeller_reliability.persistence.case_documents.hashlib.sha256",
+                side_effect=unexpected_sha256,
+            ):
+                if operation in {"update", "noop_update", "conflict", "entity_archived"}:
+                    expected_revision = current_revision - 1 if operation == "conflict" else current_revision
+                    values = {**_document_values(), "notes": "Metadata changed"} if operation == "update" else _document_values()
+                    if operation in {"conflict", "entity_archived"}:
+                        with pytest.raises(ProjectOperationError) as raised:
+                            repository.update(
+                                document_id=document_id,
+                                expected_revision=expected_revision,
+                                values=values,
+                                wheel_model_ids=(),
+                                specimen_ids=(),
+                                deadline=None,
+                            )
+                        assert raised.value.code == ("revision_conflict" if operation == "conflict" else "entity_archived")
+                        result = None
+                    else:
+                        result = repository.update(
                             document_id=document_id,
                             expected_revision=expected_revision,
                             values=values,
@@ -1075,38 +988,29 @@ def test_metadata_mutations_after_reopen_do_not_hash_attached_file(
                             specimen_ids=(),
                             deadline=None,
                         )
-                    assert raised.value.code == ("revision_conflict" if operation == "conflict" else "entity_archived")
-                    result = None
                 else:
-                    result = repository.update(
+                    result = repository.set_archived(
                         document_id=document_id,
-                        expected_revision=expected_revision,
-                        values=values,
-                        wheel_model_ids=(),
-                        specimen_ids=(),
+                        expected_revision=current_revision,
+                        archived=operation == "archive",
                         deadline=None,
                     )
-            else:
-                result = repository.set_archived(
-                    document_id=document_id,
-                    expected_revision=current_revision,
-                    archived=operation == "archive",
-                    deadline=None,
-                )
 
-        event_count_after = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM project_audit_events WHERE event_type LIKE 'case_document.%'",
-            ).fetchone()[0]
-        )
-        if result is None:
-            assert event_count_after == event_count_before
-        else:
-            assert result.integrity_status == "verification_error"
-            expected_increment = 0 if operation == "noop_update" else 1
-            assert event_count_after == event_count_before + expected_increment
-    finally:
-        connection.close()
+            event_count_after = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM project_audit_events WHERE event_type LIKE 'case_document.%'",
+                ).fetchone()[0]
+            )
+            if result is None:
+                assert event_count_after == event_count_before, operation
+            else:
+                assert result.integrity_status == "verification_error", operation
+                expected_increment = 0 if operation == "noop_update" else 1
+                assert event_count_after == event_count_before + expected_increment, operation
+                assert result.record_revision == current_revision + expected_increment, operation
+                current_revision = result.record_revision
+        finally:
+            connection.close()
 
 
 def test_project_reopens_when_registered_document_file_is_missing(tmp_path: Path) -> None:

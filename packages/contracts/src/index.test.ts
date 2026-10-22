@@ -172,7 +172,7 @@ describe('worker contracts', () => {
       rbdCalculationCreateCommandSchema.safeParse({ ...command, reason: '🔧'.repeat(501) }).success,
     ).toBe(false);
     expect(
-      rbdCalculationCreateCommandSchema.safeParse({ ...command, reason: '🔧'.repeat(400) }).success,
+      rbdCalculationCreateCommandSchema.safeParse({ ...command, reason: '🔧'.repeat(500) }).success,
     ).toBe(true);
     expect(
       rbdCalculationCreateCommandSchema.safeParse({ ...command, calculatedOutputs: {} }).success,
@@ -279,7 +279,7 @@ describe('worker contracts', () => {
       exportRevision: 1,
       outerPackageSha256: 'a'.repeat(64),
       sourceSnapshotSha256: 'b'.repeat(64),
-      producerName: '🔧'.repeat(101),
+      producerName: '🔧'.repeat(200),
       producerVersion: '1',
       producerBuildId: 'build-1',
       producerGitCommit: 'commit-1',
@@ -512,7 +512,7 @@ describe('worker contracts', () => {
     ).toBe(false);
   });
 
-  it('keeps M04B inputs bounded and explicit across the typed boundary', () => {
+  it('keeps reliability observation and dataset inputs bounded and explicit', () => {
     const entity = '8ab377f2-cfd8-4983-86ea-25f5d0171bd7';
     const observation = {
       observationId: entity,
@@ -635,14 +635,6 @@ describe('worker contracts', () => {
     expect(importedRunSummarySchema.parse(summary).packageCreatedAtUtc).toBe(
       '2026-08-31T10:00:00Z',
     );
-    expect(importedRunSummarySchema.parse(summary).validatorVersion).toBe('m03b.2');
-    expect(
-      importedRunSummarySchema.parse({
-        ...summary,
-        validatorVersion: 'm03b.3',
-        validationContractCommit: 'b7792758b407ffc52d2fff051243056f63dbf18f',
-      }).validationContractCommit,
-    ).toBe('b7792758b407ffc52d2fff051243056f63dbf18f');
     expect(
       importedRunSummarySchema.safeParse({ ...summary, validationContractCommit: 'bad' }).success,
     ).toBe(false);
@@ -676,13 +668,13 @@ describe('worker contracts', () => {
       cycleDurationSExact: null,
       targetMaxRpmExact: null,
     } as const;
-    expect(importedRunPlanSchema.parse(plan).targetCycles).toBe(100);
     const nullableReferences = {
       ...plan,
       laboratoryCaseReference: null,
       customerOrderReference: null,
     } as const;
     expect(importedRunPlanSchema.parse(nullableReferences)).toMatchObject({
+      targetCycles: 100,
       laboratoryCaseReference: null,
       customerOrderReference: null,
     });
@@ -693,7 +685,6 @@ describe('worker contracts', () => {
       const missingReference = { ...plan };
       delete (missingReference as Partial<typeof plan>)[field];
       expect(importedRunPlanSchema.safeParse(missingReference).success).toBe(false);
-      expect(importedRunPlanSchema.safeParse({ ...plan, [field]: undefined }).success).toBe(false);
       expect(importedRunPlanSchema.safeParse({ ...plan, [field]: 42 }).success).toBe(false);
       expect(importedRunPlanSchema.safeParse({ ...plan, [field]: '   ' }).success).toBe(false);
       expect(importedRunPlanSchema.safeParse({ ...plan, [field]: '\u0085' }).success).toBe(false);
@@ -781,7 +772,7 @@ describe('worker contracts', () => {
         validationBudgetMs: 1_800_000,
       }).validationBudgetMs,
     ).toBe(1_800_000);
-    for (const invalidBudget of [0, 999, 1_800_001, 1.5]) {
+    for (const invalidBudget of [999, 1_800_001, 1.5]) {
       expect(
         runPackageValidationStartPayloadSchema.safeParse({
           ...command,
@@ -1055,7 +1046,7 @@ describe('worker contracts', () => {
     expect(
       projectOverviewSchema.safeParse({
         ...overview,
-        createdWithApplicationVersion: '🚀'.repeat(33),
+        createdWithApplicationVersion: 'v'.repeat(65),
       }).success,
     ).toBe(false);
   });

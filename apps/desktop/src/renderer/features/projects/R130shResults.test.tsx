@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 import { MantineProvider } from '@mantine/core';
 import { act, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -156,7 +158,7 @@ describe('materials in the existing results lifecycle', () => {
     );
     expect(f.element.querySelector('[role="alert"]')).toBeNull();
   });
-  it('does not add a material read alongside the two-request detail hydration', async () => {
+  it('keeps material actions unavailable until the selected import finishes loading', async () => {
     let release: (value: DesktopResult<CustomerProfile | null>) => void = () => {};
     const held = new Promise<DesktopResult<CustomerProfile | null>>((done) => {
       release = done;
