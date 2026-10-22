@@ -106,7 +106,7 @@ Prediction: сокращение повторных сборок и ненужн
 - Сырые логи и промежуточные failures сохранены в evidence; ни retries, ни повышения таймаутов, ни обхода assertions нет. PyInstaller graph и обе поставки ещё предстоит подтвердить итоговой сборкой.
 
 - Done: исходный полный verify, восемь исследований, root synthesis, реализация, целевые проверки, полный первый review и повторный review исправлений.
-- Next: итоговое состояние подтверждено, изменения готовы к фиксации текущим коммитом. Review-loop завершён без новых подтверждённых findings.
+- Next: работа завершена; ветка готова к merge. Само слияние оставлено за границей этой задачи. Review-loop завершён без новых подтверждённых findings.
 - Edited files: Vitest/Playwright config; `scripts/{codex/verify,build/package,smoke/desktop}.ps1`; `tools/python-worker/{pyproject.toml,uv.lock,worker.spec}`; изменённые Main/Renderer/Contracts tests; `apps/desktop/tests/e2e/{desktop-workflows,source-materials}.spec.ts`; Python document/import/process/jobs/materials/PMN tests и synthetic builder; existing `docs/testing/TEST_STRATEGY.md`; этот единый журнал.
 - Verification: исходный и итоговый full SUCCESS; scoped checks и итоговое сравнение описаны в этом журнале.
 - Open questions: отсутствуют.
@@ -155,3 +155,11 @@ Checkpoint: первый review завершён, исправления реа�
 Это сравнение одного исходного и одного итогового запуска на одной машине; кеши и фоновая нагрузка могут влиять на wall-clock. Снижение повторных сборок, подготовок и числа DOM workers детерминировано конфигурацией и логами. Пиковая RAM/полный CPU исходно не измерялись, поэтому точный процент их снижения не заявляется. Упаковка по-прежнему выполняет прежнее сжатие и оба реальных smoke.
 
 Единый журнал актуализирован; подтверждённых незакрытых findings и task-caused verify failures нет. Ветка остаётся отдельной, без merge/push. Финальная фиксация включает только изменения этого аудита.
+
+### Готовность к слиянию
+
+- 2026-10-23T02:35:09+03:00: выполнен completion audit по фактическому Git, журналу и сохранённым отчётам. Предыдущий этап завершил реализацию, review-loop и полный gate, а не только план.
+- После `git fetch origin main` актуальный `origin/main` — `4c4428368a2bb8f3049e49cf44ab7c1bf2153c77` — является предком ветки. База не продвинулась относительно проверенного изменения; конфликтов слияния нет.
+- Проверены итоговый exit 0, 146 TypeScript / 802 Python / 17 Electron passed, отсутствие skipped/flaky/unexpected, обе packaged smoke и однократные build/staging проходы. После итогового verify менялся только этот Markdown-журнал.
+- В diff только согласованный тестовый/сборочный контур и его документация. `git diff --check origin/main...HEAD` проходит; исходная реализация зафиксирована коммитом `75a2e9a`.
+- Outcome достигнут, открытых подтверждённых findings и необходимых исправлений нет. Ветка подготовлена к merge; merge и push не выполнялись.
