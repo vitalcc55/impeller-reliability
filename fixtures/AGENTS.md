@@ -1,3 +1,3 @@
 # Fixture rules
 
-`fixtures/contracts` подтверждает boundary schemas; `fixtures/golden` — утверждённые инженерные примеры; `fixtures/r130sh` — valid/invalid packages. Golden fixture обязан хранить source, canonical input, intermediate values, result, rounding, tolerance и reviewer. Демонстрационный пример из ТЗ не становится эталоном автоматически.
+`fixtures/contracts` содержит данные утверждённых внешних контрактов; `fixtures/golden` — инженерные эталоны. Требования к fixtures, независимым ожидаемым значениям и provenance принадлежат [tests/AGENTS.md](../tests/AGENTS.md).

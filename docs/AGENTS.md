@@ -5,7 +5,8 @@
 - `PRODUCT.md` — продуктовая истина; `DESIGN.md` — дизайн-система.
 - `docs/requirements/` и `docs/domain/` — требования и предметные правила.
 - `docs/integration/` — IPC и R130SH file contracts.
-- `docs/security/`, `docs/testing/`, `docs/packaging/`, `docs/observability/` — профильные owner-документы.
+- [tests/AGENTS.md](../tests/AGENTS.md) — единая политика и стратегия тестирования всего репозитория.
+- `docs/security/`, `docs/packaging/`, `docs/observability/` — профильные owner-документы.
 - `docs/architecture/` — только topology, boundaries, state и end-to-end flows; правила каталога в локальном `AGENTS.md`.
 - `docs/backlog/OPEN_QUESTIONS.md` — только нерешённые продуктовые/методические вопросы.
 - `docs/plans/` — один текущий outcome contract и отдельно явно отложенный roadmap.

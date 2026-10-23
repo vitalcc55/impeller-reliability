@@ -39,15 +39,6 @@ M00–M01 реализуют walking skeleton. Первый публикуемы
 
 Точные направления и запреты принадлежат `docs/architecture/dependency-boundaries-rules.md`.
 
-## Browser-first verification
-
-- После существенного renderer-изменения запустить `pnpm dev:preview` и проверить через встроенный Browser:
-  - `http://127.0.0.1:5173/?preview=ready`;
-  - `http://127.0.0.1:5173/?preview=unavailable`.
-- Проверять роли, landmarks, status messages, keyboard semantics, desktop и узкий viewport, затем консоль.
-- Browser preview использует synthetic typed adapter, не запускает worker, не пишет SQLite и не заменяет Electron E2E или packaged smoke.
-- Playwright является автоматическим gate, но не заменяет observable Browser-проверку.
-
 ## Impeccable contour
 
 - Для нетривиальных UI/UX/layout/design-system задач использовать внешний skill `impeccable` из Codex home; локальную копию skill не хранить.
@@ -63,6 +54,8 @@ M00–M01 реализуют walking skeleton. Первый публикуемы
 - Investigation/test artifacts находятся в ignored `.tmp/.codex/evidence/` и не являются документацией или source of truth.
 
 ## Instruction routing
+
+Перед написанием или изменением тестов, fixtures, test/build/smoke orchestration и перед выбором объёма проверки читать [tests/AGENTS.md](tests/AGENTS.md). Это единая политика тестирования для всех каталогов репозитория, включая colocated tests вне `tests/`.
 
 Перед работой читать ближайший scoped-файл, если затронут его каталог:
 
@@ -82,24 +75,20 @@ M00–M01 реализуют walking skeleton. Первый публикуемы
 - Functional/non-functional requirements: `docs/requirements/`.
 - Domain rules: `docs/domain/`.
 - IPC/R130SH contracts: `docs/integration/`.
-- Security/testing/packaging/observability: соответствующие профильные каталоги.
+- Политика, стратегия и команды тестирования: [tests/AGENTS.md](tests/AGENTS.md).
+- Security/packaging/observability: соответствующие профильные каталоги.
 - Unresolved product/methodology choices: `docs/backlog/OPEN_QUESTIONS.md`.
 - Current milestone plans and deferred roadmap: `docs/plans/`.
 - Reasons for approved cross-cutting decisions: `docs/decisions/`.
 - `README.md` — краткая публичная поверхность без дублирования рабочих команд и внутренних правил.
 
-## Quick start and stable checks
+## Quick start
 
 - Install: `pnpm install --frozen-lockfile`; `uv sync --project tools/python-worker --frozen`.
 - Desktop dev: `pnpm dev`.
 - Browser renderer preview: `pnpm dev:preview`.
-- Static/unit gate: `pnpm check`.
-- Electron build/E2E: `pnpm build`; `pnpm test:e2e`.
-- Worker artifact: `pnpm build:worker`; `pnpm smoke:worker`.
-- Packaging gates: `pnpm package:win-unpacked`; `pnpm smoke:win-unpacked`; `pnpm package:portable`; `pnpm smoke:portable`.
-- Full local gate: `pnpm verify -- --IncludePackaging`.
 
-Retry, timeout inflation, `skip`, weak assertions и auth/integrity bypass не используются для маскировки failures.
+Проверки и критерии их выбора принадлежат [tests/AGENTS.md](tests/AGENTS.md).
 
 ## Editing and cleanup
 

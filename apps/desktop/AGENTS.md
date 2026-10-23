@@ -16,8 +16,3 @@
 - Перед новым значимым экраном читать `PRODUCT.md` и `DESIGN.md`; работать через подходящий Impeccable flow.
 - Дизайн-система растёт из подтверждённых повторений. Mantine — primitive library, не источник продуктового дизайна.
 - Семантические tokens живут у renderer theme/styles; не дублировать их в компонентах или документах.
-- Изменённую поверхность проверять `pnpm dev:preview` во встроенном Browser на desktop и узком viewport, затем запускать detector один раз.
-
-## Checks
-
-Для renderer/preload/Main: `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm test:e2e`; packaging-boundary changes дополнительно требуют packaged smoke.
