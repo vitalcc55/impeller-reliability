@@ -37,6 +37,11 @@ function runSelfTest(executablePath) {
 
 export default async function afterPackWorkerIntegrity(context) {
   if (context.electronPlatformName !== 'win32') return;
+  if (
+    !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(context.packager.appInfo.version)
+  ) {
+    throw new Error('windows_setup_requires_stable_numeric_application_version');
+  }
   const applicationExecutable = join(context.appOutDir, 'ImpellerReliabilityCalc.exe');
   await applyProductionFuses(applicationExecutable);
   const workerDirectory = join(context.appOutDir, 'resources', 'python-worker');

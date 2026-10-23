@@ -23,7 +23,7 @@
 | React / DOM | Пользовательские действия, pending/dirty/stale answers, доступные состояния, клавиатуру и focus. DOM-окружение включается только файлам, которым оно нужно. |
 | Python | Независимые инженерные эталоны, единицы и округление; ZIP/security/streaming; SQLite transactions, audit, immutable provenance, retry, reopen и corruption. |
 | Electron E2E | Реальные Main → sandboxed Preload → worker → SQLite и существенные пользовательские развилки: import/save/reopen, dirty/close/crash/restart, история за первой страницей и границы открытия материалов. Не повторяй здесь полные матрицы низкоуровневых ошибок. |
-| Packaged smoke | Настоящие WinUnpacked и Portable с bundled worker: fuses/CSP/integrity, import/calculations/materials/reopen, отсутствие TCP и orphan worker только в собственном process tree. Ошибка обязательного наблюдения процессов или TCP завершает smoke с отказом. |
+| Packaged smoke | Настоящие WinUnpacked и установленный NSIS payload с bundled worker: fuses/CSP/integrity, import/calculations/materials/reopen, N→N+1 readback того же дела/профиля, repair/downgrade/uninstall/reinstall. Отсутствие TCP и orphan worker только в собственном process tree; ошибка обязательного наблюдения завершает smoke с отказом. Retry/Cancel дополнительно проверяются настоящим UI-проходом. |
 
 Synthetic Browser preview проверяет renderer, но не расчёты, IPC или persistence и не заменяет Electron E2E и packaged smoke.
 
@@ -33,7 +33,7 @@ Synthetic Browser preview проверяет renderer, но не расчёты,
 - Каждая независимая проверка начинает с нужного исходного состояния. В cache-invalidation сценарии заново подтверди verified cache перед его повреждением; для проверки reopen открой свежий repository. Простое объединение тестов не сохраняет эти условия автоматически.
 - Создавай только нужные ресурсы: отказ до ZIP-разбора не требует полноценного архива; чистая логика не требует большого файла или GUI. Новые helpers и универсальные test harness добавляй только при подтверждённом повторении.
 - Ограничивай параллелизм по конфигурации и ресурсам машины, сохраняй изоляцию. Освобождай свои процессы, соединения и временные файлы через гарантированную очистку, включая путь ошибки; чужие процессы не останавливай.
-- Переиспользуй свежие артефакты текущего прогона, пока их входы не изменились; не повторяй их сборку. Порядок сборки и самостоятельная проверка prerequisites package-команд принадлежат [Windows Portable](../docs/packaging/WINDOWS_PORTABLE.md).
+- Переиспользуй свежие артефакты текущего прогона, пока их входы не изменились; не повторяй их сборку. Порядок сборки и самостоятельная проверка prerequisites package-команд принадлежат [Windows Setup](../docs/packaging/WINDOWS_SETUP.md).
 - Не маскируй failures через retry, увеличение timeout, `skip`, слабые assertions или обход auth/integrity. Действующие deadlines, нулевые retries и Python branch coverage gate 85% сохраняются. Параметры запуска принадлежат [Vitest](../vitest.config.ts), [Playwright](../playwright.config.ts) и [Python configuration](../tools/python-worker/pyproject.toml).
 - Измеряй эффект на сопоставимых запусках. Различай wall-clock, сумму времени workers, CPU и peak RAM; не выдавай единичный снимок за пиковое потребление. Сырые логи и evidence храни в ignored `.tmp/.codex/evidence/`.
 
@@ -57,8 +57,8 @@ Synthetic builder создаёт согласованные данные тол�
 | Electron build/E2E | `pnpm build`; `pnpm test:e2e` |
 | Worker artifact/self-test | `pnpm build:worker`; `pnpm smoke:worker` |
 | WinUnpacked | `pnpm package:win-unpacked`; `pnpm smoke:win-unpacked` |
-| Portable | `pnpm package:portable`; `pnpm smoke:portable` |
-| Полный локальный gate с обеими поставками | `pnpm verify -- --IncludePackaging` |
+| NSIS Setup / installed lifecycle | `pnpm package:setup`; `pnpm smoke:setup` (требует отсутствующей установки/ярлыков; создаёт два настоящих тестовых выпуска, затем удаляет свою установку, сохраняя дело/профиль в evidence) |
+| Полный локальный gate с установкой | `pnpm verify -- --IncludePackaging` |
 
 Python static-проверки из `tools/python-worker`: `uv run ruff format --check src tests`, `uv run ruff check src tests`, `uv run mypy`, `uv run pyright`. Версии и параметры инструментов принадлежат конфигурации проекта.
 

@@ -21,10 +21,10 @@ describe('worker location', () => {
     const location = resolveWorkerLocation({
       isPackaged: true,
       appPath: 'ignored',
-      resourcesPath: join('C:', 'portable', 'resources'),
+      resourcesPath: join('C:', 'installed', 'resources'),
     });
     expect(location.executablePath).toBe(
-      join('C:', 'portable', 'resources', 'python-worker', 'impeller-reliability-worker.exe'),
+      join('C:', 'installed', 'resources', 'python-worker', 'impeller-reliability-worker.exe'),
     );
     expect(
       createWorkerEnvironment(

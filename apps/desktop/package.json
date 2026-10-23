@@ -14,7 +14,7 @@
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "build": "electron-vite build && node ./scripts/verify-production-csp.mjs",
     "package:win-unpacked": "electron-builder --win dir --x64",
-    "package:portable": "electron-builder --win portable --x64"
+    "package:setup": "electron-builder --win nsis --x64"
   },
   "dependencies": {
     "@impeller-reliability/application": "workspace:*",

@@ -13,7 +13,7 @@
 | Integrity worker | manifest/Main/afterPack | packaging |
 | ASAR integrity and production fuses | afterPack fuse policy | packaging + smoke |
 | Offline/no TCP | production CSP + process-tree check | build + packaged smoke |
-| Portable x64 | electron-builder | real portable smoke |
+| NSIS Setup x64 | electron-builder | installed lifecycle/readback |
 | Windows quality automation | `.github/workflows/quality.yml` | GitHub Actions status check |
 | No business logic | capability/DB allowlists | source/test review |
 | Atomic `.irproj` container | Python ProjectService staging/rename | pytest integration + packaged smoke |
@@ -26,7 +26,7 @@
 | Unsaved draft lifecycle | renderer draft guard + detached/revision-checked reattach | Electron E2E |
 | Future migration backup/rollback | retained SQLite Backup API + forward migrator; no predecessor for first released v1 | future migration pytest integration |
 | Main-owned project paths | dialogs + recent allowlist | contracts + E2E + preload review |
-| Project persistence packaged | create/update/close/reopen smoke | win-unpacked + portable smoke |
+| Project persistence packaged | create/update/close/reopen smoke | win-unpacked + installed smoke |
 | Existing project validation | bounded manifest + reserved topology + immutable SQLite schema/evidence | pytest corruption/link/deadline integration |
 | Manual backup request atomicity | copy + quick_check + SHA-256 + final deadline owned cleanup | hash-timeout/read-error pytest integration |
 | Permanently detached workspace exit | confirmed Renderer-only local discard | Electron E2E moved-project recovery |
@@ -38,7 +38,7 @@
 | Reversible archive invariants | archived model/specimen rules without hard delete | pytest domain/integration |
 | Incomplete dossier warnings | non-blocking entity warnings without readiness score | pytest + UI/E2E |
 | Shared draft lifecycle | one draft-owner contract across metadata/customer/model/specimen | Vitest + Electron E2E |
-| Dossier persistence packaged | customer/model/specimen close/reopen | win-unpacked + portable smoke |
+| Dossier persistence packaged | customer/model/specimen close/reopen | win-unpacked + installed smoke |
 | CaseDocument separation | analyst-owned records/tables only; no `r130sh_source` or polymorphic link table | schema + owner-doc review |
 | Managed document confinement | Main dialog + Python revalidation + project-relative immutable registry | Vitest + pytest containment/signature tests |
 | File attach postconditions | staging/streaming SHA-256/atomic rename/transaction/cleanup | pytest failure/deadline/recovery integration |
@@ -77,7 +77,7 @@
 | RBD input provenance | each selected source/manual field, exact document revision and reason frozen without rewriting R130SH source | Python persistence/reopen/tamper integration + UI readback |
 | Atomic immutable calculation | input/result/audit pair, exact/conflicting retry, rollback and bounded history | Python transaction tests + Electron close/reopen |
 | Bounded calculation IPC | four typed operations, no calculated outputs from Renderer, UTF-8 JSONL envelope under 1 MiB | Pydantic/Zod/Vitest/process tests |
-| RBD production path | import → bind/materialize → explicit input UI → calculation → history/detail after reopen | Electron E2E + WinUnpacked/Portable calculation smoke |
+| RBD production path | import → bind/materialize → explicit input UI → calculation → history/detail after reopen | Electron E2E + WinUnpacked/installed calculation smoke |
 | PMN mathematical contract and Table 5 | Python `pmn_reference` exact Fraction formulas 8–10 and documented exact failure ceiling | independent numeric unit vectors, limits and not-applicable cases |
 | PMN source and immutable history | verified original/effective plan reader, six source/manual selections, separate input/result snapshots and audit | source/provenance, retry/conflict/rollback/tamper/reopen pytest and producer export integration |
-| PMN typed production path | four PMN operations through Python/Main/Preload/Zod and renderer draft/history lifecycle | contract/Vitest, Electron E2E with two frozen results and WinUnpacked/Portable calculation smoke; Browser preview verifies UI interactions only |
+| PMN typed production path | four PMN operations through Python/Main/Preload/Zod and renderer draft/history lifecycle | contract/Vitest, Electron E2E with two frozen results and WinUnpacked/installed calculation smoke; Browser preview verifies UI interactions only |

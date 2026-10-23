@@ -285,7 +285,7 @@ review не содержат findings. Review объединённого PR вы
 версии остаются блокирующими. Исправление проходит узкие тесты и повторный
 полный локальный gate. Первоначальный `pnpm verify -- --IncludePackaging` прошёл: 71
 Vitest, 438 Python tests (85.55%), 15 Electron E2E, worker build, WinUnpacked и
-Portable smoke; Browser ready/unavailable и detector выполнены.
+packaged smoke; Browser ready/unavailable и detector выполнены.
 
 ### C1 — mathematical/source contract
 
@@ -297,7 +297,7 @@ canonical integer strings, golden закрепляет ПМИ и примеры 
 связан с exact execution/import tuple, проверяет registry hash receipt и читает
 только выбранный bounded plan member. Два повторных профильных review не
 содержат findings. `pnpm verify -- --IncludePackaging` прошёл: 71 Vitest,
-469 Python tests (85.60%), 15 Electron E2E, worker build, WinUnpacked и Portable
+469 Python tests (85.60%), 15 Electron E2E, worker build, WinUnpacked и packaged
 smoke.
 
 ### C2 — snapshots and IPC
@@ -308,7 +308,7 @@ typed boundaries → retry/tamper/process tests → review → commit.
 exact retry, conflict, bounded history, повреждение на reopen и точное чтение
 исходного плана проверены. Профильные read-only review после исправлений не
 содержат findings. `pnpm verify -- --IncludePackaging` прошёл: 74 Vitest,
-474 Python tests (85.03%), 15 Electron E2E, worker build, WinUnpacked и Portable
+474 Python tests (85.03%), 15 Electron E2E, worker build, WinUnpacked и packaged
 smoke. Эти smoke ещё не выполняют новый расчёт; это критерий C3.
 
 ### C3 — production UI and closure
@@ -324,7 +324,7 @@ ready/unavailable, 1280×720, narrow reflow, AX/focus и консоль пров
 Impeccable detector отметил только ранее существовавший общий CSS grid.
 Профильные read-only review закрыты без новых findings после исправлений.
 `pnpm verify -- --IncludePackaging` завершился успешно: 76 Vitest, 474 Python
-tests (85.05%), 15 Electron E2E, worker build, WinUnpacked и Portable smoke;
+tests (85.05%), 15 Electron E2E, worker build, packaged smoke;
 оба packaged smoke действительно выполнили расчёт frozen exact-rounding RBD,
 проверили отличия от producer targets и тот же hash после reopen. После
 исправления reattach-сценария повторный полный gate прошёл: 77 Vitest, 474
@@ -336,7 +336,7 @@ Review `5f130e5` выявил два дополнительных пограни
 пересчёта хеша. Оба исправления проходят узкие регрессионные тесты и повторный
 профильный review без остаточных findings. Повторный полный gate прошёл: 77
 Vitest, 483 Python tests (85.03%), 15 Electron E2E, worker build,
-WinUnpacked и Portable smoke с `rbdCalculationPassed=true`. Следующее
+packaged smoke с `rbdCalculationPassed=true`. Следующее
 замечание к входному снимку отражено ниже.
 Review `7e4dbf6` выявил неполную сверку вложенного входного снимка и его
 provenance. Текущая дельта вводит строгую схему входа, проверяет связи с
@@ -346,7 +346,7 @@ operation, импортным источником и выбранной про�
 сохраняет допустимые перестановки выбора и нормализацию текста. Профильные
 read-only review после исправлений не содержат findings. Финальный локальный
 `pnpm verify -- --IncludePackaging` прошёл: 78 Vitest, 494 Python tests
-(85.26%), 15 Electron E2E, worker build, WinUnpacked и Portable smoke с
+(85.26%), 15 Electron E2E, worker build, packaged smoke с
 `rbdCalculationPassed=true`. Обновлённый Browser preview проверен в
 ready/unavailable, экран РБД доступен через AX, ошибок консоли нет.
 

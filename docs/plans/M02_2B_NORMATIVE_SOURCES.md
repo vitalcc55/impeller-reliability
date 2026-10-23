@@ -382,7 +382,7 @@ Security controls M02.2B:
 
 - worker onedir build/smoke;
 - win-unpacked build/smoke;
-- portable build/smoke;
+- packaged build/smoke;
 - packaged create/reopen with dossier + managed document;
 - production CSP, Electron fuses, no TCP, no orphan worker;
 - `pnpm verify -- --IncludePackaging`;

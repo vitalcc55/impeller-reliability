@@ -25,11 +25,11 @@
 | TypeScript | 21 файл, 230 passed; Vitest 20,06 с; aggregate environment 100,13 с, import 24,39 с, tests 14,11 с |
 | Python | 836 passed за 42,65 с; branch coverage 86,31%, исходный порог 85% |
 | Electron E2E | 21 passed, 127,296 с; skipped/flaky/unexpected = 0 |
-| Поставки | WinUnpacked и Portable smoke: passed, persistence/import/РБД/РПТ/ПМН/materials = true |
-| Детерминированная работа | 3 Electron builds, 2 clean PyInstaller builds, 2 unpacked packaging прохода, 1 portable compression |
+| Поставки | Packaged smoke: passed, persistence/import/РБД/РПТ/ПМН/materials = true |
+| Детерминированная работа | 3 Electron builds, 2 clean PyInstaller builds, 2 unpacked packaging прохода, 1 EXE compression |
 | Worker artifact | 217 файлов, 89,49 MiB |
 
-`environment` — сумма измерений окружений разных Vitest workers, а не CPU time или wall-clock полного запуска. Отдельный снимок portable-сжатия показал 720 MiB working set и 136,6 с накопленного CPU у `7za.exe`; это не peak и не измерение всего контура. Снимок Python-этапа: 14 процессов собственного дерева, 703 MiB суммарного working set. Эффект кешей и фоновой нагрузки учитывается как ограничение сравнения одного исходного и одного итогового запуска.
+`environment` — сумма измерений окружений разных Vitest workers, а не CPU time или wall-clock полного запуска. Отдельный снимок EXE-сжатия показал 720 MiB working set и 136,6 с накопленного CPU у `7za.exe`; это не peak и не измерение всего контура. Снимок Python-этапа: 14 процессов собственного дерева, 703 MiB суммарного working set. Эффект кешей и фоновой нагрузки учитывается как ограничение сравнения одного исходного и одного итогового запуска.
 
 Исходные подробные отчёты сохранены как `baseline-python-coverage.xml` и `baseline-playwright.json` рядом с логом, чтобы целевые проверки их не перезаписали.
 
@@ -70,7 +70,7 @@ Prediction: сокращение повторных сборок и ненужн
 Принято:
 
 - Node — обычная среда Vitest; только два React DOM-файла явно используют happy-dom. Ограничить параллелизм четырьмя workers, сохранив изоляцию и существующие дедлайны.
-- В полном verify одна свежая сборка Electron и worker; Portable создаётся из только что проверенного WinUnpacked через штатный `--prepackaged`. Оба smoke и compression без изменений; standalone packaging сохраняет свежую сборку. [CLI electron-builder](https://www.electron.build/v26/docs/cli/).
+- Текущая последовательность повторного использования свежего WinUnpacked и проверки установленной программы принадлежит [Windows Setup](../packaging/WINDOWS_SETUP.md); standalone packaging сохраняет свежую сборку. [CLI electron-builder](https://www.electron.build/v26/docs/cli/).
 - Исключить build-only mypy/Hypothesis и необязательные pytest plugins из PyInstaller graph; убрать неиспользуемую Hypothesis dev-зависимость. Runtime NumPy/SciPy и остальные версии сохраняются.
 - В packaged smoke — обязательные process/TCP snapshots и один unfiltered TCP запрос на sample с фильтрацией собственных PID в памяти. Прямой `Stop` на filtered `-OwningProcess` отклонён: штатное отсутствие сокетов даёт not-found error. Ошибки наблюдения не должны выдавать ложное подтверждение no TCP/no orphan.
 - Удалить сценарии, тестирующие фиксированные DEV-ответы preview, и tautology с самостоятельно созданным массивом. Сохранить компактные ready/unavailable, полезные DOM/draft/reconciliation проверки и runtime-boundary validation.
@@ -144,7 +144,7 @@ Checkpoint: первый review завершён, исправления реа�
 | Python branch coverage | 86,31%, gate 85% | **86,31%**, тот же gate |
 | Electron | 21 passed, 127,296 с | 17 passed, **101,437 с**; skipped/flaky/unexpected = 0 |
 | Electron / worker builds | 3 / 2 | **1 / 1** |
-| Unpacked staging / Portable compression | 2 / 1 | **1 / 1** |
+| Unpacked staging / EXE compression | 2 / 1 | **1 / 1** |
 | Worker artifact | 217 файлов, 89,49 MiB | **139 файлов, 80,99 MiB** |
 | Packaged smoke | обе поставки passed | обе поставки passed; сохранены import/calculations/reopen/materials и SQLite неизменность чтения материалов |
 

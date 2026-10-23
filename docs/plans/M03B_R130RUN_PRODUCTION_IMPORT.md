@@ -237,7 +237,7 @@ TypeScript tests покрывают exhaustive operation maps/DTO, source identi
 
 Electron E2E покрывает наблюдаемый основной workflow create/open → import final → progress/detail → bind → resolve/copy → close/reopen, явное подтверждение diagnostic partial и bounded window close при отказе worker во время импорта. Exact repeat, conflict, cancel, lost response, missing/modified archive, crash-orphan recovery и detached lifecycle проверяются детерминированными Python/TypeScript tests; Browser/Chrome QA отдельно подтверждает keyboard/focus, clean console и desktop-композицию от 1280×720 с целевыми 1536×864–1920×1080.
 
-Packaged smoke покрывает worker onedir, WinUnpacked и Portable import/reopen, CSP/fuses/no TCP/no orphan/no external Python/no extracted package tree.
+Packaged smoke покрывает worker onedir, import/reopen в упакованном приложении, CSP/fuses/no TCP/no orphan/no external Python/no extracted package tree.
 
 Cross-repository evidence строится как параметризованная матрица:
 

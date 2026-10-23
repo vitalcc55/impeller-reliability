@@ -182,7 +182,7 @@ TypeScript: exhaustive operation/result/policy maps; upstream/local ID separatio
 
 Electron/Browser: deterministic candidate → observable progress → report/provenance; no import UI/project mutation; invalid ZIP/checksum mismatch; cancel; dialog cancel/reject; worker restart/app close; keyboard/focus/status/alert; clean console; desktop/640 px. Browser preview остаётся synthetic UI evidence, не доказывает worker/storage.
 
-Packaged: worker onedir; WinUnpacked/Portable validation smoke with downstream synthetic candidate; production CSP; Electron fuses; no TCP/orphan worker/extracted temp tree. Полный gate: `pnpm verify -- --IncludePackaging` и `git diff --check`.
+Packaged: worker onedir; validation smoke упакованных сборок with downstream synthetic candidate; production CSP; Electron fuses; no TCP/orphan worker/extracted temp tree. Полный gate: `pnpm verify -- --IncludePackaging` и `git diff --check`.
 
 ## Definition of Done
 
