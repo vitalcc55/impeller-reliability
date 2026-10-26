@@ -17,9 +17,19 @@ Var policyRegistration
 Var policyParameters
 Var policyOption
 Var policyProcessId
+Var policyInitialSilent
 
 !macro customHeader
 Function ${POLICY_PREFIX}InitializePolicy
+  ; The one-click uninstaller enables silent mode after its first process check.
+  ; Keep the original intent for later checks instead of adopting that UI change.
+  ${If} $policyInitialSilent == ""
+    ${If} ${Silent}
+      StrCpy $policyInitialSilent 1
+    ${Else}
+      StrCpy $policyInitialSilent 0
+    ${EndIf}
+  ${EndIf}
   ${GetParameters} $policyParameters
   ClearErrors
   ${GetOptions} $policyParameters "--delete-app-data" $policyOption
@@ -72,14 +82,14 @@ Function ${POLICY_PREFIX}WaitForApplicationExit
     ClearErrors
     Return
   ${EndIf}
-  ${If} ${Silent}
+  ${If} $policyInitialSilent == 1
     SetErrorLevel 20
     Quit
   ${EndIf}
   ${If} $policyResult == 10
-    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Сохраните работу и самостоятельно закройте все окна Impeller Reliability. Дождитесь завершения worker, затем выберите «Повторить». Установщик не завершает процессы." /SD IDCANCEL IDRETRY policy_retry
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Сохраните работу и самостоятельно закройте все окна Impeller Reliability. Дождитесь завершения worker, затем выберите «Повторить». Установщик не завершает процессы." IDRETRY policy_retry
   ${Else}
-    MessageBox MB_RETRYCANCEL|MB_ICONSTOP "Не удалось достоверно проверить завершение процессов приложения. Файлы не заменены. Закройте приложение и выберите «Повторить» или отмените установку." /SD IDCANCEL IDRETRY policy_retry
+    MessageBox MB_RETRYCANCEL|MB_ICONSTOP "Не удалось достоверно проверить завершение процессов приложения. Файлы не заменены. Закройте приложение и выберите «Повторить» или отмените установку." IDRETRY policy_retry
   ${EndIf}
   SetErrorLevel 20
   Quit
