@@ -1,16 +1,22 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("WinUnpacked", "Portable")]
-    [string]$Target
+    [ValidateSet("WinUnpacked", "Installed")]
+    [string]$Target,
+    [string]$ExecutablePath,
+    [ValidateSet("Seed", "Readback")]
+    [string]$Phase = "Seed",
+    [string]$EvidenceDirectory,
+    [string]$ExpectedVersion
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $desktopDist = Join-Path $repositoryRoot "apps\desktop\dist"
-$smokeDirectory = Join-Path $repositoryRoot ".tmp\.codex\evidence\$($Target.ToLowerInvariant())"
-$summaryPath = Join-Path $smokeDirectory "summary.json"
+if (-not $EvidenceDirectory) { $EvidenceDirectory = Join-Path $repositoryRoot ".tmp\.codex\evidence\$($Target.ToLowerInvariant())" }
+$smokeDirectory = [System.IO.Path]::GetFullPath($EvidenceDirectory)
+$summaryPath = Join-Path $smokeDirectory "$($Phase.ToLowerInvariant())-summary.json"
 $projectPath = Join-Path $smokeDirectory "Packaged smoke project.irproj"
 $runPackagePath = Join-Path $repositoryRoot "fixtures\contracts\r130run\v1\m9a\packages\exact_methodical_rounding.r130run"
 $rptRunPackagePath = Join-Path $repositoryRoot "fixtures\contracts\r130run\v1\m9a\packages\normal_final_rpt_full_stop.r130run"
@@ -19,6 +25,7 @@ $pmnFixtureMetadataPath = Join-Path $pmnFixtureDirectory "UPSTREAM_SOURCE.json"
 $materialFixtureDirectory = Join-Path $repositoryRoot "fixtures\contracts\r130run\v1\source-materials"
 $materialFixtureMetadataPath = Join-Path $materialFixtureDirectory "UPSTREAM_SOURCE.json"
 $packageMetadata = Get-Content -LiteralPath (Join-Path $repositoryRoot "apps\desktop\package.json") -Raw | ConvertFrom-Json
+if (-not $ExpectedVersion) { $ExpectedVersion = [string]$packageMetadata.version }
 $applicationExecutable = Join-Path $desktopDist "win-unpacked\ImpellerReliabilityCalc.exe"
 
 function Update-OwnedProcessIds {
@@ -54,7 +61,7 @@ function Stop-OwnedProcesses {
 
 New-Item -ItemType Directory -Force -Path $smokeDirectory | Out-Null
 Remove-Item -LiteralPath $summaryPath -Force -ErrorAction SilentlyContinue
-if (Test-Path -LiteralPath $projectPath) {
+if ($Phase -eq "Seed" -and (Test-Path -LiteralPath $projectPath)) {
     $resolvedProjectPath = [System.IO.Path]::GetFullPath($projectPath)
     $resolvedSmokeDirectory = [System.IO.Path]::GetFullPath($smokeDirectory).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
     if (-not $resolvedProjectPath.StartsWith($resolvedSmokeDirectory, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -67,14 +74,18 @@ if ($Target -eq "WinUnpacked") {
     $executablePath = $applicationExecutable
 }
 else {
-    $artifactName = "ImpellerReliabilityCalc-$($packageMetadata.version)-portable-x64.exe"
-    $executablePath = Join-Path $desktopDist $artifactName
+    if (-not $ExecutablePath) { throw "Installed smoke requires -ExecutablePath." }
+    $applicationExecutable = [System.IO.Path]::GetFullPath($ExecutablePath)
+    $executablePath = $applicationExecutable
 }
 if (-not (Test-Path -LiteralPath $executablePath)) { throw "Desktop artifact not found: $executablePath" }
 if (-not (Test-Path -LiteralPath $applicationExecutable)) { throw "Packaged application executable not found: $applicationExecutable" }
 
 & node (Join-Path $repositoryRoot "apps\desktop\scripts\verify-packaged-fuses.mjs") $applicationExecutable
 if ($LASTEXITCODE -ne 0) { throw "Electron fuse verification failed." }
+$workerExecutable = Join-Path (Split-Path -Parent $applicationExecutable) 'resources\python-worker\impeller-reliability-worker.exe'
+$workerProbe = & $workerExecutable --self-test | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $workerProbe.passed -ne $true) { throw "Installed worker self-test failed." }
 
 if (-not (Test-Path -LiteralPath $runPackagePath)) { throw "Producer M9a package not found: $runPackagePath" }
 if (-not (Test-Path -LiteralPath $rptRunPackagePath)) { throw "Producer RPT package not found: $rptRunPackagePath" }
@@ -94,6 +105,8 @@ $materialPackageSha256 = (Get-FileHash -LiteralPath $materialRunPackagePath -Alg
 if ($materialPackageSha256 -ne [string]$materialRecord.sha256) { throw "Producer material package hash mismatch." }
 
 $env:IMPELLER_SMOKE_OUTPUT = $summaryPath
+$env:IMPELLER_SMOKE_PHASE = $Phase
+$env:IMPELLER_TEST_USER_DATA = Join-Path $smokeDirectory "user-data"
 $env:IMPELLER_SMOKE_HOLD_MS = "1500"
 $env:IMPELLER_AUTOMATED_PROJECT_PATH = $projectPath
 $env:IMPELLER_AUTOMATED_R130RUN_PATH = $runPackagePath
@@ -107,7 +120,7 @@ $launchStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $ownedProcessIds = [System.Collections.Generic.HashSet[int]]::new()
 trap {
     Stop-OwnedProcesses -OwnedProcessIds $ownedProcessIds
-    throw
+    throw $_
 }
 $networkObserved = $false
 try {
@@ -139,6 +152,8 @@ try {
 }
 finally {
     Remove-Item Env:IMPELLER_SMOKE_OUTPUT -ErrorAction SilentlyContinue
+    Remove-Item Env:IMPELLER_SMOKE_PHASE -ErrorAction SilentlyContinue
+    Remove-Item Env:IMPELLER_TEST_USER_DATA -ErrorAction SilentlyContinue
     Remove-Item Env:IMPELLER_SMOKE_HOLD_MS -ErrorAction SilentlyContinue
     Remove-Item Env:IMPELLER_AUTOMATED_PROJECT_PATH -ErrorAction SilentlyContinue
     Remove-Item Env:IMPELLER_AUTOMATED_R130RUN_PATH -ErrorAction SilentlyContinue
@@ -155,6 +170,12 @@ $summary | Add-Member -NotePropertyName launcherElapsedMs -NotePropertyValue $la
 $summary | Add-Member -NotePropertyName observedProcessIds -NotePropertyValue @($ownedProcessIds)
 $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $summaryPath -Encoding utf8
 if ($summary.passed -ne $true) { throw "Desktop smoke returned failure." }
+if ($summary.runtime.applicationVersion -ne $ExpectedVersion -or $summary.packageVersion -ne $ExpectedVersion) { throw "Installed runtime/package version does not match Setup metadata." }
+if ($Phase -eq 'Readback') {
+    $seedSummary = Get-Content -LiteralPath (Join-Path $smokeDirectory 'seed-summary.json') -Raw | ConvertFrom-Json
+    if ($seedSummary.defaultUserDataPath -ne $summary.defaultUserDataPath) { throw 'Default Electron profile path changed between releases.' }
+}
+if ([version](Get-Item -LiteralPath $applicationExecutable).VersionInfo.FileVersion -ne [version]$ExpectedVersion) { throw "Installed EXE version does not match Setup metadata." }
 if ($summary.projectScenarioPassed -ne $true) { throw "Desktop smoke project create/update/close/reopen failed." }
 if ($summary.runPackageValidationPassed -ne $true) { throw "Desktop smoke R130SH contract validation failed." }
 if ($summary.runPackageImportPassed -ne $true) { throw "Desktop smoke R130SH production import/reopen failed." }

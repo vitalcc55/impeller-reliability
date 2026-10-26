@@ -1,0 +1,31 @@
+diff --git a/templates/nsis/include/extractAppPackage.nsh b/templates/nsis/include/extractAppPackage.nsh
+index f5470bf52e923dc47266cea4684c76ef78ced451..97b40773a992d233a292df29a53a64976eb20855 100644
+--- a/templates/nsis/include/extractAppPackage.nsh
++++ b/templates/nsis/include/extractAppPackage.nsh
+@@ -82,7 +82,7 @@
+     nsisunz::Unzip "$PLUGINSDIR\app-$packageArch.zip" "$INSTDIR"
+     Pop $R0
+     StrCmp $R0 "success" +3
+-      MessageBox MB_OK|MB_ICONEXCLAMATION "$(decompressionFailed)$\n$R0"
++      MessageBox MB_OK|MB_ICONEXCLAMATION "$(decompressionFailed)$\n$R0" /SD IDOK
+       Quit
+   !else
+     !insertmacro extractUsing7za "$PLUGINSDIR\app-$packageArch.7z"
+diff --git a/templates/nsis/include/installer.nsh b/templates/nsis/include/installer.nsh
+index 300ef3dd699d0f5a081b1934fcc22dbe12025bdb..b7faab4e450c0649f4521f340be287b12213a164 100644
+--- a/templates/nsis/include/installer.nsh
++++ b/templates/nsis/include/installer.nsh
+@@ -86,13 +86,5 @@
+         ${endif}
+     !else
+       !insertmacro extractEmbeddedAppPackage
+-      # electron always uses per user app data
+-      ${if} $installMode == "all"
+-        SetShellVarContext current
+-      ${endif}
+-      !insertmacro copyFile "$EXEPATH" "$LOCALAPPDATA\${APP_INSTALLER_STORE_FILE}"
+-      ${if} $installMode == "all"
+-        SetShellVarContext all
+-      ${endif}
+     !endif
+   !endif

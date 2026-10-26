@@ -52,9 +52,9 @@ M05A реализует ограниченный source-only доступ к п�
 
 ## Поставка и эксплуатация
 
-Portable остаётся единым переносимым артефактом, но его холодный запуск около 26 секунд не назначает его автоматически основным ежедневным вариантом. После измерений на лабораторных Windows 10/11 с Defender отдельно выбирается production-поставка: installer/installed, onedir или допустимый медленный portable. Тогда же отдельно решаются подпись и release-процесс.
+Поставка выбрана: полный офлайн NSIS Setup строго для текущего пользователя с ручным обновлением, сохранением профиля/внешних дел и отказом downgrade. Контракт сопровождения принадлежит [Windows Setup](../packaging/WINDOWS_SETUP.md), решение — [ADR-0006](../decisions/ADR-0006-windows-packaging-options.md). Signing infrastructure и автоматическая публикация не входят в этот срез.
 
-GitHub quality workflow до production release выполняет static/unit gate, production build и Electron E2E, но намеренно не собирает PyInstaller worker, `win-unpacked` и portable. Packaging остаётся обязательным локальным полным gate; manual/release workflow появляется ближе к поставке, когда определён production-вариант.
+GitHub quality workflow выполняет static/unit gate, production build и Electron E2E. Packaging остаётся локальным gate с worker, WinUnpacked и installed lifecycle; отдельный publishing workflow не вводится.
 
 ## Отложенные обновления toolchain
 

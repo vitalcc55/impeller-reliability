@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("WinUnpacked", "Portable")]
+    [ValidateSet("WinUnpacked", "Setup")]
     [string]$Target
 )
 
@@ -19,7 +19,7 @@ try {
         & pnpm --filter @impeller-reliability/desktop package:win-unpacked
     }
     else {
-        & pnpm --filter @impeller-reliability/desktop package:portable
+        & pnpm --filter @impeller-reliability/desktop package:setup
     }
     if ($LASTEXITCODE -ne 0) { throw "Electron packaging failed." }
 }

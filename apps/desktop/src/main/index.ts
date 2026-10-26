@@ -11,8 +11,9 @@ import {
   type SaveDialogOptions,
 } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
 import {
@@ -91,8 +92,15 @@ import {
 import { JsonlLogger } from './logging';
 import { MaterialCopies, MaterialOpener } from './material-open';
 import { MaterialCopyConsent } from './material-copy-consent';
-import { runSourceMaterialSmoke, type SourceMaterialSmokeEvidence } from './source-material-smoke';
+import {
+  readSourceMaterialSmoke,
+  runSourceMaterialSmoke,
+  type SourceMaterialSmokeEvidence,
+} from './source-material-smoke';
+import { captureSmokePersistence } from './smoke-persistence';
 import { RecentProjectsStore } from './recent-projects';
+import { isProjectOutsideInstallation } from './project-location';
+import { verifyProjectLocationSmoke } from './project-location-smoke';
 import {
   runPackageImportStart,
   runPackageValidationStart,
@@ -132,9 +140,14 @@ const RENDERER_CLOSE_ACK_TIMEOUT_MS = 2_000;
 
 declare const __APPLICATION_VERSION__: string;
 
+const defaultUserDataPath = app.getPath('userData');
 const testUserDataPath = process.env['IMPELLER_TEST_USER_DATA'];
-if (process.env['NODE_ENV'] === 'test' && testUserDataPath !== undefined) {
+if (
+  (process.env['NODE_ENV'] === 'test' || process.env['IMPELLER_SMOKE_OUTPUT'] !== undefined) &&
+  testUserDataPath !== undefined
+) {
   app.setPath('userData', resolve(testUserDataPath));
+  app.setAppLogsPath(join(resolve(testUserDataPath), 'logs'));
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -318,7 +331,7 @@ function registerIpc(logPath: string, stateDirectory: string, logger: JsonlLogge
     }
     const options: SaveDialogOptions = {
       title: 'Создать проект Impeller Reliability',
-      defaultPath: 'Новый проект.irproj',
+      defaultPath: join(app.getPath('documents'), 'Новый проект.irproj'),
       buttonLabel: 'Создать проект',
       filters: [{ name: 'Проект Impeller Reliability', extensions: ['irproj'] }],
       properties: ['createDirectory', 'showOverwriteConfirmation'],
@@ -1002,6 +1015,29 @@ function approvedAutomatedProjectPath(): string | null {
   return resolve(rawPath);
 }
 
+async function checkProjectLocation(path: string): Promise<DesktopResult<null>> {
+  if (!app.isPackaged) return { ok: true, result: null };
+  try {
+    if (
+      !(await isProjectOutsideInstallation(path, [
+        dirname(process.execPath),
+        process.resourcesPath,
+      ]))
+    ) {
+      return failureResult(
+        'validation_error',
+        'Дело нельзя создавать или открывать в папке установки приложения. Закройте дело во всех окнах, вручную переместите весь каталог .irproj в Документы или другую папку пользователя и откройте его снова.',
+      );
+    }
+    return { ok: true, result: null };
+  } catch {
+    return failureResult(
+      'storage_error',
+      'Не удалось проверить расположение дела. Выберите доступную папку пользователя.',
+    );
+  }
+}
+
 async function createProject(
   client: WorkerClient | null,
   recentProjects: RecentProjectsStore,
@@ -1009,6 +1045,8 @@ async function createProject(
   path: string,
   draft: ProjectDraft,
 ): Promise<DesktopResult<ProjectOverview>> {
+  const location = await checkProjectLocation(path);
+  if (!location.ok) return location;
   const result = await runProjectOperation(client, async (readyClient) =>
     readyClient.request('project.create', {
       path,
@@ -1034,6 +1072,8 @@ async function openProject(
   path: string,
   expectedProjectId?: string,
 ): Promise<DesktopResult<ProjectOverview>> {
+  const location = await checkProjectLocation(path);
+  if (!location.ok) return location;
   const result = await runProjectOperation(client, async (readyClient) =>
     readyClient.request('project.open', { path, applicationInstanceId }),
   );
@@ -1278,7 +1318,40 @@ async function runSmokeIfRequested(copies: MaterialCopies): Promise<void> {
   let pmnCalculationPassed = false;
   let sourceMaterials: SourceMaterialSmokeEvidence | null = null;
   let sourceMaterialsError: string | null = null;
-  if (automatedProjectPath !== null && workerClient !== null) {
+  const readback = process.env['IMPELLER_SMOKE_PHASE'] === 'Readback';
+  const baselinePath = join(dirname(smokeOutput), 'persistence-baseline.json');
+  let persistencePassed = false;
+  let persistenceError: string | null = null;
+  if (readback && automatedProjectPath !== null && workerClient !== null) {
+    try {
+      const current = await captureSmokePersistence(
+        workerClient,
+        automatedProjectPath,
+        applicationInstanceId,
+        app.getPath('userData'),
+        false,
+      );
+      const baseline: unknown = JSON.parse(await readFile(baselinePath, 'utf8'));
+      if (!isDeepStrictEqual(current, baseline)) throw new Error('smoke_persisted_values_changed');
+      sourceMaterials = await readSourceMaterialSmoke(
+        workerClient,
+        copies,
+        automatedProjectPath,
+        current.origin,
+        applicationInstanceId,
+      );
+      projectScenarioPassed = true;
+      runPackageValidationPassed = true;
+      runPackageImportPassed = true;
+      rbdCalculationPassed = true;
+      rptCalculationPassed = true;
+      pmnCalculationPassed = true;
+      persistencePassed = true;
+    } catch (error: unknown) {
+      persistenceError = error instanceof Error ? error.message : 'smoke_readback_failed';
+    }
+  }
+  if (!readback && automatedProjectPath !== null && workerClient !== null) {
     const created = await workerClient.request('project.create', {
       path: automatedProjectPath,
       applicationInstanceId,
@@ -1944,6 +2017,7 @@ async function runSmokeIfRequested(copies: MaterialCopies): Promise<void> {
     automatedProjectPath !== null &&
     workerClient !== null &&
     runPackageImportPassed &&
+    !readback &&
     materialRunPath !== undefined &&
     materialArchiveSha256 !== undefined
   ) {
@@ -1959,6 +2033,33 @@ async function runSmokeIfRequested(copies: MaterialCopies): Promise<void> {
     } catch (error: unknown) {
       sourceMaterialsError =
         error instanceof Error ? error.message : 'material_smoke_unknown_error';
+    }
+  }
+  if (
+    !readback &&
+    sourceMaterials !== null &&
+    automatedProjectPath !== null &&
+    workerClient !== null
+  ) {
+    try {
+      const baseline = await captureSmokePersistence(
+        workerClient,
+        automatedProjectPath,
+        applicationInstanceId,
+        app.getPath('userData'),
+        true,
+      );
+      if (mainWindow === null) throw new Error('smoke_window_unavailable');
+      await verifyProjectLocationSmoke(
+        mainWindow,
+        process.resourcesPath,
+        app.getPath('userData'),
+        baseline.project,
+      );
+      await writeFile(baselinePath, JSON.stringify(baseline, null, 2), 'utf8');
+      persistencePassed = true;
+    } catch (error: unknown) {
+      persistenceError = error instanceof Error ? error.message : 'smoke_baseline_failed';
     }
   }
   await mkdir(dirname(smokeOutput), { recursive: true });
@@ -1977,6 +2078,7 @@ async function runSmokeIfRequested(copies: MaterialCopies): Promise<void> {
           rbdCalculationPassed &&
           rptCalculationPassed &&
           pmnCalculationPassed &&
+          persistencePassed &&
           sourceMaterials !== null,
         runtime,
         pingOk: ping?.ok === true,
@@ -1989,6 +2091,11 @@ async function runSmokeIfRequested(copies: MaterialCopies): Promise<void> {
         sourceMaterialsPassed: sourceMaterials !== null,
         sourceMaterials,
         sourceMaterialsError,
+        persistencePassed,
+        persistenceError,
+        userDataPath: app.getPath('userData'),
+        defaultUserDataPath,
+        packageVersion: app.getVersion(),
         elapsedMs: Math.round(performance.now() - startedAt),
         pid: process.pid,
         workerPid: workerClient?.processId ?? null,

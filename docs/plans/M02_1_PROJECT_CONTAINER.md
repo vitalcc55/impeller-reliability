@@ -192,7 +192,7 @@ Desktop shell содержит start page с Create/Open/Recent/Diagnostics и �
 - Electron E2E: create/update/close/reopen, cancelled dialog boundary, diagnostics и preload isolation;
 - packaged smoke: create/update/close/reopen через bundled worker, CSP/fuses, exact process tree, no TCP, no orphan worker;
 - Browser QA: start/project/diagnostics, ready/error states, desktop и 640 px, keyboard/focus/console;
-- `pnpm check`, `pnpm build`, `pnpm test:e2e`, worker build/smoke, `win-unpacked` build/smoke, portable build/smoke, `git diff --check`.
+- `pnpm check`, `pnpm build`, `pnpm test:e2e`, worker build/smoke, `win-unpacked` build/smoke, packaged build/smoke, `git diff --check`.
 
 GitHub quality workflow намеренно ограничен `check`, production build и E2E. PyInstaller и Electron packaging остаются обязательным локальным gate; отдельный manual/release workflow добавляется ближе к производственной поставке.
 

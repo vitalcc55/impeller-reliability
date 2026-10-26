@@ -1,6 +1,6 @@
 # Non-functional Requirements
 
-- Windows 10/11 x64, offline, single-user; один portable EXE.
+- Windows 10/11 x64, offline, single-user; один полный NSIS Setup для текущего пользователя без административных прав, с обновлением и равной переустановкой, отказом downgrade и сохранением профиля/внешних дел при удалении.
 - UI показывается до полной загрузки SciPy; startup, worker-ready и размер измеряются отдельно.
 - Строгая типизация и versioned contracts; deterministic checks и bounded shutdown.
 - SQLite: FK, WAL, one writer, short transactions; первый выпущенный baseline создаётся атомарно без фиктивного predecessor, а каждая будущая forward-only migration начинается с verified SQLite backup.

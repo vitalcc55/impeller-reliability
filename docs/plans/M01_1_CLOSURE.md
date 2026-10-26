@@ -52,7 +52,7 @@ M01.1 укрепляет существующую границу Renderer → Pr
 - `pnpm test:e2e`
 - `pnpm build:worker` и `pnpm smoke:worker`
 - `pnpm package:win-unpacked` и `pnpm smoke:win-unpacked`
-- `pnpm package:portable` и `pnpm smoke:portable`
+- `pnpm package:setup` и `pnpm smoke:setup`
 - `git diff --check`
 - worker crash видим в Renderer; restart не создаёт второй worker
 - response revision проверяется и stale response не применяется

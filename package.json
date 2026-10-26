@@ -22,10 +22,10 @@
     "check:python": "pwsh.exe -NoProfile -File tools/python-worker/scripts/check.ps1",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm check:python",
     "package:win-unpacked": "pwsh.exe -NoProfile -File scripts/build/package.ps1 -Target WinUnpacked",
-    "package:portable": "pwsh.exe -NoProfile -File scripts/build/package.ps1 -Target Portable",
+    "package:setup": "pwsh.exe -NoProfile -File scripts/build/package.ps1 -Target Setup",
     "smoke:worker": "pwsh.exe -NoProfile -File scripts/smoke/worker.ps1",
     "smoke:win-unpacked": "pwsh.exe -NoProfile -File scripts/smoke/desktop.ps1 -Target WinUnpacked",
-    "smoke:portable": "pwsh.exe -NoProfile -File scripts/smoke/desktop.ps1 -Target Portable",
+    "smoke:setup": "pwsh.exe -NoProfile -File scripts/smoke/installer.ps1",
     "verify": "pwsh.exe -NoProfile -File scripts/codex/verify.ps1"
   },
   "devDependencies": {

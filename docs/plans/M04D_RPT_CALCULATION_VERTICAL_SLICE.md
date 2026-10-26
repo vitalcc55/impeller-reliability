@@ -30,4 +30,4 @@
 
 ## Подтверждение результата
 
-После закрытого read-only review полный `pnpm verify -- --IncludePackaging` прошёл: 80 Vitest, 564 Python-теста и 16 Electron E2E. Оба packaged smoke (`win-unpacked` и portable) подтвердили сохранение и reopen РБД/РПТ с совпадающими hashes, отсутствие TCP и orphan worker. Browser preview проверен для ready РПТ, недоступного worker и узкого окна; синтетический preview не служит доказательством persistence. Все 21 frozen `.r130run` остались неизменными, `git diff --check` чистый.
+После закрытого read-only review полный `pnpm verify -- --IncludePackaging` прошёл: 80 Vitest, 564 Python-теста и 16 Electron E2E. Проверки упакованных сборок подтвердили сохранение и reopen РБД/РПТ с совпадающими hashes, отсутствие TCP и orphan worker. Browser preview проверен для ready РПТ, недоступного worker и узкого окна; синтетический preview не служит доказательством persistence. Все 21 frozen `.r130run` остались неизменными, `git diff --check` чистый.

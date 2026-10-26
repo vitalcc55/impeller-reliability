@@ -80,6 +80,16 @@ export async function runSourceMaterialSmoke(
     exportRevision: source.exportRevision,
     outerPackageSha256: source.outerPackageSha256,
   };
+  return readSourceMaterialSmoke(worker, copies, projectPath, origin, applicationInstanceId);
+}
+
+export async function readSourceMaterialSmoke(
+  worker: WorkerClient,
+  copies: MaterialCopies,
+  projectPath: string,
+  origin: MaterialOrigin,
+  applicationInstanceId: string,
+): Promise<SourceMaterialSmokeEvidence> {
   await closeSmokeProject(worker);
   const database = join(projectPath, 'project.sqlite');
   const before = await readFile(database);

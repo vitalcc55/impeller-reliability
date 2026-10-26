@@ -9,7 +9,7 @@
 - Python 3.14 worker — предметная валидация, будущие расчёты и SQLite;
 - UTF-8 JSONL stdin/stdout — process IPC без HTTP, TCP-порта и локального сервера;
 - Browser dev preview — основная интерактивная поверхность разработки renderer;
-- PyInstaller onedir внутри electron-builder portable — Windows x64 поставка.
+- PyInstaller onedir внутри полного electron-builder NSIS Setup — Windows x64 поставка строго для текущего пользователя.
 
 M00–M01 реализуют walking skeleton. Первый публикуемый `.irproj` использует чистую schema v1 с ProjectSession, Project metadata/audit, CustomerProfile, WheelModel, Specimen и CaseDocument с optional managed file. Невыпущенные промежуточные schema не поддерживаются как legacy formats. TestCampaign, импорт `.r130run`, SourceReference, РБД, РПТ, ПМН, FMEA, статистика, Марков, Монте-Карло, вибрация и отчётность не считаются реализованными до появления утверждённых контрактов и тестов.
 
