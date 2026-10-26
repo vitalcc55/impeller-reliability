@@ -46,7 +46,18 @@ describe('installer safety policy', () => {
     ).toBe(expected);
   });
 
-  it('waits for an orphan worker by installation path and leaves other installations running', async () => {
+  it.each([
+    {
+      description: 'blocks a worker from its installation without stopping either process',
+      ownWorkerPresent: true,
+      expectedCode: 10,
+    },
+    {
+      description: 'permits replacement after its worker exits while a neighbouring worker remains',
+      ownWorkerPresent: false,
+      expectedCode: 0,
+    },
+  ])('$description', async ({ ownWorkerPresent, expectedCode }) => {
     const root = await mkdtemp(join(tmpdir(), 'impeller-installer-'));
     const installation = join(root, 'Installed');
     const neighbour = `${installation}-other`;
@@ -68,6 +79,10 @@ describe('installer safety policy', () => {
         new Promise<void>((done) => owned.once('spawn', done)),
         new Promise<void>((done) => other.once('spawn', done)),
       ]);
+      if (!ownWorkerPresent) {
+        owned.kill();
+        await ownedExit;
+      }
       expect(
         await resultCode([
           '-Mode',
@@ -77,21 +92,8 @@ describe('installer safety policy', () => {
           '-InstallerProcessId',
           String(process.pid),
         ]),
-      ).toBe(10);
-      expect(owned.exitCode).toBeNull();
-      expect(other.exitCode).toBeNull();
-      owned.kill();
-      await ownedExit;
-      expect(
-        await resultCode([
-          '-Mode',
-          'Processes',
-          '-InstallationDirectory',
-          installation,
-          '-InstallerProcessId',
-          String(process.pid),
-        ]),
-      ).toBe(0);
+      ).toBe(expectedCode);
+      if (ownWorkerPresent) expect(owned.exitCode).toBeNull();
       expect(other.exitCode).toBeNull();
     } finally {
       owned.kill();
