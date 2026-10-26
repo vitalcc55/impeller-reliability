@@ -157,24 +157,30 @@ async function seedCopy(
   return directory;
 }
 
-it('recovers current-owner capacity at the limit and continues opening', async () => {
+it('uses the last current-owner capacity slot without asking to release copies', async () => {
   const f = await fixture('', true);
   await initializeCache(f);
-  // The real 64-opening sequence belongs to Electron E2E. Here the store starts
-  // one slot below its limit so the unit case isolates the live-owner boundary.
+  // The real 64-opening sequence belongs to Electron E2E. This case isolates
+  // the last available slot; consent is only relevant once the store is full.
   for (let index = 0; index < 63; index++) await seedCopy(f.cache, randomUUID(), { handed: true });
   expect(await f.opener.open({ identity, operationId: randomUUID() })).toMatchObject({ ok: true });
   expect(f.confirmRelease).not.toHaveBeenCalled();
   expect(f.discard).not.toHaveBeenCalled();
+  expect(f.shell).toHaveBeenCalledOnce();
   expect((await readdir(f.cache)).filter((name) => name.startsWith('copy-'))).toHaveLength(64);
+});
 
+it('recovers full current-owner capacity after consent and continues opening', async () => {
+  const f = await fixture('', true);
+  await initializeCache(f);
+  for (let index = 0; index < 64; index++) await seedCopy(f.cache, randomUUID(), { handed: true });
   expect(await f.opener.open({ identity, operationId: randomUUID() })).toMatchObject({ ok: true });
   expect(f.confirmRelease).toHaveBeenCalledOnce();
   expect(f.discard).toHaveBeenCalledTimes(64);
   expect((await readdir(f.cache)).filter((name) => name.startsWith('copy-'))).toHaveLength(1);
 
   expect(await f.opener.open({ identity, operationId: randomUUID() })).toMatchObject({ ok: true });
-  expect(f.shell).toHaveBeenCalledTimes(3);
+  expect(f.shell).toHaveBeenCalledTimes(2);
   expect(f.confirmRelease).toHaveBeenCalledOnce();
   expect(f.discard).toHaveBeenCalledTimes(64);
   expect((await readdir(f.cache)).filter((name) => name.startsWith('copy-'))).toHaveLength(2);

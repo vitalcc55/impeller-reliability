@@ -11,7 +11,7 @@ import {
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { _electron as electron, expect, test } from '@playwright/test';
+import { _electron as electron, expect, test, type Page } from '@playwright/test';
 import type { ImpellerApi } from '@impeller-reliability/contracts';
 
 declare global {
@@ -915,10 +915,71 @@ test('reconciles a clean document after a committed attachment response is not a
   }
 });
 
-test('imports an RBD run, saves its calculation and preserves versioned reliability evidence', async () => {
+async function prepareImportedRbdExecution(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const api = window.impeller;
+    if (api === undefined) throw new Error('preload_api_missing');
+    const wheel = await api.wheelModel.create({
+      wheelModelId: crypto.randomUUID(),
+      fullName: 'Локальная модель РБД',
+      designation: '',
+      nominalDiameterMm: null,
+      nominalSpeedRpm: null,
+      bladeCount: null,
+      geometryDescription: '',
+      compositionDescription: '',
+      materialDescription: '',
+      notes: '',
+    });
+    if (!wheel.ok) throw new Error(wheel.error.code);
+    const specimen = await api.specimen.create({
+      specimenId: crypto.randomUUID(),
+      wheelModelId: wheel.result.wheelModelId,
+      identificationNumber: 'LOCAL-RBD-001',
+      batchNumber: '',
+      marking: '',
+      manufacturedOn: null,
+      receivedOn: null,
+      workingDiameterMm: null,
+      initialConditionNotes: '',
+      notes: '',
+    });
+    if (!specimen.ok) throw new Error(specimen.error.code);
+    const document = await api.caseDocument.create({
+      caseDocumentId: crypto.randomUUID(),
+      document: {
+        documentKind: 'typical_test_method',
+        title: 'ПМИ Р130У',
+        designation: 'ПМИ Р130У',
+        revisionLabel: '01',
+        documentDate: null,
+        issuer: '',
+        notes: '',
+      },
+      wheelModelIds: [],
+      specimenIds: [],
+    });
+    if (!document.ok) throw new Error(document.error.code);
+  });
+  await page.getByRole('button', { name: 'Результаты R130SH' }).click();
+  await page.getByRole('button', { name: 'Импортировать результат R130SH' }).click();
+  await expect(page.getByText('Импорт завершён')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'normal_final_rbd' })).toBeVisible();
+  await expect(page.getByText('Источник проверен', { exact: true })).toBeVisible();
+
+  await page.getByRole('combobox', { name: 'Local Specimen' }).click();
+  await page.getByRole('option', { name: 'LOCAL-RBD-001 — Локальная модель РБД' }).click();
+  await page.getByLabel('Причина привязки').fill('Идентичность подтверждена инженером');
+  await page.getByRole('button', { name: 'Сохранить привязку' }).click();
+  await expect(page.getByText(/Привязка source specimen сохранена/u)).toBeVisible();
+  await page.getByRole('button', { name: 'Подготовить исполнение для анализа' }).click();
+  await expect(page.getByText(/Аналитическое исполнение РБД подтверждено/u)).toBeVisible();
+}
+
+test('imports an RBD run and reopens its immutable calculation', async () => {
   const repositoryRoot = resolve(import.meta.dirname, '../../../..');
-  const evidenceRoot = resolve(repositoryRoot, '.tmp/.codex/evidence/rbd-import-e2e');
-  const projectPath = join(evidenceRoot, 'rbd-import.irproj');
+  const evidenceRoot = resolve(repositoryRoot, '.tmp/.codex/evidence/rbd-calculation-e2e');
+  const projectPath = join(evidenceRoot, 'rbd-calculation.irproj');
   const userDataPath = join(evidenceRoot, 'user-data');
   const packagePath = join(
     repositoryRoot,
@@ -947,40 +1008,7 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.getByRole('button', { name: 'Создать проект' }).click();
 
-    await page.getByRole('button', { name: 'Модели колёс' }).click();
-    await page.getByRole('button', { name: 'Новая модель' }).click();
-    await page.getByLabel('Полное наименование').fill('Локальная модель РБД');
-    await page.getByRole('button', { name: 'Сохранить модель' }).click();
-    await page.getByRole('button', { name: 'Образцы' }).click();
-    await page.getByRole('button', { name: 'Новый образец' }).click();
-    await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
-    await page.getByRole('option', { name: 'Локальная модель РБД' }).click();
-    await page.getByLabel('Идентификационный номер').fill('LOCAL-RBD-001');
-    await page.getByRole('button', { name: 'Сохранить образец' }).click();
-
-    await page.getByRole('button', { name: 'Документы дела' }).click();
-    await page.getByRole('button', { name: 'Новый документ' }).click();
-    await page.getByRole('combobox', { name: 'Вид документа' }).click();
-    await page.getByRole('option', { name: 'Типовая ПМИ' }).click();
-    await page.getByLabel('Название').fill('ПМИ Р130У');
-    await page.getByLabel('Обозначение').fill('ПМИ Р130У');
-    await page.getByLabel('Редакция').fill('01');
-    await page.getByRole('button', { name: 'Создать без файла' }).click();
-    await expect(page.getByText('Документ сохранён. Редакция 1.')).toBeVisible();
-
-    await page.getByRole('button', { name: 'Результаты R130SH' }).click();
-    await page.getByRole('button', { name: 'Импортировать результат R130SH' }).click();
-    await expect(page.getByText('Импорт завершён')).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'normal_final_rbd' })).toBeVisible();
-    await expect(page.getByText('Источник проверен', { exact: true })).toBeVisible();
-
-    await page.getByRole('combobox', { name: 'Local Specimen' }).click();
-    await page.getByRole('option', { name: 'LOCAL-RBD-001 — Локальная модель РБД' }).click();
-    await page.getByLabel('Причина привязки').fill('Идентичность подтверждена инженером');
-    await page.getByRole('button', { name: 'Сохранить привязку' }).click();
-    await expect(page.getByText(/Привязка source specimen сохранена/u)).toBeVisible();
-    await page.getByRole('button', { name: 'Подготовить исполнение для анализа' }).click();
-    await expect(page.getByText(/Аналитическое исполнение РБД подтверждено/u)).toBeVisible();
+    await prepareImportedRbdExecution(page);
 
     await page.getByRole('button', { name: 'Расчёт РБД' }).click();
     await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
@@ -1073,6 +1101,78 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
 
     await page.getByRole('button', { name: 'Импортировать результат R130SH' }).click();
     await expect(page.getByText('Этот пакет уже зарегистрирован.')).toBeVisible();
+    await page.getByRole('button', { name: 'Закрыть проект' }).click();
+    await page.getByRole('button', { name: 'Новый проект' }).click();
+    await page.getByRole('button', { name: 'Расчёт РБД' }).click();
+    await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
+    await page.getByRole('option', { name: 'Локальная модель РБД' }).click();
+    await page.getByRole('button', { name: /100 циклов · эффективный план/u }).click();
+    await expect(
+      page
+        .getByRole('region', { name: 'Сохранённый расчёт' })
+        .getByText('100 циклов', { exact: true }),
+    ).toBeVisible();
+    const reopenedCalculation = await page.evaluate(async (calculationSnapshotId) => {
+      const api = window.impeller;
+      if (api === undefined) throw new Error('preload_api_missing');
+      const detail = await api.rbdCalculation.getDetail(calculationSnapshotId);
+      if (!detail.ok) throw new Error(detail.error.code);
+      return {
+        inputContentSha256: detail.result.inputSnapshot.contentSha256,
+        resultContentSha256: detail.result.calculationSnapshot.contentSha256,
+        provenanceVersion: detail.result.inputSnapshot.inputSnapshot.schemaVersion,
+        fieldReferences: detail.result.inputSnapshot.inputSnapshot.fieldSelections.map(
+          (field) => field.sourceReference,
+        ),
+      };
+    }, savedCalculation.calculationSnapshotId);
+    expect(reopenedCalculation).toEqual({
+      inputContentSha256: savedCalculation.inputContentSha256,
+      resultContentSha256: savedCalculation.resultContentSha256,
+      provenanceVersion: savedCalculation.provenanceVersion,
+      fieldReferences: savedCalculation.fieldReferences,
+    });
+    expect(consoleErrors).toEqual([]);
+  } finally {
+    await app.close();
+    rmSync(evidenceRoot, { recursive: true, force: true });
+  }
+});
+
+test('preserves versioned reliability evidence through reopen and worker restart', async () => {
+  const repositoryRoot = resolve(import.meta.dirname, '../../../..');
+  const evidenceRoot = resolve(repositoryRoot, '.tmp/.codex/evidence/reliability-history-e2e');
+  const projectPath = join(evidenceRoot, 'reliability-history.irproj');
+  const userDataPath = join(evidenceRoot, 'user-data');
+  const packagePath = join(
+    repositoryRoot,
+    'fixtures/contracts/r130run/v1/m9a/packages/normal_final_rbd.r130run',
+  );
+  rmSync(evidenceRoot, { recursive: true, force: true });
+  mkdirSync(evidenceRoot, { recursive: true });
+  const app = await electron.launch({
+    args: [join(resolve(import.meta.dirname, '../..'), 'out/main/index.js')],
+    cwd: repositoryRoot,
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      IMPELLER_AUTOMATED_PROJECT_PATH: projectPath,
+      IMPELLER_AUTOMATED_R130RUN_PATH: packagePath,
+      IMPELLER_TEST_USER_DATA: userDataPath,
+    },
+  });
+  const consoleErrors: string[] = [];
+  try {
+    const page = await app.firstWindow();
+    page.on('console', (message) => {
+      if (message.type() === 'error') consoleErrors.push(message.text());
+    });
+    page.on('pageerror', (error) => consoleErrors.push(error.message));
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.getByRole('button', { name: 'Создать проект' }).click();
+
+    await prepareImportedRbdExecution(page);
+
     await page.getByRole('button', { name: 'Данные надёжности' }).click();
     await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
     await page.getByRole('option', { name: 'Локальная модель РБД' }).click();
@@ -1124,7 +1224,6 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
     await page
       .getByLabel('Основание версии выборки')
       .fill('Первая зафиксированная выборка\nПосле проверки документов');
-    expect(consoleErrors).toEqual([]);
     await expect(page.getByRole('heading', { name: 'Версия выборки' })).toBeVisible();
     await expect(
       page.getByRole('button', { name: 'Зафиксировать новую версию выборки' }),
@@ -1210,35 +1309,6 @@ test('imports an RBD run, saves its calculation and preserves versioned reliabil
     expect(latestHistoryVersion).toBe(51);
     await page.getByRole('button', { name: 'Закрыть проект' }).click();
     await page.getByRole('button', { name: 'Новый проект' }).click();
-    await page.getByRole('button', { name: 'Расчёт РБД' }).click();
-    await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
-    await page.getByRole('option', { name: 'Локальная модель РБД' }).click();
-    await page.getByRole('button', { name: /100 циклов · эффективный план/u }).click();
-    await expect(
-      page
-        .getByRole('region', { name: 'Сохранённый расчёт' })
-        .getByText('100 циклов', { exact: true }),
-    ).toBeVisible();
-    const reopenedCalculation = await page.evaluate(async (calculationSnapshotId) => {
-      const api = window.impeller;
-      if (api === undefined) throw new Error('preload_api_missing');
-      const detail = await api.rbdCalculation.getDetail(calculationSnapshotId);
-      if (!detail.ok) throw new Error(detail.error.code);
-      return {
-        inputContentSha256: detail.result.inputSnapshot.contentSha256,
-        resultContentSha256: detail.result.calculationSnapshot.contentSha256,
-        provenanceVersion: detail.result.inputSnapshot.inputSnapshot.schemaVersion,
-        fieldReferences: detail.result.inputSnapshot.inputSnapshot.fieldSelections.map(
-          (field) => field.sourceReference,
-        ),
-      };
-    }, savedCalculation.calculationSnapshotId);
-    expect(reopenedCalculation).toEqual({
-      inputContentSha256: savedCalculation.inputContentSha256,
-      resultContentSha256: savedCalculation.resultContentSha256,
-      provenanceVersion: savedCalculation.provenanceVersion,
-      fieldReferences: savedCalculation.fieldReferences,
-    });
     await page.getByRole('button', { name: 'Данные надёжности' }).click();
     await page.getByRole('combobox', { name: 'Модель рабочего колеса' }).click();
     await page.getByRole('option', { name: 'Локальная модель РБД' }).click();
