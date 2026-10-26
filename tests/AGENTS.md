@@ -58,7 +58,7 @@ Synthetic builder создаёт согласованные данные тол�
 | Worker artifact/self-test | `pnpm build:worker`; `pnpm smoke:worker` |
 | WinUnpacked | `pnpm package:win-unpacked`; `pnpm smoke:win-unpacked` |
 | NSIS Setup / installed lifecycle | `pnpm package:setup`; `pnpm smoke:setup` (требует отсутствующей установки/ярлыков; создаёт два настоящих тестовых выпуска, затем удаляет свою установку, сохраняя дело/профиль в evidence) |
-| Полный локальный gate с установкой | `pnpm verify -- --IncludePackaging` |
+| Полный локальный gate с установкой | `pnpm verify -IncludePackaging` |
 
 Python static-проверки из `tools/python-worker`: `uv run ruff format --check src tests`, `uv run ruff check src tests`, `uv run mypy`, `uv run pyright`. Версии и параметры инструментов принадлежат конфигурации проекта.
 
